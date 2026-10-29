@@ -1,0 +1,6 @@
+{
+    "clangd.arguments": [
+		"--query-driver=/home/reaper/.platformio/packages/toolchain-xtensa-esp32/bin/xtensa-esp32-elf-gcc*",
+		"--background-index"
+    ]
+}
