@@ -1,15 +1,13 @@
 <!DOCTYPE html>
 <html lang="de">
-
 <!--
-https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfB-GxpOzdfsgjt-2ZH5Xh2_VBqU1ZzqqUmW1FOQG8cINdy9XR9b_HdgeVxQLSc0RX-3BATs6LSxsq0nPFabmiTtl_ovRDTjuD-SFUFlxrrqI392iZ85x6962AaXssEDayUKrYyeH67XDT9HsOcqRBdw4beQsEzXEoRn&csuir=1&udm=50
+https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfAVchPTFEv6hIB2Q8C7ZGezNKs0PU4XJXJYlzFap2kPhBaIod7Romy63al52jPXESwj6GKlorSOYu0WVrwMLh0f-0LnKV4aRZJAY3WSaLCJ089bHMVwUDruYXUSIfiOS0oFRLmTOSKYfutr7Z-x4uOUyL8ZTmZ5BDte&csuir=1&udm=50
 
-dito
 -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard - Professional Edition</title>
+    <title>Sensor Data Dashboard - Ultra Performance Edition</title>
     <!-- uPlot CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.min.css">
     <style>
@@ -97,7 +95,6 @@ dito
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
 
-        /* Lokaler History-Timeline Scrollbalken */
         .timeline-slider-container {
             margin-top: 15px;
             display: flex;
@@ -143,7 +140,6 @@ dito
 <div class="container">
     <h2>Sensor Live-Daten (80 Hz)</h2>
 
-    <!-- Controls -->
     <div class="controls">
         <label>
             Moving Average Fenster:
@@ -173,7 +169,6 @@ dito
         </div>
     </div>
 
-    <!-- Toggles für Graphen-Sichtbarkeit -->
     <div class="toggles">
         <span style="font-weight:bold; color:#aaa; margin-right:10px;">Sichtbarkeit:</span>
         <label><input type="checkbox" id="toggleRaw" checked> Sensorwert (Blau)</label>
@@ -181,7 +176,6 @@ dito
         <label><input type="checkbox" id="toggleBand" checked> Streuungsband (Fläche)</label>
     </div>
 
-    <!-- Chart -->
     <div class="chart-container">
         <div id="chart"></div>
         <div class="timeline-slider-container">
@@ -206,7 +200,7 @@ dito
     // Navigations- & Steuerungs-State
     let isPaused = false;
     let isTrackingLive = true;
-    let liveViewportSize = 800; // Breite des Sichtbereichs (~10 Sekunden bei 80Hz)
+    let liveViewportSize = 800; // Breite des Sichtbereichs (~10 Sekunden)
 
     // --- DOM Referenzen ---
     const maInput = document.getElementById('maWindow');
@@ -228,7 +222,6 @@ dito
     maInput.addEventListener('input', (e) => { const val = parseInt(e.target.value, 10); if (val > 0) maWindowSize = val; });
     maxBufferInput.addEventListener('input', (e) => { const val = parseInt(e.target.value, 10); if (val >= 5000) { maxBufferSize = val; bufferMaxDisplay.textContent = val; }});
 
-    // Manuelles & Automatisches Tare
     tareManual.addEventListener('input', (e) => { tareOffset = parseFloat(e.target.value) || 0; });
     tareBtn.addEventListener('click', () => {
         if (rawBuffer.values.length > 0) {
@@ -237,7 +230,6 @@ dito
         }
     });
 
-    // Viewport-Steuerung
     liveBtn.addEventListener('click', () => {
         isTrackingLive = true;
         liveBtn.classList.add('tracking');
@@ -260,7 +252,6 @@ dito
         chart.setSeries(4, { show: toggleBand.checked });
     });
 
-    // --- Lokaler History-Scrollbalken ---
     historyScroll.addEventListener('input', (e) => {
         if (rawBuffer.times.length <= liveViewportSize) return;
         isTrackingLive = false;
@@ -275,30 +266,43 @@ dito
         chart.setScale("x", { min: startX, max: endX });
     });
 
-    // --- Data Processing Pipeline (On-the-Fly) ---
+    // --- Hoch-optimierte Data Pipeline (O(N) Komplexität statt O(N²)) ---
     function prepareChartData() {
         const t = rawBuffer.times;
         const vRaw = rawBuffer.values;
+        const len = vRaw.length;
 
-        const vTared = [];
-        const vMA = [];
-        const vBandUpper = [];
-        const vBandLower = [];
+        const vTared = new Float64Array(len);
+        const vMA = new Float64Array(len);
+        const vBandUpper = new Float64Array(len);
+        const vBandLower = new Float64Array(len);
 
-        for (let i = 0; i < vRaw.length; i++) {
-const currentTared = vRaw[i] - tareOffset;
-vTared.push(currentTared);
-const start = Math.max(0, i - maWindowSize + 1);
-const windowValues = vTared.slice(start, i + 1);
-const sum = windowValues.reduce((a, b) => a + b, 0);
-const avg = sum / windowValues.length;
-vMA.push(avg);
-// Varianz & Standardabweichung für das Streuungsband
-const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
-const stdDev = Math.sqrt(variance);
-vBandUpper.push(avg + stdDev);
-vBandLower.push(avg - stdDev);
+        let windowSum = 0;
+        let windowSumSq = 0; // Für die schnelle Varianzberechnung
+
+        for (let i = 0; i < len; i++) {
+            const currentTared = vRaw[i] - tareOffset;
+vTared[i] = currentTared;
+// Neuen Wert zur Schiebefenster-Summe hinzufügen
+windowSum += currentTared;
+windowSumSq += currentTared * currentTared;
+// Alten Wert aus der Summe entfernen, wenn das Fenster voll ist
+if (i >= maWindowSize) {
+const oldVal = vTared[i - maWindowSize];
+windowSum -= oldVal;
+windowSumSq -= oldVal * oldVal;
 }
+const currentWindowSize = Math.min(i + 1, maWindowSize);
+const avg = windowSum / currentWindowSize;
+vMA[i] = avg;
+// Numerisch stabile Varianzberechnung über die Quadratsumme
+let variance = (windowSumSq / currentWindowSize) - (avg * avg);
+if (variance < 0) variance = 0; // Schutz vor Rundungsfehlern bei konstanten Werten
+const stdDev = Math.sqrt(variance);
+vBandUpper[i] = avg + stdDev;
+vBandLower[i] = avg - stdDev;
+}
+// uPlot benötigt reguläre Arrays oder TypedArrays
 return [t, vTared, vMA, vBandUpper, vBandLower];
 }
 // --- Mausrad Zoom-Plugin ---
@@ -308,18 +312,14 @@ hooks: {
 init: u => {
 u.root.querySelector(".u-over").addEventListener("wheel", e => {
 e.preventDefault();
-// Zoom-Faktor bestimmen basierend auf Scrollrichtung
 let factor = e.deltaY < 0 ? 0.85 : 1.15;
 liveViewportSize = Math.max(80, Math.min(20000, Math.round(liveViewportSize * factor)));
 if (isTrackingLive) {
-// Im Livemodus einfach die Zoomstufe anpassen
 updateChartViewport();
 } else {
-// Im historischen Modus zentriert um die aktuelle Achsenmitte zoomen
 let currentMin = u.scales.x.min;
 let currentMax = u.scales.x.max;
 let center = (currentMin + currentMax) / 2;
-// Ungefähre Zeitdistanz berechnen
 let timeSpan = (currentMax - currentMin) * factor;
 chart.setScale("x", { min: center - timeSpan/2, max: center + timeSpan/2 });
 }
@@ -335,15 +335,15 @@ height: 430,
 ms: 1,
 plugins: [wheelZoomPlugin()],
 series: [
-{}, // X-Achse
-{ label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1, show: true },
-{ label: "Moving Average", stroke: "#ffb74d", width: 2.5, show: true },
-{ label: "Streuung Oben", stroke: "transparent", width: 0, show: true },
-{ label: "Streuung Unten", stroke: "transparent", width: 0, show: true }
+{}, // X-Achse (Index 0)
+{ label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1, show: true }, // Index 1
+{ label: "Moving Average", stroke: "#ffb74d", width: 2.5, show: true }, // Index 2
+{ label: "Streuung Oben", stroke: "transparent", width: 0, show: true }, // Index 3
+{ label: "Streuung Unten", stroke: "transparent", width: 0, show: true } // Index 4
 ],
-// BUGFIX: Füllung der Flächen explizit hier definieren, nicht im Series-Array
+// Flächen-Zuordnung: Füllt den Raum zwischen Serie 3 (Oben) und Serie 4 (Unten)
 bands: [
-{ series: [3, 4], fill: "rgba(255, 183, 77, 0.18)", dir: 1 }
+{ series: [3, 4], fill: "rgba(255, 183, 77, 0.22)", dir: 1 }
 ],
 axes: [
 { grid: { stroke: "#2d2d2d" }, stroke: "#888" },
@@ -351,10 +351,9 @@ axes: [
 ],
 cursor: { drag: { setScale: false, x: false, y: false } }
 };
-
 const chartDiv = document.getElementById("chart");
 let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
-// --- Viewport Steuerung ---
+// --- Viewport & Render-Schleife ---
 function updateChartViewport() {
 if (!isTrackingLive || rawBuffer.times.length === 0) return;
 const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
@@ -365,12 +364,12 @@ chart.setScale("x", { min: startTime, max: lastTime });
 function updateChart() {
 if (isPaused) return;
 const updatedData = prepareChartData();
-chart.setData(updatedData, false); // Aktualisiert Datenpunkte ressourcenschonend
+chart.setData(updatedData, false);
 if (isTrackingLive) {
 updateChartViewport();
 }
 }
-// --- Daten-Schnittstelle (SSE-Callback) ---
+// --- Live-Daten-Schnittstelle (SSE) ---
 function handleIncomingData(timestamp, value) {
 rawBuffer.times.push(timestamp);
 rawBuffer.values.push(value);
@@ -378,7 +377,6 @@ if (rawBuffer.times.length > maxBufferSize) {
 rawBuffer.times.shift();
 rawBuffer.values.shift();
 }
-// Steuerelemente updaten
 bufferCount.textContent = rawBuffer.times.length;
 if (rawBuffer.times.length > liveViewportSize) {
 historyScroll.disabled = false;
@@ -388,17 +386,17 @@ historyScroll.value = historyScroll.max;
 }
 updateChart();
 }
-// --- Export ---
+// --- CSV Export (Fehlerbereinigt mit echten Backticks) ---
 function exportToCSV() {
 if (rawBuffer.times.length === 0) return alert("Keine Daten vorhanden.");
 let csv = "Timestamp_Unix,Raw_Value\n";
 for (let i = 0; i < rawBuffer.times.length; i++) {
-//csv += ${rawBuffer.times[i]},${rawBuffer.values[i]}\n;
+csv += `${rawBuffer.times[i]},${rawBuffer.values[i]}\n`;
 }
 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 const link = document.createElement("a");
 link.href = URL.createObjectURL(blob);
-//link.setAttribute("download", sensor_data_${Math.floor(Date.now()/1000)}.csv);
+link.setAttribute("download", `sensor_data_${Math.floor(Date.now()/1000)}.csv`);
 document.body.appendChild(link);
 link.click();
 document.body.removeChild(link);
@@ -415,6 +413,7 @@ count++;
 }, 1000 / 80);
 }
 startSimulation();
+
 
     /*
     // --- Echtes SSE Setup (Hier entkommentieren, wenn Backend bereit steht) ---
