@@ -2,22 +2,24 @@
 <html lang="de">
 
 <!--
-https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfCJQ8oA-Ensz-YLWgFTRv7FcXFA6K4wD7mL0pTpln5uedpUyvRlNPyPEEO5fPh2WkxmZelHGuz_yjh6vX_Tz-Y-WE7JTinxfLbadtD2AuPbfG-E18t0gfWgxk1rb0wgeCx7MbCMUriGGfpxxD1gAFF7dLY9yO04Q2U&csuir=1&udm=50
+https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfDQlf8ChGte96tYPghmAkeUAiftcAiGYrec8KG0odPzFS5hdSQxEVjYiOzsLA0KkC3I_bU7U21C9yjwPCLhvNVdycuPNu5lth45OBaiDr3c2k9CSBen184Fk7z15nHpkRJcSiM0UlNzqL7y1l1087AkGOlqUzLT6iU&csuir=1&udm=50
 
-++ Fix des Syntax (bei Gemini was falschgelaufen) durch mich.
+Wieder Fixe notwendig, lol.
+
 -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard - Performance Edition</title>
-    <!-- uPlot CSS (Die einzige externe Datei neben dem uPlot JS) -->
-    <link rel="stylesheet" href="https://jsdelivr.net">
+    <title>Sensor Data Dashboard - Scroll & History Edition</title>
+    <!-- uPlot CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.min.css">
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background-color: #121212;
             color: #e0e0e0;
             margin: 20px;
+            user-select: none;
         }
         .container {
             max-width: 1100px;
@@ -79,6 +81,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            position: relative;
         }
         .stats-panel {
             display: flex;
@@ -90,7 +93,12 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         .stats-panel strong {
             color: #fff;
         }
-        /* Lokale Anpassung für uPlot Legend / Dark Mode */
+        .hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        /* Dark-Mode Overrides für die integrierte uPlot-Legende */
         .u-legend th { color: #aaa; }
         .u-legend { bottom: -30px !important; top: auto !important; }
     </style>
@@ -103,11 +111,11 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
     <div class="controls">
         <label>
             Moving Average Fenster:
-            <input type="number" id="maWindow" value="40" min="1" max="2000">
+            <input type="number" id="maWindow" value="40" min="1" max="5000">
         </label>
         <label>
             Max. Buffer-Größe (Werte):
-            <input type="number" id="maxBufferInput" value="50000" min="1000" step="1000">
+            <input type="number" id="maxBufferInput" value="100000" min="5000" step="5000">
         </label>
 
         <button id="tareBtn">Tare (Nullpunkt)</button>
@@ -116,30 +124,35 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 
         <div style="margin-left: auto; text-align: right;" class="stats-panel">
             <div>Offset: <strong id="offsetVal">0.00</strong></div>
-            <div>Buffer: <strong id="bufferCount">0</strong> / <strong id="bufferMaxDisplay">50000</strong></div>
+            <div>Buffer: <strong id="bufferCount">0</strong> / <strong id="bufferMaxDisplay">100000</strong></div>
         </div>
     </div>
 
     <div class="chart-container">
         <div id="chart"></div>
     </div>
+    <p class="hint">💡 <strong>Bedienung:</strong> Ziehe mit gedrückter Maustaste im Chart nach links/rechts, um in der Historie zu scrollen. Das Scrollen unterbricht das automatische Nach-Vorne-Springen im Live-Betrieb.</p>
 </div>
 
-<!-- uPlot JS -->
-<script src="https://jsdelivr.net"></script>
+<!-- uPlot JS (Vollständiger, korrekter CDN Link) -->
+<script src="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.iife.min.js"></script>
 
 <script>
-    // --- State & Unendlicher Buffer ---
+    // --- State & Unveränderter Buffer ---
     const rawBuffer = {
-        times: [],
-        values: []
+        times: [],  // Unix-Zeitstempel in Sekunden
+        values: []  // Unveränderte Rohwerte vom Sensor
     };
 
     // Konfigurationen
     let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
     let maxBufferSize = parseInt(document.getElementById('maxBufferInput').value, 10);
     let tareOffset = 0;
+
+    // UI- & Interaktions-Flags
     let isPaused = false;
+    let isUserScrolling = false;
+    let userXRange = null; // Speichert den manuell verschobenen Sichtbereich
 
     // --- DOM Elemente & Event Listener ---
     const maInput = document.getElementById('maWindow');
@@ -158,7 +171,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 
     maxBufferInput.addEventListener('input', (e) => {
         const val = parseInt(e.target.value, 10);
-        if (val >= 1000) {
+        if (val >= 5000) {
             maxBufferSize = val;
             bufferMaxDisplay.textContent = val;
         }
@@ -166,7 +179,6 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 
     tareBtn.addEventListener('click', () => {
         if (rawBuffer.values.length > 0) {
-            // Verwendet den letzten unkorrigierten Wert aus dem Buffer als Nullpunkt
             tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
             offsetVal.textContent = tareOffset.toFixed(2);
             tareBtn.classList.add('active');
@@ -181,7 +193,8 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         } else {
             pauseBtn.textContent = "Pause (Chart einfrieren)";
             pauseBtn.classList.remove('paused');
-            // Direkt nach dem Entpausieren Chart auf den neuesten Stand bringen
+            isUserScrolling = false; // Reset des Scroll-Status beim Fortsetzen
+            userXRange = null;
             updateChart();
         }
     });
@@ -190,18 +203,10 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         exportToCSV();
     });
 
-    // --- Datenverarbeitung & Transformation (Nur bei Anzeige oder Export) ---
-    function prepareChartData(limitToViewport = false) {
-        let t = rawBuffer.times;
-        let vRaw = rawBuffer.values;
-
-        // Wenn der Chart läuft, limitieren wir die X-Achsen-Ansicht für flüssiges Zeichnen (z.B. letzte 800 Werte ~10 Sek)
-        // Im Hintergrund wächst der rawBuffer trotzdem weiter an.
-        if (limitToViewport && t.length > 800) {
-            const startIdx = t.length - 800;
-            t = t.slice(startIdx);
-            vRaw = vRaw.slice(startIdx);
-        }
+    // --- Datenverarbeitung & Transformation (On-the-Fly beim Rendern) ---
+    function prepareChartData() {
+        const t = rawBuffer.times;
+        const vRaw = rawBuffer.values;
 
         const vTared = [];
         const vMA = [];
@@ -209,15 +214,18 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         const vBandLower = [];
 
         for (let i = 0; i < vRaw.length; i++) {
+            // 1. Tare-Verschiebung anwenden
             const currentTared = vRaw[i] - tareOffset;
             vTared.push(currentTared);
 
+            // 2. Moving Average im aktiven Schiebefenster berechnen
             const start = Math.max(0, i - maWindowSize + 1);
             const windowValues = vTared.slice(start, i + 1);
             const sum = windowValues.reduce((a, b) => a + b, 0);
             const avg = sum / windowValues.length;
             vMA.push(avg);
 
+            // 3. Mittlere Streuung (Standardabweichung) berechnen
             const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
             const stdDev = Math.sqrt(variance);
 
@@ -229,11 +237,54 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
     }
 
     // --- uPlot Konfiguration ---
+    // Plugin-Logik für freies Verschieben (Pan/Scroll) über die Achsen
+    function dragPanPlugin() {
+        return {
+            hooks: {
+                init: u => {
+                    let plotBgc = u.root.querySelector(".u-over");
+
+                    let startX;
+                    let minX, maxX;
+
+                    plotBgc.addEventListener("mousedown", e => {
+                        if (e.button !== 0) return; // Nur linke Maustaste
+                        isUserScrolling = true;
+
+                        startX = e.clientX;
+                        minX = u.valToPos(u.scales.x.min, "x");
+                        maxX = u.valToPos(u.scales.x.max, "x");
+
+                        function onMouseMove(e) {
+                            let diffX = e.clientX - startX;
+
+                            let newMinX = u.posToVal(minX - diffX, "x");
+                            let newMaxX = u.posToVal(maxX - diffX, "x");
+
+                            userXRange = [newMinX, newMaxX];
+
+                            u.setScale("x", { min: newMinX, max: newMaxX });
+                        }
+
+                        function onMouseUp() {
+                            document.removeEventListener("mousemove", onMouseMove);
+                            document.removeEventListener("mouseup", onMouseUp);
+                        }
+
+                        document.addEventListener("mousemove", onMouseMove);
+                        document.addEventListener("mouseup", onMouseUp);
+                    });
+                }
+            }
+        };
+    }
+
     const opts = {
         title: "",
         width: 1060,
         height: 450,
         ms: 1,
+        plugins: [dragPanPlugin()],
         series: [
             {},
             { label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1 },
@@ -241,77 +292,74 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
             { label: "Streuung Oberseite", stroke: "transparent", width: 0 },
             { label: "Streuung Unterseite", stroke: "transparent", width: 0, fill: "rgba(255, 183, 77, 0.12)" }
         ],
-        bands: [ {series:} ],
-        axes: [
-            { grid: { stroke: "#2d2d2d" }, stroke: "#888" },
-            { grid: { stroke: "#2d2d2d" }, stroke: "#888" }
-        ],
-        cursor: { drag: { setScale: false } }
-    };
-
-    const chartDiv = document.getElementById("chart");
-    let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
-
-    // --- UI Update Logik ---
-    function updateChart() {
-        if (isPaused) return;
-
-        // Transformiert nur den für das Auge relevanten Zeitausschnitt für uPlot
-        const updatedData = prepareChartData(true);
-        chart.setData(updatedData);
+bands: [ {series: [3, 4]} ],
+axes: [
+{ grid: { stroke: "#2d2d2d" }, stroke: "#888" },
+{ grid: { stroke: "#2d2d2d" }, stroke: "#888" }
+],
+cursor: {
+drag: { setScale: false, x: false, y: false } // Deaktiviert uPlots Standard-Zoom-Box für unser Custom-Panning
+}
+};
+const chartDiv = document.getElementById("chart");
+let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
+// --- UI Update Logik ---
+function updateChart() {
+if (isPaused) return;
+const updatedData = prepareChartData();
+chart.setData(updatedData, false); // Update Daten ohne Achsen-Reset
+// Wenn der Nutzer nicht händisch scrollt, folgt der Viewport automatisch den neuesten 800 Werten (~10 Sek.)
+if (!isUserScrolling && rawBuffer.times.length > 0) {
+const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
+const startTime = rawBuffer.times[Math.max(0, rawBuffer.times.length - 800)];
+chart.setScale("x", { min: startTime, max: lastTime });
+} else if (userXRange) {
+// Behalte den vom User gescrollten Bildausschnitt bei
+chart.setScale("x", { min: userXRange[0], max: userXRange[1] });
+}
+}
+// --- Daten-Injektion (Echtzeit-Verarbeitung von SSE) ---
+function handleIncomingData(timestamp, value) {
+rawBuffer.times.push(timestamp);
+rawBuffer.values.push(value);
+// Greift erst bei Erreichen des benutzerdefinierten Limits
+if (rawBuffer.times.length > maxBufferSize) {
+rawBuffer.times.shift();
+rawBuffer.values.shift();
+// Optional: User-X-Range korrigieren, falls der älteste Wert herausfällt
+}
+bufferCount.textContent = rawBuffer.times.length;
+updateChart();
+}
+// --- CSV Export (Greift auf den vollständigen, unveränderten Rohdaten-Buffer zu) ---
+function exportToCSV() {
+    if (rawBuffer.times.length === 0) return alert("Keine Daten zum Exportieren vorhanden.");
+    let csvContent = "data:text/csv;charset=utf-8,Timestamp_Unix,Raw_Value\n";
+    for (let i = 0; i < rawBuffer.times.length; i++) {
+        // csvContent += ${rawBuffer.times[i]},${rawBuffer.values[i]}\n;
     }
-
-    // --- Daten-Injektion (Echtzeit-Verarbeitung von SSE) ---
-    function handleIncomingData(timestamp, value) {
-        rawBuffer.times.push(timestamp);
-        rawBuffer.values.push(value);
-
-        // Greift erst, wenn das vom User gesetzte, sehr große Limit erreicht wird
-        if (rawBuffer.times.length > maxBufferSize) {
-            rawBuffer.times.shift();
-            rawBuffer.values.shift();
-        }
-
-        // Counter aktualisieren
-        bufferCount.textContent = rawBuffer.times.length;
-
-        // Chart rendern (uPlot minimiert die DOM-Last automatisch)
-        updateChart();
-    }
-
-    // --- CSV Export (Nutzt den vollen, unveränderten Buffer) ---
-    function exportToCSV() {
-        if (rawBuffer.times.length === 0) return alert("Keine Daten zum Exportieren vorhanden.");
-
-        let csvContent = "data:text/csv;charset=utf-8,Timestamp_Unix,Raw_Value\n";
-
-        for (let i = 0; i < rawBuffer.times.length; i++) {
-            csvContent += `${rawBuffer.times[i]},${rawBuffer.values[i]}\n`;
-        }
-
-        const encodedUri = encodeURI(csvContent);
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `sensor_data_export_${Math.floor(Date.now()/1000)}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    }
-
-    // --- SSE Emulator (80 Hz) ---
-    function startSimulation() {
-        let count = 0;
-        const intervalMs = 1000 / 80;
-        setInterval(() => {
-            const now = Date.now() / 1000;
-            const baseValue = 100 + Math.sin(count * 0.03) * 20;
-            const noise = (Math.random() - 0.5) * 12;
-            const fakeSensorValue = baseValue + noise;
-            handleIncomingData(now, fakeSensorValue);
-            count++;
-        }, intervalMs);
-    }
-    startSimulation();
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+//link.setAttribute("download", sensor_data_raw_${Math.floor(Date.now()/1000)}.csv);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+// --- SSE Emulator (80 Hz) ---
+function startSimulation() {
+let count = 0;
+const intervalMs = 1000 / 80;
+setInterval(() => {
+const now = Date.now() / 1000;
+const baseValue = 100 + Math.sin(count * 0.03) * 20;
+const noise = (Math.random() - 0.5) * 12;
+const fakeSensorValue = baseValue + noise;
+handleIncomingData(now, fakeSensorValue);
+count++;
+}, intervalMs);
+}
+startSimulation();
 
 
     /*
