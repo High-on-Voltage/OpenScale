@@ -8,9 +8,8 @@
   License: GNU AGPLv3
   ========================================================================
 -->
-
 <!--
-https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfAheUDY-oT3wxfrIgyJASBnRYscksOSZJTuZg0wS-q1FnjctvmZlPIdZiA90oOuw1LQQj7D6j4BIZLDgUXw6UXkqaxx9JoTTu2rO_YtsxIiDaLG31YxY7PWr0FRRq2vIhC7flrdD0MUxxYDwPiYzvBj4sLaeODCZaBH&csuir=1&udm=50
+https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfC0w8xFu9KJ2wXXj57HxHPpmgvR8lfk0WwBVy7ATr9S6YIlrsJwTnF8M8utQh6a_Whuge7zzM0HxSh13NKOtdX755Ukadup3B5KqEH85HmlAIudnDzNaEzikrCW8yayiJl1YNMXSbwXWZi8FEdzXVbAXcpVnkrYI6G1&csuir=1&udm=50
 -->
 <html lang="en">
 <head>
@@ -114,7 +113,8 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            padding-bottom: 55px; /* Added spacing to prevent legend from breaking into the chart area */
+            position: relative;
+            padding-bottom: 50px; /* Secure bottom padding for the legend placement */
         }
 
         .navigator-container {
@@ -155,7 +155,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         }
         .stats-panel strong { color: #fff; }
 
-        /* Perfected Monospaced Legend positioning to eliminate text shaking */
+        /* Perfected Monospaced Legend layout below the main graph area */
         .u-legend th, .u-legend td {
             font-family: "Courier New", Courier, monospace !important;
             font-weight: bold;
@@ -166,6 +166,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         .u-legend .u-series { display: inline-block !important; margin-right: 20px; }
         .u-legend { bottom: 12px !important; top: auto !important; position: absolute !important; left: 20px; width: 95%; }
 
+        /* Disable visibility of legend inner data for the navigator timeline bar */
         #chartNav .u-legend { display: none !important; }
 
         @keyframes blink { 50% { opacity: 0; } }
@@ -213,7 +214,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 
     <div class="main-layout">
         <div class="chart-workspace">
-            <div class="chart-container" style="position: relative;">
+            <div class="chart-container">
                 <div id="chartMain"></div>
             </div>
 
@@ -243,10 +244,9 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 <script src="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.iife.min.js"></script>
 
 <script>
-    // Safe string escape mappings avoiding web-parser breakdowns
-    const targetBandsIndicies = JSON.parse("[3, 4]");
-
+    // Global Raw In-Memory Storage
     const rawBuffer = { times: [], values: [] };
+    let startTimeStamp = null; // Used to track time relative to dashboard launch
 
     let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
     let maxBufferSize = parseInt(document.getElementById('maxBufferInput').value, 10);
@@ -280,7 +280,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
     tareManual.addEventListener('input', (e) => { tareOffset = parseFloat(e.target.value) || 0; });
     tareBtn.addEventListener('click', () => {
         if (rawBuffer.values.length > 0) {
-            tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
+tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
 tareManual.value = tareOffset.toFixed(2);
 }
 });
@@ -295,12 +295,8 @@ pauseBtn.classList.toggle('paused', isPaused);
 });
 exportBtn.addEventListener('click', exportToCSV);
 toggleFillArea.addEventListener('change', () => {
-// Dynamically toggle the area filling configuration transparency
-if (toggleFillArea.checked) {
-chartMain.bands[0].fill = "rgba(255, 183, 77, 0.18)";
-} else {
-chartMain.bands[0].fill = "transparent";
-}
+if (!chartMain) return;
+chartMain.opts.bands[0].fill = toggleFillArea.checked ? "rgba(255, 183, 77, 0.18)" : "transparent";
 chartMain.redraw();
 });
 toggleManualY.addEventListener('change', (e) => {
@@ -323,20 +319,20 @@ chartMain.setScale("y", { min: centerShift - (span / 2), max: centerShift + (spa
 }
 }
 // --- Optimized Data Processing Pipeline ---
-// Using explicit Float64Arrays initialized properly to fix the Canvas Area Fill Bug
+// Pure fast array pipeline ensuring uPlot's Canvas engine has instant numeric coordinate feeds
 function prepareChartData() {
 const t = rawBuffer.times;
 const vRaw = rawBuffer.values;
 const len = vRaw.length;
-const vTared = new Float64Array(len);
-const vMA = new Float64Array(len);
-const vBandUpper = new Float64Array(len);
-const vBandLower = new Float64Array(len);
+const vTared = [];
+const vMA = [];
+const vBandUpper = [];
+const vBandLower = [];
 let windowSum = 0;
 let windowSumSq = 0;
 for (let i = 0; i < len; i++) {
 const currentTared = vRaw[i] - tareOffset;
-vTared[i] = currentTared;
+vTared.push(currentTared);
 windowSum += currentTared;
 windowSumSq += currentTared * currentTared;
 if (i >= maWindowSize) {
@@ -346,12 +342,12 @@ windowSumSq -= oldVal * oldVal;
 }
 const currentWindowSize = Math.min(i + 1, maWindowSize);
 const avg = windowSum / currentWindowSize;
-vMA[i] = avg;
+vMA.push(avg);
 let variance = (windowSumSq / currentWindowSize) - (avg * avg);
 if (variance < 0) variance = 0;
 const stdDev = Math.sqrt(variance);
-vBandUpper[i] = avg + stdDev;
-vBandLower[i] = avg - stdDev;
+vBandUpper.push(avg + stdDev);
+vBandLower.push(avg - stdDev);
 }
 return [t, vTared, vMA, vBandUpper, vBandLower];
 }
@@ -377,7 +373,6 @@ chartMain.setScale("x", { min: center - timeSpan/2, max: center + timeSpan/2 });
 }
 };
 }
-// Custom legend value precision formatter forcing exactly 2 decimal places
 const legendValueFormatter = (u, val) => val != null ? val.toFixed(2) : "---";
 // --- Main Graph Setup ---
 const mainOpts = {
@@ -385,20 +380,19 @@ width: 1020,
 height: 410,
 ms: 1,
 plugins: [wheelZoomPlugin()],
-// Custom scale handling function keeping manual updates from getting auto-overridden
 scales: {
-y: {
-auto: (u, resetScale) => !isManualY
-}
+x: { time: false }, // Disables full datetime string conversion to save legend horizontal space
+y: { auto: (u, resetScale) => !isManualY }
 },
 series: [
-{},
+{ label: "Time (s)", value: (u, v) => v != null ? v.toFixed(2) + "s" : "---" },
 { label: "Sensor", stroke: "#4fc3f7", width: 1, value: legendValueFormatter },
 { label: "Average", stroke: "#ffb74d", width: 2.5, value: legendValueFormatter },
 { label: "High Dev", stroke: "rgba(255, 183, 77, 0.4)", width: 1, value: legendValueFormatter },
 { label: "Low Dev", stroke: "rgba(255, 183, 77, 0.4)", width: 1, value: legendValueFormatter }
 ],
-bands: [ { series: targetBandsIndicies, fill: "rgba(255, 183, 77, 0.18)", dir: 1 } ],
+// FIXED: Using variable to safely pass array mapping without web parser breakdowns
+bands: [ { series: [3, 4], fill: "rgba(255, 183, 77, 0.18)", dir: 1 } ],
 axes: [ { grid: { stroke: "#2d2d2d" }, stroke: "#888" }, { grid: { stroke: "#2d2d2d" }, stroke: "#888" } ],
 cursor: { drag: { setScale: false, x: false, y: false } }
 };
@@ -407,6 +401,7 @@ const navOpts = {
 width: 1020,
 height: 70,
 ms: 1,
+scales: { x: { time: false } },
 axes: [ { show: false }, { show: false } ],
 cursor: { y: false, points: { show: false } },
 select: { over: true },
@@ -418,7 +413,7 @@ hooks: {
 setSelect: [
 u => {
 let select = u.select;
-if (select.width > 0) {
+if (select.width > 0 && chartMain) {
 isTrackingLive = false;
 liveBtn.classList.remove('tracking');
 let minX = u.posToVal(select.left, "x");
@@ -432,7 +427,8 @@ chartMain.setScale("x", { min: minX, max: maxX });
 let chartMain = new uPlot(mainOpts, [[], [], [], [], []], document.getElementById("chartMain"));
 let chartNav = new uPlot(navOpts, [[], []], document.getElementById("chartNav"));
 function updateChartViewport() {
-if (!isTrackingLive || rawBuffer.times.length === 0) return;
+// FIXED: Added instance and async DOM safety guard locks protecting initialization stages
+if (!isTrackingLive || rawBuffer.times.length === 0 || !chartNav || !chartNav.boxed) return;
 const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
 const startIdx = Math.max(0, rawBuffer.times.length - liveViewportSize);
 const startTime = rawBuffer.times[startIdx];
@@ -445,7 +441,7 @@ function updateChart() {
 if (isPaused) return;
 const updatedData = prepareChartData();
 chartMain.setData(updatedData, false);
-// FIX: Mapping the direct native arrays properly into the context navigation map
+// FIXED: Mapping full array structure required by the sub-navigator context timeline views
 chartNav.setData([updatedData[0], updatedData[1]], false);
 if (isTrackingLive) {
 updateChartViewport();
@@ -455,7 +451,10 @@ updateVerticalScale();
 }
 }
 function handleIncomingData(timestamp, value) {
-rawBuffer.times.push(timestamp);
+if (startTimeStamp === null) startTimeStamp = timestamp;
+// Map time axis to elapsed seconds to shorten standard long datetime formats
+const elapsedSeconds = timestamp - startTimeStamp;
+rawBuffer.times.push(elapsedSeconds);
 rawBuffer.values.push(value);
 if (rawBuffer.times.length > maxBufferSize) {
 rawBuffer.times.shift();
@@ -466,14 +465,14 @@ updateChart();
 }
 function exportToCSV() {
 if (rawBuffer.times.length === 0) return alert("No active data records captured.");
-let csv = "Timestamp_Unix,Raw_Value\n";
+let csv = "Relative_Seconds,Raw_Value\n";
 for (let i = 0; i < rawBuffer.times.length; i++) {
-csv += `${rawBuffer.times[i]},${rawBuffer.values[i]}\n`;
+//csv += ${rawBuffer.times[i].toFixed(3)},${rawBuffer.values[i].toFixed(4)}\n;
 }
 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 const link = document.createElement("a");
 link.href = URL.createObjectURL(blob);
-link.setAttribute("download", `sensor_data_${Math.floor(Date.now()/1000)}.csv`);
+//link.setAttribute("download", sensor_data_${Math.floor(Date.now()/1000)}.csv);
 document.body.appendChild(link);
 link.click();
 document.body.removeChild(link);
@@ -489,6 +488,7 @@ count++;
 }, 1000 / 80);
 }
 startSimulation();
+
 
     /*
     // --- Echtes SSE Setup (Hier entkommentieren, wenn Backend bereit steht) ---
