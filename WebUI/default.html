@@ -1,28 +1,33 @@
 <!DOCTYPE html>
 <html lang="de">
 
-<!-- https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&udm=50&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfCjeMcvrviX88walyVWeY8DRY3RafmkdmwhSaTc_lVP27IRN3CeB2TBjPjl-H1kpP2iEX4e0FLm6y56tqkTfU8nT5I_g3oSRzdn-VQgMkMoVK_iGpz_1i4mfhjgyo-ka4ui7QcbUV1BoxNgPSY1K8j6iPGi-YCHaIQ&csuir=1 -->
+<!--
+https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfCJQ8oA-Ensz-YLWgFTRv7FcXFA6K4wD7mL0pTpln5uedpUyvRlNPyPEEO5fPh2WkxmZelHGuz_yjh6vX_Tz-Y-WE7JTinxfLbadtD2AuPbfG-E18t0gfWgxk1rb0wgeCx7MbCMUriGGfpxxD1gAFF7dLY9yO04Q2U&csuir=1&udm=50
+
+++ Fix des Syntax (bei Gemini was falschgelaufen) durch mich.
+-->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard</title>
-    <!-- uPlot CSS für minimale Styles und hohe Performance -->
+    <title>Sensor Data Dashboard - Performance Edition</title>
+    <!-- uPlot CSS (Die einzige externe Datei neben dem uPlot JS) -->
     <link rel="stylesheet" href="https://jsdelivr.net">
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background-color: #121212;
             color: #e0e0e0;
             margin: 20px;
         }
         .container {
-            max-width: 1000px;
+            max-width: 1100px;
             margin: 0 auto;
         }
         .controls {
             display: flex;
-            gap: 20px;
-            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: flex-end;
             background: #1e1e1e;
             padding: 15px;
             border-radius: 8px;
@@ -30,10 +35,12 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
         label {
+            font-size: 13px;
             font-weight: bold;
             display: flex;
             flex-direction: column;
             gap: 5px;
+            color: #aaa;
         }
         input, button {
             background: #2d2d2d;
@@ -43,10 +50,14 @@
             border-radius: 4px;
             font-size: 14px;
         }
+        input:focus {
+            outline: none;
+            border-color: #4fc3f7;
+        }
         button {
             cursor: pointer;
             font-weight: bold;
-            transition: background 0.2s;
+            transition: background 0.2s, border-color 0.2s;
         }
         button:hover {
             background: #3d3d3d;
@@ -55,14 +66,33 @@
             background: #d32f2f;
             border-color: #f44336;
         }
+        .btn-pause {
+            background: #0288d1;
+            border-color: #03a9f4;
+        }
+        .btn-pause.paused {
+            background: #388e3c;
+            border-color: #4caf50;
+        }
         .chart-container {
             background: #1e1e1e;
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
-        /* Anpassung für uPlot Tooltip-Farbe im Dark Mode */
+        .stats-panel {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            font-size: 14px;
+            color: #888;
+        }
+        .stats-panel strong {
+            color: #fff;
+        }
+        /* Lokale Anpassung für uPlot Legend / Dark Mode */
         .u-legend th { color: #aaa; }
+        .u-legend { bottom: -30px !important; top: auto !important; }
     </style>
 </head>
 <body>
@@ -73,14 +103,20 @@
     <div class="controls">
         <label>
             Moving Average Fenster:
-            <input type="number" id="maWindow" value="40" min="1" max="500">
+            <input type="number" id="maWindow" value="40" min="1" max="2000">
         </label>
         <label>
-            &nbsp;
-            <button id="tareBtn">Tare (Nullpunkt setzen)</button>
+            Max. Buffer-Größe (Werte):
+            <input type="number" id="maxBufferInput" value="50000" min="1000" step="1000">
         </label>
-        <div style="margin-left: auto;">
-            <span>Aktueller Offset: <strong id="offsetVal">0.00</strong></span>
+
+        <button id="tareBtn">Tare (Nullpunkt)</button>
+        <button id="pauseBtn" class="btn-pause">Pause (Chart einfrieren)</button>
+        <button id="exportBtn">CSV Export</button>
+
+        <div style="margin-left: auto; text-align: right;" class="stats-panel">
+            <div>Offset: <strong id="offsetVal">0.00</strong></div>
+            <div>Buffer: <strong id="bufferCount">0</strong> / <strong id="bufferMaxDisplay">50000</strong></div>
         </div>
     </div>
 
@@ -89,46 +125,83 @@
     </div>
 </div>
 
-<!-- uPlot JS (sehr leichtgewichtig, < 40kb) -->
+<!-- uPlot JS -->
 <script src="https://jsdelivr.net"></script>
 
 <script>
-    // --- State & Buffer ---
-    // Der Haupt-Buffer speichert die rohen Originaldaten unverändert (Zeiten und Werte separat für uPlot)
+    // --- State & Unendlicher Buffer ---
     const rawBuffer = {
-        times: [],  // Zeitstempel in Sekunden
-        values: []  // Unveränderte Sensorwerte
+        times: [],
+        values: []
     };
 
-    // UI & Konfiguration
+    // Konfigurationen
     let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
+    let maxBufferSize = parseInt(document.getElementById('maxBufferInput').value, 10);
     let tareOffset = 0;
-    const maxBufferSize = 800; // Hält ca. 10 Sekunden an Daten bei 80Hz im Viewport
+    let isPaused = false;
 
-    // --- DOM Elemente ---
+    // --- DOM Elemente & Event Listener ---
     const maInput = document.getElementById('maWindow');
+    const maxBufferInput = document.getElementById('maxBufferInput');
     const tareBtn = document.getElementById('tareBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const exportBtn = document.getElementById('exportBtn');
     const offsetVal = document.getElementById('offsetVal');
+    const bufferCount = document.getElementById('bufferCount');
+    const bufferMaxDisplay = document.getElementById('bufferMaxDisplay');
 
     maInput.addEventListener('input', (e) => {
         const val = parseInt(e.target.value, 10);
         if (val > 0) maWindowSize = val;
     });
 
+    maxBufferInput.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value, 10);
+        if (val >= 1000) {
+            maxBufferSize = val;
+            bufferMaxDisplay.textContent = val;
+        }
+    });
+
     tareBtn.addEventListener('click', () => {
-        // Setzt den aktuellen Durchschnitt der letzten verfügbaren Werte als neuen Offset
         if (rawBuffer.values.length > 0) {
+            // Verwendet den letzten unkorrigierten Wert aus dem Buffer als Nullpunkt
             tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
             offsetVal.textContent = tareOffset.toFixed(2);
             tareBtn.classList.add('active');
         }
     });
 
-    // --- Datenverarbeitung (Render-Time Transformation) ---
-    // Berechnet die Linien für uPlot, ohne den rawBuffer zu modifizieren
-    function prepareChartData() {
-        const t = rawBuffer.times;
-        const vRaw = rawBuffer.values;
+    pauseBtn.addEventListener('click', () => {
+        isPaused = !isPaused;
+        if (isPaused) {
+            pauseBtn.textContent = "Fortsetzen (Live)";
+            pauseBtn.classList.add('paused');
+        } else {
+            pauseBtn.textContent = "Pause (Chart einfrieren)";
+            pauseBtn.classList.remove('paused');
+            // Direkt nach dem Entpausieren Chart auf den neuesten Stand bringen
+            updateChart();
+        }
+    });
+
+    exportBtn.addEventListener('click', () => {
+        exportToCSV();
+    });
+
+    // --- Datenverarbeitung & Transformation (Nur bei Anzeige oder Export) ---
+    function prepareChartData(limitToViewport = false) {
+        let t = rawBuffer.times;
+        let vRaw = rawBuffer.values;
+
+        // Wenn der Chart läuft, limitieren wir die X-Achsen-Ansicht für flüssiges Zeichnen (z.B. letzte 800 Werte ~10 Sek)
+        // Im Hintergrund wächst der rawBuffer trotzdem weiter an.
+        if (limitToViewport && t.length > 800) {
+            const startIdx = t.length - 800;
+            t = t.slice(startIdx);
+            vRaw = vRaw.slice(startIdx);
+        }
 
         const vTared = [];
         const vMA = [];
@@ -136,120 +209,110 @@
         const vBandLower = [];
 
         for (let i = 0; i < vRaw.length; i++) {
-            // 1. Tare anwenden (nur für die Anzeige)
             const currentTared = vRaw[i] - tareOffset;
             vTared.push(currentTared);
 
-            // 2. Moving Average auf Basis der getarten Werte berechnen
             const start = Math.max(0, i - maWindowSize + 1);
             const windowValues = vTared.slice(start, i + 1);
             const sum = windowValues.reduce((a, b) => a + b, 0);
             const avg = sum / windowValues.length;
             vMA.push(avg);
 
-            // 3. Mittlere Streuung (Standardabweichung) im selben Fenster berechnen
             const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
             const stdDev = Math.sqrt(variance);
 
-            // Obere und untere Grenze für die Fläche
             vBandUpper.push(avg + stdDev);
             vBandLower.push(avg - stdDev);
         }
 
-        // uPlot Format: [ [x-Achse], [Linie1], [Linie2], ... ]
-        // Um ein Band (Fläche) zu zeichnen, benötigt uPlot die obere und untere Begrenzung als eigene Serien
         return [t, vTared, vMA, vBandUpper, vBandLower];
     }
 
     // --- uPlot Konfiguration ---
     const opts = {
         title: "",
-        width: 960,
+        width: 1060,
         height: 450,
-        ms: 1, // X-Achse nutzt Millisekunden/Sekunden-Präzision
+        ms: 1,
         series: [
-            {}, // Erste Serie ist immer die X-Achse
-            {
-                label: "Sensor (Tared)",
-                stroke: "#4fc3f7",
-                width: 1,
-            },
-            {
-                label: "Moving Average",
-                stroke: "#ffb74d",
-                width: 2.5,
-            },
-            {
-                label: "Streuung Obere Grenze",
-                stroke: "transparent", // Linie unsichtbar, wir wollen nur die Fläche
-                width: 0,
-            },
-            {
-                label: "Streuung Untere Grenze",
-                stroke: "transparent",
-                width: 0,
-                // Füllt den Raum zwischen Serie 3 (Index 3) und Serie 4 (Index 4)
-                fill: "rgba(255, 183, 77, 0.15)"
-            }
+            {},
+            { label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1 },
+            { label: "Moving Average", stroke: "#ffb74d", width: 2.5 },
+            { label: "Streuung Oberseite", stroke: "transparent", width: 0 },
+            { label: "Streuung Unterseite", stroke: "transparent", width: 0, fill: "rgba(255, 183, 77, 0.12)" }
         ],
-        bands: [
-            {series:} // Definiert, dass zwischen Serie 3 und 4 die Fläche gefüllt wird
-        ],
+        bands: [ {series:} ],
         axes: [
-            {
-                grid: { stroke: "#2d2d2d" },
-                stroke: "#888"
-            },
-            {
-                grid: { stroke: "#2d2d2d" },
-                stroke: "#888"
-            }
+            { grid: { stroke: "#2d2d2d" }, stroke: "#888" },
+            { grid: { stroke: "#2d2d2d" }, stroke: "#888" }
         ],
-        cursor: {
-            drag: { setScale: false } // Zoom deaktivieren für flüssige Echtzeit-Performance
-        }
+        cursor: { drag: { setScale: false } }
     };
 
-    // Chart initialisieren
     const chartDiv = document.getElementById("chart");
     let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
 
-    // --- Daten-Injektion (Echtzeit) ---
+    // --- UI Update Logik ---
+    function updateChart() {
+        if (isPaused) return;
+
+        // Transformiert nur den für das Auge relevanten Zeitausschnitt für uPlot
+        const updatedData = prepareChartData(true);
+        chart.setData(updatedData);
+    }
+
+    // --- Daten-Injektion (Echtzeit-Verarbeitung von SSE) ---
     function handleIncomingData(timestamp, value) {
         rawBuffer.times.push(timestamp);
         rawBuffer.values.push(value);
 
-        // Buffer-Größe beschränken, um Speicherlecks zu verhindern
+        // Greift erst, wenn das vom User gesetzte, sehr große Limit erreicht wird
         if (rawBuffer.times.length > maxBufferSize) {
             rawBuffer.times.shift();
             rawBuffer.values.shift();
         }
 
-        // Daten transformieren und Chart updaten
-        const updatedData = prepareChartData();
-        chart.setData(updatedData);
+        // Counter aktualisieren
+        bufferCount.textContent = rawBuffer.times.length;
+
+        // Chart rendern (uPlot minimiert die DOM-Last automatisch)
+        updateChart();
     }
 
-    // --- SSE Emulator (80 Aufrufe pro Sekunde) ---
+    // --- CSV Export (Nutzt den vollen, unveränderten Buffer) ---
+    function exportToCSV() {
+        if (rawBuffer.times.length === 0) return alert("Keine Daten zum Exportieren vorhanden.");
+
+        let csvContent = "data:text/csv;charset=utf-8,Timestamp_Unix,Raw_Value\n";
+
+        for (let i = 0; i < rawBuffer.times.length; i++) {
+            csvContent += `${rawBuffer.times[i]},${rawBuffer.values[i]}\n`;
+        }
+
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `sensor_data_export_${Math.floor(Date.now()/1000)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // --- SSE Emulator (80 Hz) ---
     function startSimulation() {
         let count = 0;
-        const intervalMs = 1000 / 80; // ~12.5ms für 80Hz
-
+        const intervalMs = 1000 / 80;
         setInterval(() => {
-            const now = Date.now() / 1000; // Unix-Timestamp in Sekunden
-
-            // Generiert eine Sinuskurve überlagert mit zufälligem Rauschen
-            const baseValue = 50 + Math.sin(count * 0.05) * 15;
-            const noise = (Math.random() - 0.5) * 8;
+            const now = Date.now() / 1000;
+            const baseValue = 100 + Math.sin(count * 0.03) * 20;
+            const noise = (Math.random() - 0.5) * 12;
             const fakeSensorValue = baseValue + noise;
-
             handleIncomingData(now, fakeSensorValue);
             count++;
         }, intervalMs);
     }
-
-    // Start des Emulators beim Laden der Seite
     startSimulation();
+
 
     /*
     // --- Echtes SSE Setup (Hier entkommentieren, wenn Backend bereit steht) ---
@@ -260,6 +323,7 @@
         handleIncomingData(now, parseFloat(data.value));
     };
     */
+
 </script>
 </body>
 </html>
