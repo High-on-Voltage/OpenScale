@@ -8,14 +8,11 @@
   License: GNU AGPLv3
   ========================================================================
 -->
-<!--
-https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfC0w8xFu9KJ2wXXj57HxHPpmgvR8lfk0WwBVy7ATr9S6YIlrsJwTnF8M8utQh6a_Whuge7zzM0HxSh13NKOtdX755Ukadup3B5KqEH85HmlAIudnDzNaEzikrCW8yayiJl1YNMXSbwXWZi8FEdzXVbAXcpVnkrYI6G1&csuir=1&udm=50
--->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard - AGPL Production Edition</title>
+    <title>Sensor Data Dashboard - AGPL Stable Edition</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.min.css">
     <style>
         body {
@@ -114,7 +111,7 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
             position: relative;
-            padding-bottom: 50px; /* Secure bottom padding for the legend placement */
+            padding-bottom: 50px;
         }
 
         .navigator-container {
@@ -155,7 +152,6 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         }
         .stats-panel strong { color: #fff; }
 
-        /* Perfected Monospaced Legend layout below the main graph area */
         .u-legend th, .u-legend td {
             font-family: "Courier New", Courier, monospace !important;
             font-weight: bold;
@@ -166,7 +162,6 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         .u-legend .u-series { display: inline-block !important; margin-right: 20px; }
         .u-legend { bottom: 12px !important; top: auto !important; position: absolute !important; left: 20px; width: 95%; }
 
-        /* Disable visibility of legend inner data for the navigator timeline bar */
         #chartNav .u-legend { display: none !important; }
 
         @keyframes blink { 50% { opacity: 0; } }
@@ -206,7 +201,6 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
         </div>
     </div>
 
-    <!-- UI Custom Display Options -->
     <div class="settings-panel">
         <span style="font-weight:bold; color:#aaa; margin-right:10px;">Options:</span>
         <label><input type="checkbox" id="toggleFillArea" checked> Fill Variance Band Area</label>
@@ -223,7 +217,6 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
             </div>
         </div>
 
-        <!-- Sidebar for Manual Vertical Alignment Overrides -->
         <div class="y-controls-sidebar">
             <span style="font-size: 11px; font-weight: bold; text-align: center; color: #aaa;">Y-Axis Setup</span>
             <label style="flex-direction: row; gap: 5px; justify-content: center;">
@@ -244,9 +237,8 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
 <script src="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.iife.min.js"></script>
 
 <script>
-    // Global Raw In-Memory Storage
     const rawBuffer = { times: [], values: [] };
-    let startTimeStamp = null; // Used to track time relative to dashboard launch
+    let startTimeStamp = null;
 
     let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
     let maxBufferSize = parseInt(document.getElementById('maxBufferInput').value, 10);
@@ -280,23 +272,26 @@ https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebs
     tareManual.addEventListener('input', (e) => { tareOffset = parseFloat(e.target.value) || 0; });
     tareBtn.addEventListener('click', () => {
         if (rawBuffer.values.length > 0) {
-tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
-tareManual.value = tareOffset.toFixed(2);
-}
-});
-liveBtn.addEventListener('click', () => {
-isTrackingLive = true;
-liveBtn.classList.add('tracking');
-});
-pauseBtn.addEventListener('click', () => {
-isPaused = !isPaused;
-pauseBtn.textContent = isPaused ? "Resume" : "Pause";
+            tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
+            tareManual.value = tareOffset.toFixed(2);
+        }
+    });
+
+    liveBtn.addEventListener('click', () => {
+        isTrackingLive = true;
+        liveBtn.classList.add('tracking');
+    });
+
+    pauseBtn.addEventListener('click', () => {
+        isPaused = !isPaused;
+        pauseBtn.textContent = isPaused ? "Resume" : "Pause";
 pauseBtn.classList.toggle('paused', isPaused);
 });
 exportBtn.addEventListener('click', exportToCSV);
 toggleFillArea.addEventListener('change', () => {
-if (!chartMain) return;
-chartMain.opts.bands[0].fill = toggleFillArea.checked ? "rgba(255, 183, 77, 0.18)" : "transparent";
+if (!chartMain || !chartMain.bands || chartMain.bands.length === 0) return;
+// Correct uPlot runtime property modification via internal references
+chartMain.bands[0].fill = toggleFillArea.checked ? "rgba(255, 183, 77, 0.18)" : "transparent";
 chartMain.redraw();
 });
 toggleManualY.addEventListener('change', (e) => {
@@ -318,8 +313,6 @@ const span = baseManualYRange / zoomPercent;
 chartMain.setScale("y", { min: centerShift - (span / 2), max: centerShift + (span / 2) });
 }
 }
-// --- Optimized Data Processing Pipeline ---
-// Pure fast array pipeline ensuring uPlot's Canvas engine has instant numeric coordinate feeds
 function prepareChartData() {
 const t = rawBuffer.times;
 const vRaw = rawBuffer.values;
@@ -374,14 +367,13 @@ chartMain.setScale("x", { min: center - timeSpan/2, max: center + timeSpan/2 });
 };
 }
 const legendValueFormatter = (u, val) => val != null ? val.toFixed(2) : "---";
-// --- Main Graph Setup ---
 const mainOpts = {
 width: 1020,
 height: 410,
 ms: 1,
 plugins: [wheelZoomPlugin()],
 scales: {
-x: { time: false }, // Disables full datetime string conversion to save legend horizontal space
+x: { time: false },
 y: { auto: (u, resetScale) => !isManualY }
 },
 series: [
@@ -391,12 +383,11 @@ series: [
 { label: "High Dev", stroke: "rgba(255, 183, 77, 0.4)", width: 1, value: legendValueFormatter },
 { label: "Low Dev", stroke: "rgba(255, 183, 77, 0.4)", width: 1, value: legendValueFormatter }
 ],
-// FIXED: Using variable to safely pass array mapping without web parser breakdowns
-bands: [ { series: [3, 4], fill: "rgba(255, 183, 77, 0.18)", dir: 1 } ],
+// Safely map bands indexing without web markdown renderer interruptions
+bands: [ { series: [3,4], fill: "rgba(255, 183, 77, 0.18)", dir: 1 } ],
 axes: [ { grid: { stroke: "#2d2d2d" }, stroke: "#888" }, { grid: { stroke: "#2d2d2d" }, stroke: "#888" } ],
 cursor: { drag: { setScale: false, x: false, y: false } }
 };
-// --- Timeline Preview Navigator Setup ---
 const navOpts = {
 width: 1020,
 height: 70,
@@ -427,7 +418,6 @@ chartMain.setScale("x", { min: minX, max: maxX });
 let chartMain = new uPlot(mainOpts, [[], [], [], [], []], document.getElementById("chartMain"));
 let chartNav = new uPlot(navOpts, [[], []], document.getElementById("chartNav"));
 function updateChartViewport() {
-// FIXED: Added instance and async DOM safety guard locks protecting initialization stages
 if (!isTrackingLive || rawBuffer.times.length === 0 || !chartNav || !chartNav.boxed) return;
 const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
 const startIdx = Math.max(0, rawBuffer.times.length - liveViewportSize);
@@ -441,7 +431,7 @@ function updateChart() {
 if (isPaused) return;
 const updatedData = prepareChartData();
 chartMain.setData(updatedData, false);
-// FIXED: Mapping full array structure required by the sub-navigator context timeline views
+// Pass the timeline data matrix into the sub preview component context mapping
 chartNav.setData([updatedData[0], updatedData[1]], false);
 if (isTrackingLive) {
 updateChartViewport();
@@ -452,7 +442,6 @@ updateVerticalScale();
 }
 function handleIncomingData(timestamp, value) {
 if (startTimeStamp === null) startTimeStamp = timestamp;
-// Map time axis to elapsed seconds to shorten standard long datetime formats
 const elapsedSeconds = timestamp - startTimeStamp;
 rawBuffer.times.push(elapsedSeconds);
 rawBuffer.values.push(value);
