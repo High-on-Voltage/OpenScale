@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<!-- https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&udm=50&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfCjeMcvrviX88walyVWeY8DRY3RafmkdmwhSaTc_lVP27IRN3CeB2TBjPjl-H1kpP2iEX4e0FLm6y56tqkTfU8nT5I_g3oSRzdn-VQgMkMoVK_iGpz_1i4mfhjgyo-ka4ui7QcbUV1BoxNgPSY1K8j6iPGi-YCHaIQ&csuir=1 -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Data Dashboard</title>
+    <!-- uPlot CSS für minimale Styles und hohe Performance -->
+    <link rel="stylesheet" href="https://jsdelivr.net">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        label {
+            font-weight: bold;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        input, button {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #3d3d3d;
+        }
+        button.active {
+            background: #d32f2f;
+            border-color: #f44336;
+        }
+        .chart-container {
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        /* Anpassung für uPlot Tooltip-Farbe im Dark Mode */
+        .u-legend th { color: #aaa; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Sensor Live-Daten (80 Hz)</h2>
+
+    <div class="controls">
+        <label>
+            Moving Average Fenster:
+            <input type="number" id="maWindow" value="40" min="1" max="500">
+        </label>
+        <label>
+            &nbsp;
+            <button id="tareBtn">Tare (Nullpunkt setzen)</button>
+        </label>
+        <div style="margin-left: auto;">
+            <span>Aktueller Offset: <strong id="offsetVal">0.00</strong></span>
+        </div>
+    </div>
+
+    <div class="chart-container">
+        <div id="chart"></div>
+    </div>
+</div>
+
+<!-- uPlot JS (sehr leichtgewichtig, < 40kb) -->
+<script src="https://jsdelivr.net"></script>
+
+<script>
+    // --- State & Buffer ---
+    // Der Haupt-Buffer speichert die rohen Originaldaten unverändert (Zeiten und Werte separat für uPlot)
+    const rawBuffer = {
+        times: [],  // Zeitstempel in Sekunden
+        values: []  // Unveränderte Sensorwerte
+    };
+
+    // UI & Konfiguration
+    let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
+    let tareOffset = 0;
+    const maxBufferSize = 800; // Hält ca. 10 Sekunden an Daten bei 80Hz im Viewport
+
+    // --- DOM Elemente ---
+    const maInput = document.getElementById('maWindow');
+    const tareBtn = document.getElementById('tareBtn');
+    const offsetVal = document.getElementById('offsetVal');
+
+    maInput.addEventListener('input', (e) => {
+        const val = parseInt(e.target.value, 10);
+        if (val > 0) maWindowSize = val;
+    });
+
+    tareBtn.addEventListener('click', () => {
+        // Setzt den aktuellen Durchschnitt der letzten verfügbaren Werte als neuen Offset
+        if (rawBuffer.values.length > 0) {
+            tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
+            offsetVal.textContent = tareOffset.toFixed(2);
+            tareBtn.classList.add('active');
+        }
+    });
+
+    // --- Datenverarbeitung (Render-Time Transformation) ---
+    // Berechnet die Linien für uPlot, ohne den rawBuffer zu modifizieren
+    function prepareChartData() {
+        const t = rawBuffer.times;
+        const vRaw = rawBuffer.values;
+
+        const vTared = [];
+        const vMA = [];
+        const vBandUpper = [];
+        const vBandLower = [];
+
+        for (let i = 0; i < vRaw.length; i++) {
+            // 1. Tare anwenden (nur für die Anzeige)
+            const currentTared = vRaw[i] - tareOffset;
+            vTared.push(currentTared);
+
+            // 2. Moving Average auf Basis der getarten Werte berechnen
+            const start = Math.max(0, i - maWindowSize + 1);
+            const windowValues = vTared.slice(start, i + 1);
+            const sum = windowValues.reduce((a, b) => a + b, 0);
+            const avg = sum / windowValues.length;
+            vMA.push(avg);
+
+            // 3. Mittlere Streuung (Standardabweichung) im selben Fenster berechnen
+            const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
+            const stdDev = Math.sqrt(variance);
+
+            // Obere und untere Grenze für die Fläche
+            vBandUpper.push(avg + stdDev);
+            vBandLower.push(avg - stdDev);
+        }
+
+        // uPlot Format: [ [x-Achse], [Linie1], [Linie2], ... ]
+        // Um ein Band (Fläche) zu zeichnen, benötigt uPlot die obere und untere Begrenzung als eigene Serien
+        return [t, vTared, vMA, vBandUpper, vBandLower];
+    }
+
+    // --- uPlot Konfiguration ---
+    const opts = {
+        title: "",
+        width: 960,
+        height: 450,
+        ms: 1, // X-Achse nutzt Millisekunden/Sekunden-Präzision
+        series: [
+            {}, // Erste Serie ist immer die X-Achse
+            {
+                label: "Sensor (Tared)",
+                stroke: "#4fc3f7",
+                width: 1,
+            },
+            {
+                label: "Moving Average",
+                stroke: "#ffb74d",
+                width: 2.5,
+            },
+            {
+                label: "Streuung Obere Grenze",
+                stroke: "transparent", // Linie unsichtbar, wir wollen nur die Fläche
+                width: 0,
+            },
+            {
+                label: "Streuung Untere Grenze",
+                stroke: "transparent",
+                width: 0,
+                // Füllt den Raum zwischen Serie 3 (Index 3) und Serie 4 (Index 4)
+                fill: "rgba(255, 183, 77, 0.15)"
+            }
+        ],
+        bands: [
+            {series:} // Definiert, dass zwischen Serie 3 und 4 die Fläche gefüllt wird
+        ],
+        axes: [
+            {
+                grid: { stroke: "#2d2d2d" },
+                stroke: "#888"
+            },
+            {
+                grid: { stroke: "#2d2d2d" },
+                stroke: "#888"
+            }
+        ],
+        cursor: {
+            drag: { setScale: false } // Zoom deaktivieren für flüssige Echtzeit-Performance
+        }
+    };
+
+    // Chart initialisieren
+    const chartDiv = document.getElementById("chart");
+    let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
+
+    // --- Daten-Injektion (Echtzeit) ---
+    function handleIncomingData(timestamp, value) {
+        rawBuffer.times.push(timestamp);
+        rawBuffer.values.push(value);
+
+        // Buffer-Größe beschränken, um Speicherlecks zu verhindern
+        if (rawBuffer.times.length > maxBufferSize) {
+            rawBuffer.times.shift();
+            rawBuffer.values.shift();
+        }
+
+        // Daten transformieren und Chart updaten
+        const updatedData = prepareChartData();
+        chart.setData(updatedData);
+    }
+
+    // --- SSE Emulator (80 Aufrufe pro Sekunde) ---
+    function startSimulation() {
+        let count = 0;
+        const intervalMs = 1000 / 80; // ~12.5ms für 80Hz
+
+        setInterval(() => {
+            const now = Date.now() / 1000; // Unix-Timestamp in Sekunden
+
+            // Generiert eine Sinuskurve überlagert mit zufälligem Rauschen
+            const baseValue = 50 + Math.sin(count * 0.05) * 15;
+            const noise = (Math.random() - 0.5) * 8;
+            const fakeSensorValue = baseValue + noise;
+
+            handleIncomingData(now, fakeSensorValue);
+            count++;
+        }, intervalMs);
+    }
+
+    // Start des Emulators beim Laden der Seite
+    startSimulation();
+
+    /*
+    // --- Echtes SSE Setup (Hier entkommentieren, wenn Backend bereit steht) ---
+    const eventSource = new EventSource("DEIN_SSE_ENDPOINT_URL");
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        const now = Date.now() / 1000;
+        handleIncomingData(now, parseFloat(data.value));
+    };
+    */
+</script>
+</body>
+</html>
