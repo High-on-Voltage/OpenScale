@@ -2,15 +2,14 @@
 <html lang="de">
 
 <!--
-https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfDQlf8ChGte96tYPghmAkeUAiftcAiGYrec8KG0odPzFS5hdSQxEVjYiOzsLA0KkC3I_bU7U21C9yjwPCLhvNVdycuPNu5lth45OBaiDr3c2k9CSBen184Fk7z15nHpkRJcSiM0UlNzqL7y1l1087AkGOlqUzLT6iU&csuir=1&udm=50
+https://www.google.com/search?vsint=&cs=0&atvm=2&sxsrf=AKL5yDhlfkI4lay3dEt2B0ebssy3IxIKsw%3A1793511577997&q=Ich+brauche+eine+HTML-Seite+die+folgendes+kann%3A+Mittels+SSE+wird+ein+Sensorwert+fortlaufend+empfangen%2C+80%2Fs.+Fürs+erste+werden+diese+Werte+durch+Random-Testwerte+ersetzt.+Alle+Werte+werden+in+JS+in+einem+Buffer+gespeichert.+In+einem+Graph+sollen+alle+Werte+angezeigt+werden%2C+dabei%3A+Jeder+einzelne+Wert+als+Liniengraph+sowie+ein+Moving+Average+als+eigene+Linie.+Eine+dritte+Linie+soll+eine+Fläche+darstellen%2C+welche+die+durchschnittliche+Streuung+des+Moving+Averages+darstellt.+Der+Moving+Average+soll+via+Setting+einstellbar+sein.+Ebenso+braucht+es+eine+"Tare"-Funktion+für+den+Sensorwert.+Die+Daten+im+Buffer+selber+sollen+dabei+nie+verändert+werden.+Das+Ganze+soll+auf+Open-Source+JS-Bibliotheken+basieren+und+dabei+möglichst+leichtgewichtig+sein.&mstk=AUtExfB-GxpOzdfsgjt-2ZH5Xh2_VBqU1ZzqqUmW1FOQG8cINdy9XR9b_HdgeVxQLSc0RX-3BATs6LSxsq0nPFabmiTtl_ovRDTjuD-SFUFlxrrqI392iZ85x6962AaXssEDayUKrYyeH67XDT9HsOcqRBdw4beQsEzXEoRn&csuir=1&udm=50
 
-Wieder Fixe notwendig, lol.
-
+dito
 -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard - Scroll & History Edition</title>
+    <title>Sensor Data Dashboard - Professional Edition</title>
     <!-- uPlot CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.min.css">
     <style>
@@ -19,7 +18,6 @@ Wieder Fixe notwendig, lol.
             background-color: #121212;
             color: #e0e0e0;
             margin: 20px;
-            user-select: none;
         }
         .container {
             max-width: 1100px;
@@ -33,18 +31,23 @@ Wieder Fixe notwendig, lol.
             background: #1e1e1e;
             padding: 15px;
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
+        .group {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
         label {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: bold;
             display: flex;
             flex-direction: column;
             gap: 5px;
             color: #aaa;
         }
-        input, button {
+        input[type="number"], button {
             background: #2d2d2d;
             border: 1px solid #444;
             color: #fff;
@@ -52,7 +55,7 @@ Wieder Fixe notwendig, lol.
             border-radius: 4px;
             font-size: 14px;
         }
-        input:focus {
+        input[type="number"]:focus {
             outline: none;
             border-color: #4fc3f7;
         }
@@ -64,43 +67,75 @@ Wieder Fixe notwendig, lol.
         button:hover {
             background: #3d3d3d;
         }
-        button.active {
-            background: #d32f2f;
-            border-color: #f44336;
+        .btn-live { background: #2e7d32; border-color: #4caf50; }
+        .btn-live.tracking { box-shadow: 0 0 10px #4caf50; position: relative; }
+        .btn-live.tracking::after { content: ' ●'; color: #2ff73c; animation: blink 1s infinite; }
+        .btn-pause { background: #0288d1; border-color: #03a9f4; }
+        .btn-pause.paused { background: #c62828; border-color: #f44336; }
+
+        .toggles {
+            display: flex;
+            gap: 15px;
+            background: #1e1e1e;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 13px;
         }
-        .btn-pause {
-            background: #0288d1;
-            border-color: #03a9f4;
+        .toggles label {
+            flex-direction: row;
+            align-items: center;
+            cursor: pointer;
+            color: #fff;
         }
-        .btn-pause.paused {
-            background: #388e3c;
-            border-color: #4caf50;
-        }
+        .toggles input { cursor: pointer; margin-right: 6px; }
+
         .chart-container {
             background: #1e1e1e;
             padding: 15px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            position: relative;
         }
-        .stats-panel {
-            display: flex;
-            gap: 20px;
+
+        /* Lokaler History-Timeline Scrollbalken */
+        .timeline-slider-container {
             margin-top: 15px;
-            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .timeline-slider {
+            flex-grow: 1;
+            background: #2d2d2d;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 8px;
+            border-radius: 4px;
+            outline: none;
+        }
+        .timeline-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #4fc3f7;
+            cursor: pointer;
+        }
+
+        .stats-panel {
+            margin-left: auto;
+            text-align: right;
+            font-size: 13px;
             color: #888;
+            display: flex;
+            gap: 15px;
         }
-        .stats-panel strong {
-            color: #fff;
-        }
-        .hint {
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }
-        /* Dark-Mode Overrides für die integrierte uPlot-Legende */
+        .stats-panel strong { color: #fff; }
         .u-legend th { color: #aaa; }
-        .u-legend { bottom: -30px !important; top: auto !important; }
+        .u-legend { bottom: -35px !important; top: auto !important; }
+
+        @keyframes blink { 50% { opacity: 0; } }
     </style>
 </head>
 <body>
@@ -108,6 +143,7 @@ Wieder Fixe notwendig, lol.
 <div class="container">
     <h2>Sensor Live-Daten (80 Hz)</h2>
 
+    <!-- Controls -->
     <div class="controls">
         <label>
             Moving Average Fenster:
@@ -118,92 +154,128 @@ Wieder Fixe notwendig, lol.
             <input type="number" id="maxBufferInput" value="100000" min="5000" step="5000">
         </label>
 
-        <button id="tareBtn">Tare (Nullpunkt)</button>
-        <button id="pauseBtn" class="btn-pause">Pause (Chart einfrieren)</button>
-        <button id="exportBtn">CSV Export</button>
+        <div class="group">
+            <label>
+                Tare-Wert (Offset):
+                <input type="number" id="tareManual" value="0.00" step="0.1">
+            </label>
+            <button id="tareBtn">Auto-Tare</button>
+        </div>
 
-        <div style="margin-left: auto; text-align: right;" class="stats-panel">
-            <div>Offset: <strong id="offsetVal">0.00</strong></div>
+        <div class="group">
+            <button id="liveBtn" class="btn-live tracking">Live verfolgen</button>
+            <button id="pauseBtn" class="btn-pause">Pause</button>
+            <button id="exportBtn">CSV Export</button>
+        </div>
+
+        <div class="stats-panel">
             <div>Buffer: <strong id="bufferCount">0</strong> / <strong id="bufferMaxDisplay">100000</strong></div>
         </div>
     </div>
 
+    <!-- Toggles für Graphen-Sichtbarkeit -->
+    <div class="toggles">
+        <span style="font-weight:bold; color:#aaa; margin-right:10px;">Sichtbarkeit:</span>
+        <label><input type="checkbox" id="toggleRaw" checked> Sensorwert (Blau)</label>
+        <label><input type="checkbox" id="toggleMA" checked> Moving Average (Orange)</label>
+        <label><input type="checkbox" id="toggleBand" checked> Streuungsband (Fläche)</label>
+    </div>
+
+    <!-- Chart -->
     <div class="chart-container">
         <div id="chart"></div>
+        <div class="timeline-slider-container">
+            <span style="font-size:12px; color:#aaa;">Historie scrollen:</span>
+            <input type="range" id="historyScroll" class="timeline-slider" min="0" max="100" value="100" disabled>
+        </div>
     </div>
-    <p class="hint">💡 <strong>Bedienung:</strong> Ziehe mit gedrückter Maustaste im Chart nach links/rechts, um in der Historie zu scrollen. Das Scrollen unterbricht das automatische Nach-Vorne-Springen im Live-Betrieb.</p>
 </div>
 
-<!-- uPlot JS (Vollständiger, korrekter CDN Link) -->
+<!-- uPlot JS -->
 <script src="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.iife.min.js"></script>
 
 <script>
-    // --- State & Unveränderter Buffer ---
-    const rawBuffer = {
-        times: [],  // Unix-Zeitstempel in Sekunden
-        values: []  // Unveränderte Rohwerte vom Sensor
-    };
+    // --- Globaler Speicherbuffer (Unverändert) ---
+    const rawBuffer = { times: [], values: [] };
 
-    // Konfigurationen
+    // Konfigurations-State
     let maWindowSize = parseInt(document.getElementById('maWindow').value, 10);
     let maxBufferSize = parseInt(document.getElementById('maxBufferInput').value, 10);
     let tareOffset = 0;
 
-    // UI- & Interaktions-Flags
+    // Navigations- & Steuerungs-State
     let isPaused = false;
-    let isUserScrolling = false;
-    let userXRange = null; // Speichert den manuell verschobenen Sichtbereich
+    let isTrackingLive = true;
+    let liveViewportSize = 800; // Breite des Sichtbereichs (~10 Sekunden bei 80Hz)
 
-    // --- DOM Elemente & Event Listener ---
+    // --- DOM Referenzen ---
     const maInput = document.getElementById('maWindow');
     const maxBufferInput = document.getElementById('maxBufferInput');
+    const tareManual = document.getElementById('tareManual');
     const tareBtn = document.getElementById('tareBtn');
+    const liveBtn = document.getElementById('liveBtn');
     const pauseBtn = document.getElementById('pauseBtn');
     const exportBtn = document.getElementById('exportBtn');
-    const offsetVal = document.getElementById('offsetVal');
     const bufferCount = document.getElementById('bufferCount');
     const bufferMaxDisplay = document.getElementById('bufferMaxDisplay');
+    const historyScroll = document.getElementById('historyScroll');
 
-    maInput.addEventListener('input', (e) => {
-        const val = parseInt(e.target.value, 10);
-        if (val > 0) maWindowSize = val;
-    });
+    const toggleRaw = document.getElementById('toggleRaw');
+    const toggleMA = document.getElementById('toggleMA');
+    const toggleBand = document.getElementById('toggleBand');
 
-    maxBufferInput.addEventListener('input', (e) => {
-        const val = parseInt(e.target.value, 10);
-        if (val >= 5000) {
-            maxBufferSize = val;
-            bufferMaxDisplay.textContent = val;
-        }
-    });
+    // --- Event Listener ---
+    maInput.addEventListener('input', (e) => { const val = parseInt(e.target.value, 10); if (val > 0) maWindowSize = val; });
+    maxBufferInput.addEventListener('input', (e) => { const val = parseInt(e.target.value, 10); if (val >= 5000) { maxBufferSize = val; bufferMaxDisplay.textContent = val; }});
 
+    // Manuelles & Automatisches Tare
+    tareManual.addEventListener('input', (e) => { tareOffset = parseFloat(e.target.value) || 0; });
     tareBtn.addEventListener('click', () => {
         if (rawBuffer.values.length > 0) {
             tareOffset = rawBuffer.values[rawBuffer.values.length - 1];
-            offsetVal.textContent = tareOffset.toFixed(2);
-            tareBtn.classList.add('active');
+            tareManual.value = tareOffset.toFixed(2);
         }
+    });
+
+    // Viewport-Steuerung
+    liveBtn.addEventListener('click', () => {
+        isTrackingLive = true;
+        liveBtn.classList.add('tracking');
+        historyScroll.value = historyScroll.max;
     });
 
     pauseBtn.addEventListener('click', () => {
         isPaused = !isPaused;
-        if (isPaused) {
-            pauseBtn.textContent = "Fortsetzen (Live)";
-            pauseBtn.classList.add('paused');
-        } else {
-            pauseBtn.textContent = "Pause (Chart einfrieren)";
-            pauseBtn.classList.remove('paused');
-            isUserScrolling = false; // Reset des Scroll-Status beim Fortsetzen
-            userXRange = null;
-            updateChart();
-        }
+        pauseBtn.textContent = isPaused ? "Fortsetzen" : "Pause";
+        pauseBtn.classList.toggle('paused', isPaused);
     });
 
-    exportBtn.addEventListener('click', () => {
-        exportToCSV();
+    exportBtn.addEventListener('click', exportToCSV);
+
+    // Graphen-Sichtbarkeits-Toggles
+    toggleRaw.addEventListener('change', () => { chart.setSeries(1, { show: toggleRaw.checked }); });
+    toggleMA.addEventListener('change', () => { chart.setSeries(2, { show: toggleMA.checked }); });
+    toggleBand.addEventListener('change', () => {
+        chart.setSeries(3, { show: toggleBand.checked });
+        chart.setSeries(4, { show: toggleBand.checked });
     });
 
-    // --- Datenverarbeitung & Transformation (On-the-Fly beim Rendern) ---
+    // --- Lokaler History-Scrollbalken ---
+    historyScroll.addEventListener('input', (e) => {
+        if (rawBuffer.times.length <= liveViewportSize) return;
+        isTrackingLive = false;
+        liveBtn.classList.remove('tracking');
+
+        const val = parseInt(e.target.value, 10);
+        const maxScrollIdx = rawBuffer.times.length - liveViewportSize;
+        const targetIdx = Math.round((val / 100) * maxScrollIdx);
+
+        const startX = rawBuffer.times[targetIdx];
+        const endX = rawBuffer.times[targetIdx + liveViewportSize - 1];
+        chart.setScale("x", { min: startX, max: endX });
+    });
+
+    // --- Data Processing Pipeline (On-the-Fly) ---
     function prepareChartData() {
         const t = rawBuffer.times;
         const vRaw = rawBuffer.values;
@@ -214,153 +286,135 @@ Wieder Fixe notwendig, lol.
         const vBandLower = [];
 
         for (let i = 0; i < vRaw.length; i++) {
-            // 1. Tare-Verschiebung anwenden
-            const currentTared = vRaw[i] - tareOffset;
-            vTared.push(currentTared);
-
-            // 2. Moving Average im aktiven Schiebefenster berechnen
-            const start = Math.max(0, i - maWindowSize + 1);
-            const windowValues = vTared.slice(start, i + 1);
-            const sum = windowValues.reduce((a, b) => a + b, 0);
-            const avg = sum / windowValues.length;
-            vMA.push(avg);
-
-            // 3. Mittlere Streuung (Standardabweichung) berechnen
-            const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
-            const stdDev = Math.sqrt(variance);
-
-            vBandUpper.push(avg + stdDev);
-            vBandLower.push(avg - stdDev);
-        }
-
-        return [t, vTared, vMA, vBandUpper, vBandLower];
-    }
-
-    // --- uPlot Konfiguration ---
-    // Plugin-Logik für freies Verschieben (Pan/Scroll) über die Achsen
-    function dragPanPlugin() {
-        return {
-            hooks: {
-                init: u => {
-                    let plotBgc = u.root.querySelector(".u-over");
-
-                    let startX;
-                    let minX, maxX;
-
-                    plotBgc.addEventListener("mousedown", e => {
-                        if (e.button !== 0) return; // Nur linke Maustaste
-                        isUserScrolling = true;
-
-                        startX = e.clientX;
-                        minX = u.valToPos(u.scales.x.min, "x");
-                        maxX = u.valToPos(u.scales.x.max, "x");
-
-                        function onMouseMove(e) {
-                            let diffX = e.clientX - startX;
-
-                            let newMinX = u.posToVal(minX - diffX, "x");
-                            let newMaxX = u.posToVal(maxX - diffX, "x");
-
-                            userXRange = [newMinX, newMaxX];
-
-                            u.setScale("x", { min: newMinX, max: newMaxX });
-                        }
-
-                        function onMouseUp() {
-                            document.removeEventListener("mousemove", onMouseMove);
-                            document.removeEventListener("mouseup", onMouseUp);
-                        }
-
-                        document.addEventListener("mousemove", onMouseMove);
-                        document.addEventListener("mouseup", onMouseUp);
-                    });
-                }
-            }
-        };
-    }
-
-    const opts = {
-        title: "",
-        width: 1060,
-        height: 450,
-        ms: 1,
-        plugins: [dragPanPlugin()],
-        series: [
-            {},
-            { label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1 },
-            { label: "Moving Average", stroke: "#ffb74d", width: 2.5 },
-            { label: "Streuung Oberseite", stroke: "transparent", width: 0 },
-            { label: "Streuung Unterseite", stroke: "transparent", width: 0, fill: "rgba(255, 183, 77, 0.12)" }
-        ],
-bands: [ {series: [3, 4]} ],
+const currentTared = vRaw[i] - tareOffset;
+vTared.push(currentTared);
+const start = Math.max(0, i - maWindowSize + 1);
+const windowValues = vTared.slice(start, i + 1);
+const sum = windowValues.reduce((a, b) => a + b, 0);
+const avg = sum / windowValues.length;
+vMA.push(avg);
+// Varianz & Standardabweichung für das Streuungsband
+const variance = windowValues.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / windowValues.length;
+const stdDev = Math.sqrt(variance);
+vBandUpper.push(avg + stdDev);
+vBandLower.push(avg - stdDev);
+}
+return [t, vTared, vMA, vBandUpper, vBandLower];
+}
+// --- Mausrad Zoom-Plugin ---
+function wheelZoomPlugin() {
+return {
+hooks: {
+init: u => {
+u.root.querySelector(".u-over").addEventListener("wheel", e => {
+e.preventDefault();
+// Zoom-Faktor bestimmen basierend auf Scrollrichtung
+let factor = e.deltaY < 0 ? 0.85 : 1.15;
+liveViewportSize = Math.max(80, Math.min(20000, Math.round(liveViewportSize * factor)));
+if (isTrackingLive) {
+// Im Livemodus einfach die Zoomstufe anpassen
+updateChartViewport();
+} else {
+// Im historischen Modus zentriert um die aktuelle Achsenmitte zoomen
+let currentMin = u.scales.x.min;
+let currentMax = u.scales.x.max;
+let center = (currentMin + currentMax) / 2;
+// Ungefähre Zeitdistanz berechnen
+let timeSpan = (currentMax - currentMin) * factor;
+chart.setScale("x", { min: center - timeSpan/2, max: center + timeSpan/2 });
+}
+});
+}
+}
+};
+}
+// --- uPlot Konfiguration ---
+const opts = {
+width: 1060,
+height: 430,
+ms: 1,
+plugins: [wheelZoomPlugin()],
+series: [
+{}, // X-Achse
+{ label: "Sensor (Tared)", stroke: "#4fc3f7", width: 1, show: true },
+{ label: "Moving Average", stroke: "#ffb74d", width: 2.5, show: true },
+{ label: "Streuung Oben", stroke: "transparent", width: 0, show: true },
+{ label: "Streuung Unten", stroke: "transparent", width: 0, show: true }
+],
+// BUGFIX: Füllung der Flächen explizit hier definieren, nicht im Series-Array
+bands: [
+{ series: [3, 4], fill: "rgba(255, 183, 77, 0.18)", dir: 1 }
+],
 axes: [
 { grid: { stroke: "#2d2d2d" }, stroke: "#888" },
 { grid: { stroke: "#2d2d2d" }, stroke: "#888" }
 ],
-cursor: {
-drag: { setScale: false, x: false, y: false } // Deaktiviert uPlots Standard-Zoom-Box für unser Custom-Panning
-}
+cursor: { drag: { setScale: false, x: false, y: false } }
 };
+
 const chartDiv = document.getElementById("chart");
 let chart = new uPlot(opts, [[], [], [], [], []], chartDiv);
-// --- UI Update Logik ---
+// --- Viewport Steuerung ---
+function updateChartViewport() {
+if (!isTrackingLive || rawBuffer.times.length === 0) return;
+const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
+const startIdx = Math.max(0, rawBuffer.times.length - liveViewportSize);
+const startTime = rawBuffer.times[startIdx];
+chart.setScale("x", { min: startTime, max: lastTime });
+}
 function updateChart() {
 if (isPaused) return;
 const updatedData = prepareChartData();
-chart.setData(updatedData, false); // Update Daten ohne Achsen-Reset
-// Wenn der Nutzer nicht händisch scrollt, folgt der Viewport automatisch den neuesten 800 Werten (~10 Sek.)
-if (!isUserScrolling && rawBuffer.times.length > 0) {
-const lastTime = rawBuffer.times[rawBuffer.times.length - 1];
-const startTime = rawBuffer.times[Math.max(0, rawBuffer.times.length - 800)];
-chart.setScale("x", { min: startTime, max: lastTime });
-} else if (userXRange) {
-// Behalte den vom User gescrollten Bildausschnitt bei
-chart.setScale("x", { min: userXRange[0], max: userXRange[1] });
+chart.setData(updatedData, false); // Aktualisiert Datenpunkte ressourcenschonend
+if (isTrackingLive) {
+updateChartViewport();
 }
 }
-// --- Daten-Injektion (Echtzeit-Verarbeitung von SSE) ---
+// --- Daten-Schnittstelle (SSE-Callback) ---
 function handleIncomingData(timestamp, value) {
 rawBuffer.times.push(timestamp);
 rawBuffer.values.push(value);
-// Greift erst bei Erreichen des benutzerdefinierten Limits
 if (rawBuffer.times.length > maxBufferSize) {
 rawBuffer.times.shift();
 rawBuffer.values.shift();
-// Optional: User-X-Range korrigieren, falls der älteste Wert herausfällt
 }
+// Steuerelemente updaten
 bufferCount.textContent = rawBuffer.times.length;
+if (rawBuffer.times.length > liveViewportSize) {
+historyScroll.disabled = false;
+if (isTrackingLive) {
+historyScroll.value = historyScroll.max;
+}
+}
 updateChart();
 }
-// --- CSV Export (Greift auf den vollständigen, unveränderten Rohdaten-Buffer zu) ---
+// --- Export ---
 function exportToCSV() {
-    if (rawBuffer.times.length === 0) return alert("Keine Daten zum Exportieren vorhanden.");
-    let csvContent = "data:text/csv;charset=utf-8,Timestamp_Unix,Raw_Value\n";
-    for (let i = 0; i < rawBuffer.times.length; i++) {
-        // csvContent += ${rawBuffer.times[i]},${rawBuffer.values[i]}\n;
-    }
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-//link.setAttribute("download", sensor_data_raw_${Math.floor(Date.now()/1000)}.csv);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+if (rawBuffer.times.length === 0) return alert("Keine Daten vorhanden.");
+let csv = "Timestamp_Unix,Raw_Value\n";
+for (let i = 0; i < rawBuffer.times.length; i++) {
+//csv += ${rawBuffer.times[i]},${rawBuffer.values[i]}\n;
 }
-// --- SSE Emulator (80 Hz) ---
+const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+const link = document.createElement("a");
+link.href = URL.createObjectURL(blob);
+//link.setAttribute("download", sensor_data_${Math.floor(Date.now()/1000)}.csv);
+document.body.appendChild(link);
+link.click();
+document.body.removeChild(link);
+}
+// --- SSE-Simulator (80 Hz) ---
 function startSimulation() {
 let count = 0;
-const intervalMs = 1000 / 80;
 setInterval(() => {
 const now = Date.now() / 1000;
-const baseValue = 100 + Math.sin(count * 0.03) * 20;
-const noise = (Math.random() - 0.5) * 12;
-const fakeSensorValue = baseValue + noise;
-handleIncomingData(now, fakeSensorValue);
+const base = 120 + Math.sin(count * 0.02) * 25;
+const noise = (Math.random() - 0.5) * 15;
+handleIncomingData(now, base + noise);
 count++;
-}, intervalMs);
+}, 1000 / 80);
 }
 startSimulation();
-
 
     /*
     // --- Echtes SSE Setup (Hier entkommentieren, wenn Backend bereit steht) ---
@@ -371,7 +425,6 @@ startSimulation();
         handleIncomingData(now, parseFloat(data.value));
     };
     */
-
 </script>
 </body>
 </html>
