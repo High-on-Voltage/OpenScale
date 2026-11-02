@@ -18,8 +18,8 @@
         MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
         GNU Affero General Public License for more details.
     -->
-    <!-- uPlot CSS (Embedded) -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.min.css">
+    <!-- uPlot CSS (Embedded via latest CDN) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
     <style>
         @charset "utf-8";
         .uplot {
@@ -40,10 +40,8 @@
         .u-axis text {
             fill: #cbd5e1;
         }
-        /* Enable and style built-in uPlot legend */
+        /* Enable and style built-in uPlot legend supporting series toggling via click */
         .u-legend {
-			font-family: "Courier New", Courier, monospace !important;
-            font-weight: bold;
             text-align: left;
             margin: 4px 0 0 0;
             padding: 0;
@@ -53,6 +51,10 @@
         .u-legend tr {
             margin-right: 12px;
             display: inline-block;
+            cursor: pointer;
+        }
+        .u-legend tr.disabled {
+            opacity: 0.4;
         }
         .u-legend th {
             font-weight: normal;
@@ -167,16 +169,16 @@
         /* Flex containers for charts to prevent overlap and fill vertical space cleanly */
         .chart-wrapper-main {
             flex: 3;
-            min-height: 120px;
+            min-height: 180px;
             position: relative;
-            buttom: 30px;
+            bottom: 50px;
             display: flex;
             flex-direction: column;
         }
         .chart-wrapper-nav {
             flex: 1;
-            min-height: 60px;
-            max-height: 90px;
+            min-height: 30px;
+            max-height: 60px;
             position: relative;
             display: flex;
             flex-direction: column;
@@ -186,7 +188,12 @@
         #main-chart, #nav-chart {
             width: 100% !important;
             height: 100% !important;
+            //height: 800px;
         }
+        #nav-chart {
+			//width: 100% !important;
+			//height: 100% !important;
+		}
     </style>
 </head>
 <body>
@@ -242,8 +249,8 @@
         </div>
     </div>
 
-    <!-- uPlot Library Inclusion -->
-    <script src="https://cdn.jsdelivr.net/npm/uplot/dist/uPlot.iife.min.js"></script>
+    <!-- uPlot Library Inclusion (Latest CDN v1.6.31) -->
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 
     <script>
         /**
@@ -258,6 +265,7 @@
             tareOffset: 0,
             isPaused: false,
             isLive: true,
+            liveWindowSpan: 10,
             manualY: false,
             yMin: -50,
             yMax: 50
@@ -361,6 +369,64 @@
         let mainPlot = null;
         let navPlot = null;
 
+        // Custom plugin for wheel zoom on X-axis
+        function wheelZoomPlugin() {
+            return {
+                hooks: {
+                    ready: (u) => {
+                        let over = u.over;
+                        let rect = over.getBoundingClientRect();
+
+                        over.addEventListener("wheel", e => {
+                            e.preventDefault();
+                            let left = e.clientX - rect.left;
+                            let cx = u.posToVal(left, 'x');
+                            let xMin = u.scales.x.min;
+                            let xMax = u.scales.x.max;
+                            let xrange = xMax - xMin;
+
+                            let factor = e.deltaY < 0 ? 0.9 : 1.1;
+                            let newRange = xrange * factor;
+
+                            let minX = cx - (cx - xMin) * factor;
+                            let maxX = minX + newRange;
+
+                            if (state.isLive) {
+                                state.liveWindowSpan = maxX - minX;
+                            }
+
+                            u.setScale('x', { min: minX, max: maxX });
+                        });
+                    }
+                }
+            };
+        }
+
+        // Plugin to enable clicking on built-in legend items to toggle series visibility via persistent root delegation
+        function legendTogglePlugin() {
+            return {
+                hooks: {
+                    ready: (u) => {
+                        // Attach listener to persistent u.root container so it survives setData DOM re-renders
+                        u.root.addEventListener("click", (e) => {
+                            let tr = e.target.closest(".u-legend tr");
+                            if (!tr) return;
+                            let legendEl = u.root.querySelector(".u-legend");
+                            if (!legendEl) return;
+                            let rows = Array.from(legendEl.querySelectorAll("tr"));
+                            let idx = rows.indexOf(tr);
+                            if (idx > 0) { // idx 0 is Time series
+                                const seriesIdx = idx;
+                                const show = u.series[seriesIdx].show;
+                                u.setSeries(seriesIdx, { show: !show });
+                                tr.classList.toggle("disabled", show);
+                            }
+                        });
+                    }
+                }
+            };
+        }
+
         function initCharts() {
             const [t, raw, ma, upper, lower] = computeDerivedData();
             const mainContainer = document.getElementById('main-chart');
@@ -370,24 +436,31 @@
                 title: "Real-Time Sensor Feed (80 Hz)",
                 width: mainContainer.clientWidth || 800,
                 height: mainContainer.clientHeight || 150,
-				ms: 1,
                 cursor: {
                     show: true,
                 },
+                select: {
+                    show: true,
+                    over: true,
+                    fill: "rgba(59, 130, 246, 0.2)"
+                },
                 scales: {
-                    x: { time: false },
+                    x: { time: true },
                     y: {
                         range: (u, min, max) => {
                             if (state.manualY) {
                                 return [state.yMin, state.yMax];
                             }
-                            return [min - 1, max + 1];
+                            let absMin = Math.min(0, min);
+                            let absMax = Math.max(0, max);
+                            let padding = (absMax - absMin) * 0.1 || 1;
+                            return [absMin - padding, absMax + padding];
                         }
                     }
                 },
                 series: [
                     {
-                        label: "Time",
+                        //label: "Time",
                         value: (u, val) => val != null ? val.toFixed(4) + 's' : '-'
                     },
                     {
@@ -406,23 +479,56 @@
                         label: "Spread Upper",
                         stroke: "transparent",
                         fill: "rgba(168, 85, 247, 0.15)",
-                        width: 0,
+                        width: 1,
                         value: (u, val) => val != null ? val.toFixed(4) : '-'
                     },
                     {
                         label: "Spread Lower",
                         stroke: "transparent",
                         fill: "rgba(168, 85, 247, 0.15)",
-                        width: 0,
-                        bands: [{u: 3, fill: "rgba(168, 85, 247, 0.15)"}],
+                        width: 1,
+                        bands: [{u: 4, fill: "rgba(168, 85, 247, 0.15)"}],
                         value: (u, val) => val != null ? val.toFixed(4) : '-'
                     }
-                ]
+                ],
+                plugins: [wheelZoomPlugin()],
+                hooks: {
+                    setSelect: [
+                        (u) => {
+                            const minX = u.posToVal(u.select.left, 'x');
+                            const maxX = u.posToVal(u.select.left + u.select.width, 'x');
+                            if (maxX > minX) {
+                                state.isLive = false;
+                                state.isPaused = true;
+                                elLive.style.background = "#475569";
+                                elPause.textContent = "Resume UI";
+                                elPause.style.background = "#eab308";
+                                u.setScale('x', { min: minX, max: maxX });
+                            }
+                        }
+                    ],
+                    setScale: [
+                        (u, key) => {
+                            if (key === 'x' && navPlot) {
+                                const minX = u.scales.x.min;
+                                const maxX = u.scales.x.max;
+                                const left = navPlot.valToPos(minX, 'x');
+                                const right = navPlot.valToPos(maxX, 'x');
+                                navPlot.setSelect({
+                                    left: left,
+                                    width: right - left,
+                                    top: 0,
+                                    height: navPlot.bbox.height
+                                }, false);
+                            }
+                        }
+                    ]
+                }
             };
 
             mainPlot = new uPlot(mainOpts, [t, raw, ma, upper, lower], mainContainer);
 
-            // Navigator Mini-Chart with selection hook to control main viewport
+            // Navigator Mini-Chart (Always shows full data range, highlights main viewport via selection box)
             const navOpts = {
                 width: navContainer.clientWidth || 800,
                 height: navContainer.clientHeight || 60,
@@ -430,10 +536,11 @@
                 series: [{}, { stroke: "#64748b", width: 1 }],
                 axes: [{ show: false }, { show: false }],
                 cursor: { show: false },
+                legend: { show: false },
                 select: {
                     show: true,
                     over: true,
-                    fill: "rgba(59, 130, 246, 0.2)"
+                    fill: "rgba(59, 130, 246, 0.3)"
                 },
                 hooks: {
                     setSelect: [
@@ -442,7 +549,10 @@
                             const maxX = u.posToVal(u.select.left + u.select.width, 'x');
                             if (maxX > minX) {
                                 state.isLive = false;
+                                state.isPaused = true;
                                 elLive.style.background = "#475569";
+                                elPause.textContent = "Resume UI";
+                                elPause.style.background = "#eab308";
                                 mainPlot.setScale('x', { min: minX, max: maxX });
                             }
                         }
@@ -457,13 +567,24 @@
             if (!mainPlot || !navPlot) return;
             const data = computeDerivedData();
 
-            mainPlot.setData(data);
-            navPlot.setData([data[0], data[1]]);
+            navPlot.setData([data[0], data[1]], true);
+            mainPlot.setData(data, false);
 
             if (state.isLive && data[0].length > 0) {
                 const maxT = data[0][data[0].length - 1];
-                const minT = Math.max(0, maxT - 10);
+                const minT = Math.max(0, maxT - state.liveWindowSpan);
                 mainPlot.setScale('x', { min: minT, max: maxT });
+            } else {
+                const minX = mainPlot.scales.x.min;
+                const maxX = mainPlot.scales.x.max;
+                const left = navPlot.valToPos(minX, 'x');
+                const right = navPlot.valToPos(maxX, 'x');
+                navPlot.setSelect({
+                    left: left,
+                    width: right - left,
+                    top: 0,
+                    height: navPlot.bbox.height
+                }, false);
             }
 
             if (state.manualY) {
@@ -493,6 +614,9 @@
 
         elLive.addEventListener('click', () => {
             state.isLive = true;
+            state.isPaused = false;
+            elPause.textContent = "Pause UI";
+            elPause.style.background = "var(--accent-color)";
             elLive.style.background = "var(--accent-color)";
         });
 
@@ -560,29 +684,23 @@
             }
         });
 
-        let lastSimSample = 1000;
         window.addEventListener('DOMContentLoaded', () => {
             statLimit.textContent = state.maxBufferSize;
             let simTime = 0;
-            let newSimSample = 0;
-
+            let lastVal = 0;
             for (let i = 0; i < 200; i++) {
                 simTime += 0.0125;
-                // Math.sin(simTime * 2) * 20 +
-                newSimSample = ((Math.random() - 0.5) * 10) + lastSimSample;
-                pushSample(simTime, newSimSample);
-                lastSimSample = newSimSample;
+                lastVal += (Math.random() - 0.49) * 2.5;
+                pushSample(simTime, lastVal);
             }
             initCharts();
 
             let runningTime = simTime;
             setInterval(() => {
                 runningTime += 0.0125;
-                //Math.sin(simTime * 2) * 2 +
-                const simulatedVal = (Math.sin(runningTime*0.2) * 2 + (Math.random() - 0.5) * 15) + lastSimSample;
-                lastSimSample = simulatedVal;
+                lastVal += (Math.random() - 0.49) * 2.5;
 
-                pushSample(runningTime, simulatedVal);
+                pushSample(runningTime, lastVal);
 
                 if (!state.isPaused) {
                     updateVisualizations();
