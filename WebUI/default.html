@@ -166,19 +166,18 @@
             min-height: 0;
         }
 
-        /* Flex containers for charts to prevent overlap and fill vertical space cleanly */
+        /* Flex containers for charts to prevent overflow and fill vertical space cleanly */
         .chart-wrapper-main {
             flex: 3;
-            min-height: 180px;
+            min-height: 0;
             position: relative;
-            bottom: 50px;
             display: flex;
             flex-direction: column;
         }
         .chart-wrapper-nav {
             flex: 1;
-            min-height: 30px;
-            max-height: 60px;
+            min-height: 50px;
+            max-height: 80px;
             position: relative;
             display: flex;
             flex-direction: column;
@@ -188,12 +187,7 @@
         #main-chart, #nav-chart {
             width: 100% !important;
             height: 100% !important;
-            //height: 800px;
         }
-        #nav-chart {
-			//width: 100% !important;
-			//height: 100% !important;
-		}
     </style>
 </head>
 <body>
@@ -221,15 +215,19 @@
         </div>
         <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
         <div class="control-group">
+            <label><input type="checkbox" id="chk-fill-zero" style="margin-bottom:2px;"> Fill 0 to Lower Spread</label>
+        </div>
+        <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
+        <div class="control-group">
             <label><input type="checkbox" id="chk-manual-y" style="margin-bottom:2px;"> Manual Y-Axis</label>
         </div>
         <div class="control-group">
-            <label>Y-Min <input type="range" id="rng-ymin" min="-200" max="200" value="-50" disabled style="width: 90px;"></label>
-            <span id="lbl-ymin" style="font-family: monospace; width: 35px; text-align: right;">-50</span>
+            <label>Y-Min <input type="range" id="rng-ymin" min="-200" max="200" value="-50" disabled style="width: 80px;"></label>
+            <span id="lbl-ymin" style="font-family: monospace; width: 30px; text-align: right;">-50</span>
         </div>
         <div class="control-group">
-            <label>Y-Max <input type="range" id="rng-ymax" min="-200" max="200" value="50" disabled style="width: 90px;"></label>
-            <span id="lbl-ymax" style="font-family: monospace; width: 35px; text-align: right;">50</span>
+            <label>Y-Max <input type="range" id="rng-ymax" min="-200" max="200" value="50" disabled style="width: 80px;"></label>
+            <span id="lbl-ymax" style="font-family: monospace; width: 30px; text-align: right;">50</span>
         </div>
         <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
         <div class="control-group" style="font-family: monospace; font-size: 11px; color: #94a3b8;">
@@ -266,10 +264,13 @@
             isPaused: false,
             isLive: true,
             liveWindowSpan: 10,
+            fillZeroToLower: false,
             manualY: false,
             yMin: -50,
             yMax: 50
         };
+
+        const baseTimestamp = Math.floor(Date.now() / 1000);
 
         // Raw append buffer
         let timesBuffer = new Float64Array(100000);
@@ -284,6 +285,7 @@
         const elLive = document.getElementById('btn-live');
         const elAutoTare = document.getElementById('btn-tare');
         const elExport = document.getElementById('btn-export');
+        const elFillZero = document.getElementById('chk-fill-zero');
         const elManualY = document.getElementById('chk-manual-y');
         const elRngYMin = document.getElementById('rng-ymin');
         const elRngYMax = document.getElementById('rng-ymax');
@@ -339,7 +341,7 @@
 
             for (let i = 0; i < bufferLength; i++) {
                 const val = rawValuesBuffer[i] - state.tareOffset;
-                tArray[i] = timesBuffer[i];
+                tArray[i] = baseTimestamp + timesBuffer[i];
                 rawTared[i] = val;
 
                 sum += val;
@@ -402,35 +404,9 @@
             };
         }
 
-        // Plugin to enable clicking on built-in legend items to toggle series visibility via persistent root delegation
-        function legendTogglePlugin() {
-            return {
-                hooks: {
-                    ready: (u) => {
-                        // Attach listener to persistent u.root container so it survives setData DOM re-renders
-                        u.root.addEventListener("click", (e) => {
-                            let tr = e.target.closest(".u-legend tr");
-                            if (!tr) return;
-                            let legendEl = u.root.querySelector(".u-legend");
-                            if (!legendEl) return;
-                            let rows = Array.from(legendEl.querySelectorAll("tr"));
-                            let idx = rows.indexOf(tr);
-                            if (idx > 0) { // idx 0 is Time series
-                                const seriesIdx = idx;
-                                const show = u.series[seriesIdx].show;
-                                u.setSeries(seriesIdx, { show: !show });
-                                tr.classList.toggle("disabled", show);
-                            }
-                        });
-                    }
-                }
-            };
-        }
-
-        function initCharts() {
+        function createMainPlot() {
             const [t, raw, ma, upper, lower] = computeDerivedData();
             const mainContainer = document.getElementById('main-chart');
-            const navContainer = document.getElementById('nav-chart');
 
             const mainOpts = {
                 title: "Real-Time Sensor Feed (80 Hz)",
@@ -458,10 +434,14 @@
                         }
                     }
                 },
+                // Correct root-level bands to fill strictly between Upper (3) and Lower (4) without filling to 0 baseline
+                bands: [
+                    { series: [3, 4], fill: "rgba(168, 85, 247, 0.15)" }
+                ],
                 series: [
                     {
-                        //label: "Time",
-                        value: (u, val) => val != null ? val.toFixed(4) + 's' : '-'
+                        label: "Time",
+                        value: (u, val) => val != null ? new Date(val * 1000).toISOString().substr(11, 12) : '-'
                     },
                     {
                         label: "Raw (Tared)",
@@ -478,16 +458,14 @@
                     {
                         label: "Spread Upper",
                         stroke: "transparent",
-                        fill: "rgba(168, 85, 247, 0.15)",
-                        width: 1,
+                        width: 0,
                         value: (u, val) => val != null ? val.toFixed(4) : '-'
                     },
                     {
                         label: "Spread Lower",
                         stroke: "transparent",
-                        fill: "rgba(168, 85, 247, 0.15)",
-                        width: 1,
-                        bands: [{u: 4, fill: "rgba(168, 85, 247, 0.15)"}],
+                        width: 0,
+                        fill: state.fillZeroToLower ? "rgba(168, 85, 247, 0.08)" : null,
                         value: (u, val) => val != null ? val.toFixed(4) : '-'
                     }
                 ],
@@ -522,17 +500,39 @@
                                 }, false);
                             }
                         }
-                    ]
+                    ],
+					drawAxes: [
+						(u) => {
+							let ctx = u.ctx;
+							let y0 = u.valToPos(0, 'y', true); // Get canvas Y pixel coordinate for value 0
+
+							// Ensure the 0-line is within the visible plotting area bounds
+							if (y0 >= u.bbox.top && y0 <= u.bbox.top + u.bbox.height) {
+								ctx.save();
+								ctx.strokeStyle = "#FFFFFF50"; 		// #38bdf8 Bright accent color (Sky blue)
+								ctx.lineWidth = 1;           // Fat line thickness
+								ctx.beginPath();
+								ctx.moveTo(u.bbox.left, y0);
+								ctx.lineTo(u.bbox.left + u.bbox.width, y0);
+								ctx.stroke();
+								ctx.restore();
+							}
+						}
+					]
                 }
             };
 
             mainPlot = new uPlot(mainOpts, [t, raw, ma, upper, lower], mainContainer);
+        }
 
-            // Navigator Mini-Chart (Always shows full data range, highlights main viewport via selection box)
+        function initNavChart() {
+            const [t, raw] = computeDerivedData();
+            const navContainer = document.getElementById('nav-chart');
+
             const navOpts = {
                 width: navContainer.clientWidth || 800,
-                height: navContainer.clientHeight || 60,
-                scales: { x: { time: false }, y: { auto: true } },
+                height: navContainer.clientHeight || 50,
+                scales: { x: { time: true }, y: { auto: true } },
                 series: [{}, { stroke: "#64748b", width: 1 }],
                 axes: [{ show: false }, { show: false }],
                 cursor: { show: false },
@@ -563,6 +563,11 @@
             navPlot = new uPlot(navOpts, [t, raw], navContainer);
         }
 
+        function initCharts() {
+            createMainPlot();
+            initNavChart();
+        }
+
         function updateVisualizations() {
             if (!mainPlot || !navPlot) return;
             const data = computeDerivedData();
@@ -572,7 +577,7 @@
 
             if (state.isLive && data[0].length > 0) {
                 const maxT = data[0][data[0].length - 1];
-                const minT = Math.max(0, maxT - state.liveWindowSpan);
+                const minT = Math.max(data[0][0], maxT - state.liveWindowSpan);
                 mainPlot.setScale('x', { min: minT, max: maxT });
             } else {
                 const minX = mainPlot.scales.x.min;
@@ -640,6 +645,14 @@
             a.download = `sensor_data_${Date.now()}.csv`;
             a.click();
             URL.revokeObjectURL(url);
+        });
+
+        elFillZero.addEventListener('change', (e) => {
+            state.fillZeroToLower = e.target.checked;
+            // Re-initialize main chart to update series fill property config cleanly
+            const mc = document.getElementById('main-chart');
+            mc.innerHTML = "";
+            createMainPlot();
         });
 
         elManualY.addEventListener('change', (e) => {
