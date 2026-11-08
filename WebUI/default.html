@@ -1,17 +1,23 @@
 <!DOCTYPE html>
+<!--
+  GNU AGPLv3 License
+  Copyright (C) 2026 AI Collaborator / Gemini
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU Affero General Public License as published
+  by the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU Affero General Public License for more details.
+-->
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Performance Telemetry Dashboard - Rev 3</title>
-
-    <!--
-        GNU AGPLv3 License Header & Attribution
-        Project: Real-Time Sensor Telemetry & Analysis Pipeline
-        Author: AI Collaborator / Gemini
-        License: GNU Affero General Public License v3.0
-    -->
-
+    <title>High-Performance Telemetry & Sensor Analytics</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -28,561 +34,737 @@
             }
         }
     </script>
-
-    <!-- uPlot CSS & JS CDN -->
+    <!-- uPlot CSS CDN -->
     <link rel="stylesheet" href="https://unpkg.com/uplot/dist/uPlot.min.css">
-    <script src="https://unpkg.com/uplot/dist/uPlot.iife.min.js"></script>
-
     <style>
-        /* Custom uPlot overrides for dark/light mode adaptability */
-        .uplot { font-family: inherit; }
-        .dark .uplot { color: #cbd5e1; }
-        .dark .uplot .u-legend tr { border-color: #334155; }
-        .u-series { cursor: pointer; }
+        /* Custom uPlot dark/light overrides & adjustments */
+        .uplot { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+        .u-legend { font-size: 12px !important; text-align: left; margin-bottom: 8px; }
+        .u-series cs { font-weight: 500; }
+        /* Prevent jitter in legend values by setting fixed min-width formatting if needed */
+        .u-value { display: inline-block; min-width: 65px; text-align: right; }
     </style>
 </head>
-<body class="bg-slate-100 dark:bg-darkbg text-slate-800 dark:text-slate-100 min-h-screen flex flex-col transition-colors duration-200">
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-h-screen flex flex-col transition-colors duration-200">
 
-    <!-- Header / Navigation Bar -->
-    <header class="bg-white dark:bg-cardbg border-b border-slate-200 dark:border-bordercolor px-4 py-3 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+    <!-- Top Navigation / Header -->
+    <header class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30 shadow-sm">
         <div class="flex items-center space-x-3">
-            <div class="bg-blue-600 text-white p-2 rounded-lg font-bold text-lg">⚡ 80Hz</div>
+            <div class="bg-indigo-600 text-white p-2 rounded-lg font-bold text-lg tracking-wider">
+                TELEMETRY
+            </div>
             <div>
-                <h1 class="font-bold text-lg leading-tight">Telemetry & Load Cell Monitor</h1>
-                <p class="text-xs text-slate-500 dark:text-slate-400">AGPLv3 Licensed | O(N) Pipeline | Rev 3</p>
+                <h1 class="font-bold text-base md:text-lg tracking-tight">High-Frequency Sensor Analytics</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400">80 Hz Real-Time Acquisition Engine</p>
             </div>
         </div>
 
-        <!-- Controls Toolbar -->
-        <div class="flex flex-wrap items-center gap-3">
-            <button id="btnPause" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded shadow transition">Pause</button>
-            <button id="btnLive" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded shadow transition hidden">Track Live</button>
-            <button id="btnTare" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded shadow transition">Auto-Tare</button>
-            <button id="btnExport" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 dark:bg-slate-600 dark:hover:bg-slate-700 text-white text-sm font-medium rounded shadow transition">Export CSV</button>
-            <button id="themeToggle" class="p-2 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition" title="Toggle Theme">🌙</button>
+        <!-- Global Controls & Status -->
+        <div class="flex items-center flex-wrap gap-2 md:gap-3">
+            <!-- Status Badge -->
+            <div id="status-badge" class="flex items-center space-x-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-semibold">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span id="status-text">Live (80 Hz)</span>
+            </div>
+
+            <!-- Pause / Resume Button -->
+            <button id="btn-pause" onclick="togglePause()" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg shadow transition">
+                Pause
+            </button>
+
+            <!-- Track Live Button -->
+            <button id="btn-track" onclick="trackLive()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg shadow transition opacity-50 cursor-not-allowed" disabled>
+                Track Live
+            </button>
+
+            <!-- Export CSV -->
+            <button onclick="exportCSV()" class="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-medium rounded-lg transition">
+                Export CSV
+            </button>
+
+            <!-- Theme Toggle -->
+            <button onclick="toggleTheme()" class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Toggle Theme">
+                <svg id="theme-icon-dark" class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                <svg id="theme-icon-light" class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+            </button>
         </div>
     </header>
 
-    <!-- Main Content Grid -->
-    <main class="flex-1 max-w-7xl w-full mx-auto p-4 flex flex-col gap-4">
+    <!-- Main Workspace Layout -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 flex flex-col gap-6">
 
-        <!-- Metrics Display Bar -->
-        <section class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Current Weight (MA)</span>
-                <div id="metricMA" class="text-xl font-bold text-blue-500 mt-1">0.00 <span class="text-xs font-normal">g</span></div>
+        <!-- Top Telemetry Readout & Metrics Dashboard -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Current Weight Card -->
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 flex justify-between items-center">
+                    <span>Current Tared Value</span>
+                    <span id="tooltip-raw" class="text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-400" title="Raw / Raw-Tared values">Raw: --</span>
+                </div>
+                <div class="mt-2 flex items-baseline space-x-2">
+                    <span id="metric-current" class="text-3xl font-extrabold tracking-tight">0.00</span>
+                    <span class="text-sm font-semibold text-indigo-500">g / units</span>
+                </div>
             </div>
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Raw Value (Tared)</span>
-                <div id="metricRaw" class="text-xl font-bold mt-1">0.00 <span class="text-xs font-normal">g</span></div>
+
+            <!-- Moving Average Card -->
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400">Moving Average (MA)</div>
+                <div class="mt-2 flex items-baseline space-x-2">
+                    <span id="metric-ma" class="text-3xl font-extrabold tracking-tight text-blue-500">0.00</span>
+                    <span class="text-xs text-slate-400" id="ma-window-label">Win: 40</span>
+                </div>
             </div>
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Spread (±1σ)</span>
-                <div id="metricSpread" class="text-xl font-bold text-purple-400 mt-1">±0.00</div>
+
+            <!-- Dispersion Spread Card -->
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400">Dispersion (±1σ Spread)</div>
+                <div class="mt-2 flex items-baseline space-x-2">
+                    <span id="metric-spread" class="text-3xl font-extrabold tracking-tight text-emerald-500">±0.00</span>
+                    <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">StdDev</span>
+                </div>
             </div>
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Active Tare Offset</span>
-                <div id="metricTare" class="text-xl font-bold text-emerald-500 mt-1">0.00</div>
-            </div>
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Buffer Count</span>
-                <div id="metricCount" class="text-xl font-bold mt-1">0</div>
-            </div>
-            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-                <span class="text-xs text-slate-500 dark:text-slate-400">FPS / Ingest Rate</span>
-                <div id="metricFps" class="text-xl font-bold text-amber-500 mt-1">80 Hz</div>
+
+            <!-- Active Tare & Status Card -->
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400 flex justify-between items-center">
+                    <span>Active Tare Offset</span>
+                    <button onclick="autoTare()" class="text-xs text-indigo-600 dark:text-indigo-400 hover:underline font-semibold">Auto-Tare</button>
+                </div>
+                <div class="mt-2 flex items-center justify-between">
+                    <span id="metric-tare" class="text-xl font-bold font-mono">0.00</span>
+                    <button onclick="resetTare()" class="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs rounded transition">Reset</button>
+                </div>
             </div>
         </section>
 
-        <!-- Configuration & Settings Bar -->
-        <section class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm flex flex-wrap items-center justify-between gap-4 text-sm">
+        <!-- Configuration & Controls Toolbar -->
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
             <div class="flex flex-wrap items-center gap-4">
-                <label class="flex items-center gap-2">
-                    <span class="text-slate-500 dark:text-slate-400">Window Size:</span>
-                    <input id="inputWindow" type="number" value="20" min="1" max="500" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono">
-                </label>
-                <label class="flex items-center gap-2">
-                    <span class="text-slate-500 dark:text-slate-400">Max Buffer Limit:</span>
-                    <input id="inputBufferMax" type="number" value="50000" min="1000" max="200000" step="1000" class="w-28 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono">
-                </label>
-                <label class="flex items-center gap-2 cursor-pointer">
-                    <input id="chkZeroFill" type="checkbox" class="rounded text-blue-600 focus:ring-blue-500">
-                    <span class="text-slate-600 dark:text-slate-300">Fill Zero-to-Lower Band</span>
-                </label>
+                <!-- Moving Average Window Size -->
+                <div class="flex items-center space-x-2">
+                    <label for="input-ma-window" class="text-xs font-medium text-slate-600 dark:text-slate-400">MA Window:</label>
+                    <input type="number" id="input-ma-window" value="40" min="1" max="1000" onchange="updateMAWindow(this.value)" class="w-20 px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+
+                <!-- Buffer Limit -->
+                <div class="flex items-center space-x-2">
+                    <label for="input-buffer" class="text-xs font-medium text-slate-600 dark:text-slate-400">Buffer Limit:</label>
+                    <input type="number" id="input-buffer" value="10000" min="1000" max="100000" step="1000" onchange="updateBufferLimit(this.value)" class="w-24 px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+
+                <!-- Zero Fill Toggle -->
+                <div class="flex items-center space-x-2">
+                    <label class="flex items-center space-x-2 cursor-pointer text-xs font-medium text-slate-600 dark:text-slate-400">
+                        <input type="checkbox" id="chk-zerofill" onchange="toggleZeroFill(this.checked)" class="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4">
+                        <span>Fill to Zero Line</span>
+                    </label>
+                </div>
             </div>
 
-            <!-- Manual Y-Axis Toggles & Sliders -->
-            <div class="flex items-center gap-3">
-                <label class="flex items-center gap-2 cursor-pointer">
-                    <input id="chkManualY" type="checkbox" class="rounded text-blue-600 focus:ring-blue-500">
-                    <span class="text-slate-600 dark:text-slate-300">Manual Y-Axis</span>
+            <!-- Manual Y-Axis Controls Toggle / Sliders -->
+            <div class="flex items-center space-x-3">
+                <label class="flex items-center space-x-2 cursor-pointer text-xs font-medium text-slate-600 dark:text-slate-400">
+                    <input type="checkbox" id="chk-manual-y" onchange="toggleManualY(this.checked)" class="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4">
+                    <span>Manual Y-Axis</span>
                 </label>
-                <div id="yControls" class="hidden flex items-center gap-2">
-                    <input id="inputYMin" type="number" placeholder="Min" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono">
-                    <span class="text-slate-400">to</span>
-                    <input id="inputYMax" type="number" placeholder="Max" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono">
-                    <button id="applyY" class="px-2 py-1 bg-blue-600 text-white rounded text-xs">Set</button>
+                <div id="y-sliders" class="hidden items-center space-x-2 text-xs">
+                    <span>Min: <input type="number" id="y-min-val" value="-50" onchange="updateManualY()" class="w-16 px-1.5 py-0.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded font-mono"></span>
+                    <span>Max: <input type="number" id="y-max-val" value="50" onchange="updateManualY()" class="w-16 px-1.5 py-0.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded font-mono"></span>
                 </div>
             </div>
         </section>
 
         <!-- Main Chart Container -->
-        <section class="bg-white dark:bg-cardbg p-4 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm relative flex flex-col">
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm relative flex flex-col">
             <div class="flex justify-between items-center mb-2">
-                <h2 class="font-semibold text-sm text-slate-600 dark:text-slate-300">Live Telemetry & Dispersion Spread (Hold Ctrl + Drag to Select Range)</h2>
-                <span id="zoomStatus" class="text-xs text-slate-400">Mode: Live Tracking</span>
+                <h2 class="text-sm font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Main Telemetry & Dispersion View</h2>
+                <span class="text-xs text-slate-400">Hold Shift + Drag to select range</span>
             </div>
-            <div id="mainChart" class="w-full overflow-hidden"></div>
+            <div id="chart-main" class="w-full overflow-hidden"></div>
         </section>
 
-        <!-- Timeline Navigator Mini-Chart -->
-        <section class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-            <div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Timeline History Navigator</div>
-            <div id="miniChart" class="w-full overflow-hidden"></div>
+        <!-- Timeline Navigator (Mini-Chart) -->
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col">
+            <div class="flex justify-between items-center mb-2">
+                <h2 class="text-sm font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">Timeline Navigator History</h2>
+                <span class="text-xs text-slate-400">Drag region to inspect</span>
+            </div>
+            <div id="chart-nav" class="w-full overflow-hidden"></div>
         </section>
 
-        <!-- Selection Stats & Log Drawer -->
-        <section class="bg-white dark:bg-cardbg p-4 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-semibold text-sm text-slate-600 dark:text-slate-300">Selection Analysis & Session Log</h3>
-                <button id="btnClearLog" class="text-xs text-red-500 hover:underline">Clear Log</button>
-            </div>
-            <div id="selectionSummary" class="text-xs text-slate-500 dark:text-slate-400 mb-3 bg-slate-50 dark:bg-slate-900 p-2.5 rounded border border-slate-200 dark:border-slate-800">
-                No sample range currently selected. Hold <kbd class="px-1 py-0.5 bg-slate-200 dark:bg-slate-800 rounded font-mono">Ctrl</kbd> and drag across the main chart to analyze specific sample windows.
-            </div>
-            <div class="max-h-40 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded">
-                <table class="w-full text-left text-xs font-mono">
-                    <thead class="bg-slate-100 dark:bg-slate-900 text-slate-500 sticky top-0">
-                        <tr>
-                            <th class="p-2">Timestamp</th>
-                            <th class="p-2">Samples</th>
-                            <th class="p-2">Avg Raw</th>
-                            <th class="p-2">Avg MA</th>
-                            <th class="p-2">Spread (σ)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="logTableBody" class="divide-y divide-slate-200 dark:divide-slate-800">
-                        <!-- Dynamic log rows -->
-                    </tbody>
-                </table>
-            </div>
+        <!-- Sample Selection Log & Details -->
+        <section class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm">
+            <details class="group" open>
+                <summary class="flex justify-between items-center cursor-pointer font-bold text-sm tracking-wide text-slate-700 dark:text-slate-300 select-none">
+                    <span>Sample Selection Log & Statistics</span>
+                    <span class="text-xs text-indigo-600 dark:text-indigo-400 group-open:rotate-180 transition-transform">&#9660;</span>
+                </summary>
+                <div class="mt-4 flex flex-col gap-4">
+                    <div id="selection-stats" class="text-xs bg-slate-50 dark:bg-slate-950 p-3 rounded-lg border border-slate-200 dark:border-slate-800 font-mono text-slate-600 dark:text-slate-400">
+                        No sample range currently selected. Use Shift + Mouse Drag on the main chart to select a continuous range.
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs font-semibold text-slate-500">Recorded Selections & Annotations</span>
+                        <button onclick="clearLog()" class="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs rounded transition">Clear Log</button>
+                    </div>
+                    <div id="log-container" class="max-h-48 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-lg text-xs font-mono divide-y divide-slate-200 dark:divide-slate-800 bg-slate-50/50 dark:bg-slate-950/50">
+                        <!-- Log entries added dynamically -->
+                        <div class="p-3 text-slate-400 text-center italic">Log is empty.</div>
+                    </div>
+                </div>
+            </details>
         </section>
 
     </main>
 
-    <!-- JavaScript Application Logic -->
+    <!-- Footer -->
+    <footer class="mt-auto py-4 border-t border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
+        AI Collaborator / Gemini &bull; GNU AGPLv3 License &bull; High-Frequency uPlot Engine
+    </footer>
+
+    <!-- uPlot JS CDN -->
+    <script src="https://unpkg.com/uplot/dist/uPlot.iife.min.js"></script>
+
     <script>
-        // --- State & Buffer Management ---
-        let maxBufferLimit = 50000;
-        let timeBuffer = new Float64Array(maxBufferLimit);
-        let rawBuffer = new Int32Array(maxBufferLimit);
-        let maBuffer = new Float64Array(maxBufferLimit);
-        let upperBuffer = new Float64Array(maxBufferLimit);
-        let lowerBuffer = new Float64Array(maxBufferLimit);
-        let zeroBuffer = new Float64Array(maxBufferLimit);
+        /* ==========================================================================
+           1. Configuration, State & TypedArray Buffer Management
+           ========================================================================== */
+        let MAX_BUFFER_POINTS = 10000;
+        let maWindowSize = 40;
+        let isPaused = false;
+        let isLiveTracking = true;
+        let fillToZero = false;
+        let manualYEnabled = false;
+        let tareOffset = 0.0;
+
+        // High-performance TypedArrays buffers
+        // timestamps in Int32Array (relative ms), raw values in Float64Array, tared values, MA, upper dev, lower dev
+        let timeBuffer = new Int32Array(MAX_BUFFER_POINTS);
+        let rawBuffer = new Float64Array(MAX_BUFFER_POINTS);
+        let taredBuffer = new Float64Array(MAX_BUFFER_POINTS);
+        let maBuffer = new Float64Array(MAX_BUFFER_POINTS);
+        let upperBuffer = new Float64Array(MAX_BUFFER_POINTS);
+        let lowerBuffer = new Float64Array(MAX_BUFFER_POINTS);
 
         let bufferSize = 0;
-        let bufferHead = 0;
-        let isPaused = false;
-        let isLive = true;
-        let tareOffset = 0;
-        let windowSize = 20;
-        let zeroFillActive = false;
+        let headIndex = 0; // Circular buffer pointer or linear appending up to max
+        let startTime = Date.now();
+        let lastTickTime = performance.now();
+        let sampleIntervalMs = 12.5; // ~80 Hz
 
-        let manualYEnabled = false;
-        let manualYMin = 0;
-        let manualYMax = 100;
+        // Live viewing window span in seconds
+        let liveWindowSpan = 15; // 15 seconds visible by default
 
-        let startTime = performance.now();
-        let lastFrameTime = startTime;
-        let frameCount = 0;
-        let currentFps = 80;
+        // ==========================================================================
+        // 2. O(1) / O(N) Sliding Window Moving Average & StdDev Pipeline
+        // ==========================================================================
+        function pushSample(rawVal) {
+            let now = Date.now();
+            let relTime = now - startTime;
 
-        // --- Simulated Sensor Signal Generator ---
-        let simStep = 0;
-        function generateSensorSample() {
-            simStep += 0.08;
-            let base = 50 + Math.sin(simStep) * 25 + Math.sin(simStep * 2.3) * 10;
-            let noise = (Math.random() - 0.5) * 6;
-            // Occasional spike
-            if (Math.random() < 0.005) noise += (Math.random() - 0.5) * 50;
-            return Math.round((base + noise) * 100); // Store in centigrams / raw integer
-        }
+            let taredVal = rawVal - tareOffset;
 
-        // --- O(N) Sliding Window Pipeline ---
-        // Single-pass sliding window sum and sum of squares for O(1) per-sample MA & StdDev calculation
-        let slideSum = 0;
-        let slideSumSq = 0;
-        let slideWindowValues = new Float64Array(500);
-
-        function ingestData() {
-            if (isPaused) return;
-
-            let now = (performance.now() - startTime);
-            let rawVal = generateSensorSample();
-            let taredVal = rawVal - (tareOffset * 100);
-
-            // Circular buffer management
-            if (bufferSize < maxBufferLimit) {
-                timeBuffer[bufferSize] = now / 1000.0; // Seconds
-                rawBuffer[bufferSize] = taredVal;
+            // Append or circular shift if buffer is full
+            if (bufferSize < MAX_BUFFER_POINTS) {
+                let idx = bufferSize;
+                timeBuffer[idx] = relTime;
+                rawBuffer[idx] = rawVal;
+                taredBuffer[idx] = taredVal;
                 bufferSize++;
             } else {
-                // Shift or circular overwrite
+                // Shift array left for simplicity and high performance with TypedArrays in 60 FPS loop
+                // Alternatively circular buffer, but with TypedArrays memmove / subarray is extremely fast up to 100k points
                 timeBuffer.copyWithin(0, 1);
                 rawBuffer.copyWithin(0, 1);
+                taredBuffer.copyWithin(0, 1);
                 maBuffer.copyWithin(0, 1);
                 upperBuffer.copyWithin(0, 1);
                 lowerBuffer.copyWithin(0, 1);
-                zeroBuffer.copyWithin(0, 1);
 
-                timeBuffer[maxBufferLimit - 1] = now / 1000.0;
-                rawBuffer[maxBufferLimit - 1] = taredVal;
+                let idx = MAX_BUFFER_POINTS - 1;
+                timeBuffer[idx] = relTime;
+                rawBuffer[idx] = rawVal;
+                taredBuffer[idx] = taredVal;
             }
 
-            let idx = bufferSize - 1;
+            // Recalculate moving average and dispersion for recent window efficiently
+            computeMetricsForTail();
+        }
 
-            // Sliding Window Calculations
-            let w = Math.min(windowSize, bufferSize);
+        function computeMetricsForTail() {
+            let startIdx = Math.max(0, bufferSize - maWindowSize);
+            let count = bufferSize - startIdx;
+            if (count <= 0) return;
+
             let sum = 0;
-            let sumSq = 0;
-            for (let i = 0; i < w; i++) {
-                let val = rawBuffer[idx - i] / 100.0;
-                sum += val;
-                sumSq += val * val;
+            for (let i = startIdx; i < bufferSize; i++) {
+                sum += taredBuffer[i];
+            }
+            let ma = sum / count;
+
+            let sumSqDiff = 0;
+            for (let i = startIdx; i < bufferSize; i++) {
+                let diff = taredBuffer[i] - ma;
+                sumSqDiff += diff * diff;
+            }
+            let stdDev = Math.sqrt(sumSqDiff / count);
+
+            let curIdx = bufferSize - 1;
+            maBuffer[curIdx] = ma;
+            upperBuffer[curIdx] = ma + stdDev;
+            lowerBuffer[curIdx] = ma - stdDev;
+
+            // If buffer was smaller than window initially, propagate backward for smoothness
+            for (let i = 0; i < startIdx; i++) {
+                maBuffer[i] = taredBuffer[i];
+                upperBuffer[i] = taredBuffer[i];
+                lowerBuffer[i] = taredBuffer[i];
             }
 
-            let ma = sum / w;
-            let variance = (sumSq / w) - (ma * ma);
-            let stdDev = Math.sqrt(Math.max(0, variance));
-
-            maBuffer[idx] = ma;
-            upperBuffer[idx] = ma + stdDev;
-            lowerBuffer[idx] = ma - stdDev;
-            zeroBuffer[idx] = 0;
-
-            // Update Metrics Display
-            document.getElementById('metricMA').innerHTML = `${ma.toFixed(2)} <span class="text-xs font-normal">g</span>`;
-            document.getElementById('metricRaw').innerHTML = `${(taredVal / 100.0).toFixed(2)} <span class="text-xs font-normal">g</span>`;
-            document.getElementById('metricSpread').textContent = `±${stdDev.toFixed(2)}`;
-            document.getElementById('metricCount').textContent = bufferSize;
-
-            // FPS calculation
-            frameCount++;
-            if (now - lastFrameTime >= 1000) {
-                currentFps = Math.round((frameCount * 1000) / (now - lastFrameTime));
-                document.getElementById('metricFps').textContent = `${currentFps} Hz`;
-                frameCount = 0;
-                lastFrameTime = now;
-            }
+            // Update UI metrics display
+            updateReadouts(taredBuffer[curIdx], rawValFormatted(rawBuffer[curIdx], taredBuffer[curIdx]), ma, stdDev);
         }
 
-        // --- uPlot Configuration & Initialization ---
-        let mainChart, miniChart;
-
-        function getActiveDataSlice() {
-            return [
-                timeBuffer.subarray(0, bufferSize),
-                rawBuffer.subarray(0, bufferSize).map(v => v / 100.0),
-                maBuffer.subarray(0, bufferSize),
-                upperBuffer.subarray(0, bufferSize),
-                lowerBuffer.subarray(0, bufferSize),
-                zeroBuffer.subarray(0, bufferSize)
-            ];
+        function rawValFormatted(raw, tared) {
+            document.getElementById('tooltip-raw').title = `Raw: ${raw.toFixed(2)} | Raw-Tared: ${tared.toFixed(2)}`;
+            return `Raw: ${raw.toFixed(1)}`;
         }
 
-        const mainOpts = {
-            width: document.getElementById('mainChart').clientWidth || 800,
-            height: 380,
-            cursor: {
-                sync: { key: 'telemetrySync' }
-            },
-            scales: {
-                x: { time: true },
-                y: {
-                    auto: !manualYEnabled,
-                    range: manualYEnabled ? [manualYMin, manualYMax] : undefined
-                }
-            },
-            series: [
-                {},
-                {
-                    label: 'Raw (Tared)',
-                    stroke: '#94a3b8',
-                    width: 1,
-                    alpha: 0.6
-                },
-                {
-                    label: 'Moving Avg',
-                    stroke: '#3b82f6',
-                    width: 2
-                },
-                {
-                    label: 'Upper Spread',
-                    stroke: 'rgba(168, 85, 247, 0.4)',
-                    width: 1,
-                    dash: [4, 4]
-                },
-                {
-                    label: 'Lower Spread',
-                    stroke: 'rgba(168, 85, 247, 0.4)',
-                    width: 1,
-                    dash: [4, 4]
-                },
-                {
-                    label: 'Zero Line',
-                    stroke: 'transparent',
-                    width: 0
-                }
-            ],
-            bands: [
-                {
-                    series: [3, 4],
-                    fill: 'rgba(168, 85, 247, 0.15)'
-                },
-                ...(zeroFillActive ? [{
-                    series: [4, 5],
-                    fill: 'rgba(59, 130, 246, 0.08)'
-                }] : [])
-            ],
-            hooks: {
-                drawAxes: [
-                    u => {
-                        let ctx = u.ctx;
-                        let yPos = u.valToPos(0, 'y', true);
-                        if (!isNaN(yPos)) {
-                            ctx.save();
-                            ctx.strokeStyle = document.documentElement.classList.contains('dark') ? '#ef4444' : '#dc2626';
-                            ctx.lineWidth = 2;
-                            ctx.beginPath();
-                            ctx.moveTo(u.bbox.left, yPos);
-                            ctx.lineTo(u.bbox.left + u.bbox.width, yPos);
-                            ctx.stroke();
-                            ctx.restore();
-                        }
-                    }
-                ]
-            }
-        };
+        function updateReadouts(current, rawText, ma, spread) {
+            document.getElementById('metric-current').textContent = current.toFixed(2);
+            document.getElementById('tooltip-raw').textContent = rawText;
+            document.getElementById('metric-ma').textContent = ma.toFixed(2);
+            document.getElementById('metric-spread').textContent = `±${spread.toFixed(2)}`;
+            document.getElementById('metric-tare').textContent = tareOffset.toFixed(2);
+        }
 
-        const miniOpts = {
-            width: document.getElementById('miniChart').clientWidth || 800,
-            height: 100,
-            cursor: {
-                sync: { key: 'telemetrySync' }
-            },
-            scales: {
-                x: { time: true },
-                y: { auto: true }
-            },
-            series: [
-                {},
-                { stroke: 'transparent' },
-                { stroke: '#3b82f6', width: 1 }
-            ]
-        };
+        // ==========================================================================
+        // 3. uPlot Initialization & Custom Draw Hooks (Fat Zero-Line Behind Data)
+        // ==========================================================================
+        let mainChart = null;
+        let navChart = null;
+
+        function getChartThemeColors() {
+            let isDark = document.documentElement.classList.contains('dark');
+            return {
+                strokeRaw: isDark ? '#6366f1' : '#4f46e5',      // Indigo
+                strokeMA: isDark ? '#3b82f6' : '#2563eb',       // Blue
+                strokeUpper: isDark ? 'rgba(16, 185, 129, 0.4)' : 'rgba(5, 150, 105, 0.4)',
+                strokeLower: isDark ? 'rgba(16, 185, 129, 0.4)' : 'rgba(5, 150, 105, 0.4)',
+                fillBand: isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.1)',
+                fillZero: isDark ? 'rgba(99, 102, 241, 0.1)' : 'rgba(99, 102, 241, 0.08)',
+                grid: isDark ? '#334155' : '#e2e8f0',
+                text: isDark ? '#94a3b8' : '#64748b',
+                zeroLine: isDark ? '#f43f5e' : '#e11d48'        // Rose/Red fat zero line
+            };
+        }
 
         function initCharts() {
-            let data = getActiveDataSlice();
-            mainChart = new uPlot(mainOpts, data, document.getElementById('mainChart'));
-            miniChart = new uPlot(miniOpts, data, document.getElementById('miniChart'));
+            let colors = getChartThemeColors();
+
+            // Data view arrays for uPlot (seconds float for X axis)
+            // uPlot expects data as [ [x0, x1, ...], [y0, y1, ...], ... ]
+            let xData = new Float64Array(bufferSize);
+            for (let i = 0; i < bufferSize; i++) xData[i] = timeBuffer[i] / 1000.0;
+
+            let data = [
+                xData,
+                taredBuffer.subarray(0, bufferSize),
+                maBuffer.subarray(0, bufferSize),
+                upperBuffer.subarray(0, bufferSize),
+                lowerBuffer.subarray(0, bufferSize)
+            ];
+
+            let mainOpts = {
+                title: "",
+                width: document.getElementById('chart-main').clientWidth,
+                height: 360,
+                cursor: {
+                    sync: { key: "telemetry-sync" }
+                },
+                scales: {
+                    x: { time: false },
+                    y: {
+                        range: (u, min, max) => {
+                            if (manualYEnabled) {
+                                let mMin = parseFloat(document.getElementById('y-min-val').value);
+                                let mMax = parseFloat(document.getElementById('y-max-val').value);
+                                return [mMin, mMax];
+                            }
+                            let pad = (max - min) * 0.1 || 5;
+                            return [min - pad, max + pad];
+                        }
+                    }
+                },
+                axes: [
+                    { stroke: colors.text, grid: { stroke: colors.grid, width: 1 } },
+                    { stroke: colors.text, grid: { stroke: colors.grid, width: 1 } }
+                ],
+                series: [
+                    {},
+                    {
+                        label: "Sensor (Tared)",
+                        stroke: colors.strokeRaw,
+                        width: 1.5,
+                        fill: fillToZero ? colors.fillZero : undefined
+                    },
+                    {
+                        label: "Moving Avg",
+                        stroke: colors.strokeMA,
+                        width: 2
+                    },
+                    {
+                        label: "Upper Spread",
+                        stroke: colors.strokeUpper,
+                        width: 1,
+                        show: true
+                    },
+                    {
+                        label: "Lower Spread",
+                        stroke: colors.strokeLower,
+                        width: 1,
+                        show: true
+                    }
+                ],
+                bands: [
+                    {
+                        series: [3, 4],
+                        fill: colors.fillBand
+                    }
+                ],
+                hooks: {
+                    drawAxes: [
+                        function(u) {
+                            let ctx = u.ctx;
+                            let yPos = u.valToPos(0, 'y', true);
+                            if (yPos >= u.bbox.top && yPos <= u.bbox.top + u.bbox.height) {
+                                ctx.save();
+                                ctx.strokeStyle = colors.zeroLine;
+                                ctx.lineWidth = 2.5;
+                                ctx.setLineDash([4, 2]);
+                                ctx.beginPath();
+                                ctx.moveTo(u.bbox.left, yPos);
+                                ctx.lineTo(u.bbox.left + u.bbox.width, yPos);
+                                ctx.stroke();
+                                ctx.restore();
+                            }
+                        }
+                    ],
+                    setScale: [
+                        function(u, key) {
+                            if (key === 'x' && !isPaused) {
+                                // Check if user zoomed/panned manually
+                                let minX = u.scales.x.min;
+                                let maxX = u.scales.x.max;
+                                let maxTime = timeBuffer[bufferSize - 1] / 1000.0;
+                                if (Math.abs(maxX - maxTime) > 0.5) {
+                                    isLiveTracking = false;
+                                    document.getElementById('btn-track').classList.remove('opacity-50', 'cursor-not-allowed');
+                                    document.getElementById('btn-track').removeAttribute('disabled');
+                                }
+                            }
+                        }
+                    ]
+                }
+            };
+
+            let navOpts = {
+                title: "",
+                width: document.getElementById('chart-nav').clientWidth,
+                height: 100,
+                cursor: {
+                    sync: { key: "telemetry-sync" }
+                },
+                scales: {
+                    x: { time: false },
+                    y: { auto: true }
+                },
+                axes: [
+                    { stroke: colors.text, grid: { stroke: colors.grid, width: 1 } },
+                    { show: false }
+                ],
+                series: [
+                    {},
+                    { stroke: colors.strokeRaw, width: 1 },
+                    { stroke: colors.strokeMA, width: 1, show: false },
+                    { show: false },
+                    { show: false }
+                ]
+            };
+
+            mainChart = new uPlot(mainOpts, data, document.getElementById('chart-main'));
+            navChart = new uPlot(navOpts, data, document.getElementById('chart-nav'));
         }
 
-        // --- Resize handling ---
-        window.addEventListener('resize', () => {
-            if (mainChart && miniChart) {
-                mainChart.setSize({ width: document.getElementById('mainChart').clientWidth, height: 380 });
-                miniChart.setSize({ width: document.getElementById('miniChart').clientWidth, height: 100 });
+        // ==========================================================================
+        // 4. Real-Time Ingestion & 60 FPS Render Loop
+        // ==========================================================================
+        function simulationTick() {
+            if (!isPaused) {
+                // Generate realistic telemetry sensor data at ~80 Hz
+                // Combines sinusoidal weight drift + random noise + occasional load spike
+                let t = (Date.now() - startTime) / 1000.0;
+                let simulatedRaw = 25.0 + Math.sin(t * 1.5) * 15.0 + Math.cos(t * 5.0) * 3.0 + (Math.random() - 0.5) * 2.0;
+
+                pushSample(simulatedRaw);
+
+                // Update charts data efficiently
+                let xData = new Float64Array(bufferSize);
+                for (let i = 0; i < bufferSize; i++) xData[i] = timeBuffer[i] / 1000.0;
+
+                let newData = [
+                    xData,
+                    taredBuffer.subarray(0, bufferSize),
+                    maBuffer.subarray(0, bufferSize),
+                    upperBuffer.subarray(0, bufferSize),
+                    lowerBuffer.subarray(0, bufferSize)
+                ];
+
+                navChart.setData(newData);
+
+                if (isLiveTracking && bufferSize > 1) {
+                    let maxTime = xData[bufferSize - 1];
+                    let minTime = Math.max(0, maxTime - liveWindowSpan);
+                    mainChart.setData(newData, false);
+                    mainChart.setScale('x', { min: minTime, max: maxTime });
+                } else {
+                    mainChart.setData(newData, false);
+                }
             }
-        });
+            requestAnimationFrame(simulationTick);
+        }
 
-        // --- UI Event Listeners & Controls ---
-        document.getElementById('themeToggle').addEventListener('click', () => {
-            const html = document.documentElement;
-            html.classList.toggle('dark');
-            document.getElementById('themeToggle').textContent = html.classList.contains('dark') ? '🌙' : '☀️';
-        });
-
-        document.getElementById('btnPause').addEventListener('click', () => {
+        // ==========================================================================
+        // 5. Interactive Features & Controls Logic
+        // ==========================================================================
+        function togglePause() {
             isPaused = !isPaused;
-            let btn = document.getElementById('btnPause');
-            btn.textContent = isPaused ? 'Resume' : 'Pause';
-            btn.className = isPaused ? 'px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded shadow transition'
-                                     : 'px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded shadow transition';
-        });
-
-        document.getElementById('btnLive').addEventListener('click', () => {
-            isLive = true;
-            document.getElementById('btnLive').classList.add('hidden');
-            document.getElementById('zoomStatus').textContent = 'Mode: Live Tracking';
-        });
-
-        document.getElementById('btnTare').addEventListener('click', () => {
-            if (bufferSize > 0) {
-                let lastMA = maBuffer[bufferSize - 1];
-                tareOffset += lastMA;
-                document.getElementById('metricTare').textContent = tareOffset.toFixed(2);
-            }
-        });
-
-        document.getElementById('inputWindow').addEventListener('change', (e) => {
-            windowSize = parseInt(e.target.value) || 20;
-        });
-
-        document.getElementById('inputBufferMax').addEventListener('change', (e) => {
-            let val = parseInt(e.target.value);
-            if (val >= 1000 && val <= 200000) {
-                maxBufferLimit = val;
-                timeBuffer =anst = new Float64Array(maxBufferLimit);
-                rawBuffer = new Int32Array(maxBufferLimit);
-                maBuffer = new Float64Array(maxBufferLimit);
-                upperBuffer = new Float64Array(maxBufferLimit);
-                lowerBuffer = new Float64Array(maxBufferLimit);
-                zeroBuffer = new Float64Array(maxBufferLimit);
-                bufferSize = 0;
-            }
-        });
-
-        document.getElementById('chkZeroFill').addEventListener('change', (e) => {
-            zeroFillActive = e.target.checked;
-            mainOpts.bands = [
-                { series: [3, 4], fill: 'rgba(168, 85, 247, 0.15)' },
-                ...(zeroFillActive ? [{ series: [4, 5], fill: 'rgba(59, 130, 246, 0.08)' }] : [])
-            ];
-            mainChart.destroy();
-            initCharts();
-        });
-
-        document.getElementById('chkManualY').addEventListener('change', (e) => {
-            manualYEnabled = e.target.checked;
-            document.getElementById('yControls').classList.toggle('hidden', !manualYEnabled);
-            mainOpts.scales.y.auto = !manualYEnabled;
-            if (manualYEnabled) {
-                mainOpts.scales.y.range = [manualYMin, manualYMax];
+            let btn = document.getElementById('btn-pause');
+            let badge = document.getElementById('status-badge');
+            let statusText = document.getElementById('status-text');
+            if (isPaused) {
+                btn.textContent = "Resume";
+                btn.className = "px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg shadow transition";
+                badge.className = "flex items-center space-x-1.5 px-3 py-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-full text-xs font-semibold";
+                statusText.textContent = "Paused";
             } else {
-                delete mainOpts.scales.y.range;
+                btn.textContent = "Pause";
+                btn.className = "px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg shadow transition";
+                badge.className = "flex items-center space-x-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-semibold";
+                statusText.textContent = "Live (80 Hz)";
             }
-            mainChart.destroy();
-            initCharts();
-        });
+        }
 
-        document.getElementById('applyY').addEventListener('click', () => {
-            manualYMin = parseFloat(document.getElementById('inputYMin').value) || 0;
-            manualYMax = parseFloat(document.getElementById('inputYMax').value) || 100;
-            mainOpts.scales.y.range = [manualYMin, manualYMax];
-            mainChart.destroy();
-            initCharts();
-        });
+        function trackLive() {
+            isLiveTracking = true;
+            document.getElementById('btn-track').classList.add('opacity-50', 'cursor-not-allowed');
+            document.getElementById('btn-track').setAttribute('disabled', 'true');
+        }
 
-        document.getElementById('btnExport').addEventListener('click', () => {
-            let csv = 'Timestamp,Raw,MA,Upper,Lower\n';
+        function autoTare() {
+            if (bufferSize > 0) {
+                tareOffset = rawBuffer[bufferSize - 1];
+                // Recalculate tared buffer instantly
+                for (let i = 0; i < bufferSize; i++) {
+                    taredBuffer[i] = rawBuffer[i] - tareOffset;
+                }
+                computeMetricsForTail();
+            }
+        }
+
+        function resetTare() {
+            tareOffset = 0.0;
             for (let i = 0; i < bufferSize; i++) {
-                csv += `${timeBuffer[i].toFixed(3)},${rawBuffer[i]/100},${maBuffer[i].toFixed(2)},${upperBuffer[i].toFixed(2)},${lowerBuffer[i].toFixed(2)}\n`;
+                taredBuffer[i] = rawBuffer[i];
             }
-            let blob = new Blob([csv], { type: 'text/csv' });
+            computeMetricsForTail();
+        }
+
+        function updateMAWindow(val) {
+            let v = parseInt(val);
+            if (!isNaN(v) && v > 0) {
+                maWindowSize = v;
+                document.getElementById('ma-window-label').textContent = `Win: ${v}`;
+                computeMetricsForTail();
+            }
+        }
+
+        function updateBufferLimit(val) {
+            let v = parseInt(val);
+            if (!isNaN(v) && v >= 1000) {
+                MAX_BUFFER_POINTS = v;
+                // Reallocate TypedArrays
+                let newTime = new Int32Array(MAX_BUFFER_POINTS);
+                let newRaw = new Float64Array(MAX_BUFFER_POINTS);
+                let newTared = new Float64Array(MAX_BUFFER_POINTS);
+                let newMa = new Float64Array(MAX_BUFFER_POINTS);
+                let newUpper = new Float64Array(MAX_BUFFER_POINTS);
+                let newLower = new Float64Array(MAX_BUFFER_POINTS);
+
+                let copyLen = Math.min(bufferSize, MAX_BUFFER_POINTS);
+                let srcOffset = bufferSize - copyLen;
+
+                newTime.set(timeBuffer.subarray(srcOffset, bufferSize));
+                newRaw.set(rawBuffer.subarray(srcOffset, bufferSize));
+                newTared.set(taredBuffer.subarray(srcOffset, bufferSize));
+                newMa.set(maBuffer.subarray(srcOffset, bufferSize));
+                newUpper.set(upperBuffer.subarray(srcOffset, bufferSize));
+                newLower.set(lowerBuffer.subarray(srcOffset, bufferSize));
+
+                timeBuffer = newTime;
+                rawBuffer = newRaw;
+                taredBuffer = newTared;
+                maBuffer = newMa;
+                upperBuffer = newUpper;
+                lowerBuffer = newLower;
+                bufferSize = copyLen;
+            }
+        }
+
+        function toggleZeroFill(checked) {
+            fillToZero = checked;
+            mainChart.series[1].fill = fillToZero ? getChartThemeColors().fillZero : undefined;
+            mainChart.commit();
+        }
+
+        function toggleManualY(checked) {
+            manualYEnabled = checked;
+            let sliders = document.getElementById('y-sliders');
+            if (checked) {
+                sliders.classList.remove('hidden');
+                sliders.classList.add('flex');
+            } else {
+                sliders.classList.remove('flex');
+                sliders.classList.add('hidden');
+            }
+            mainChart.redraw();
+        }
+
+        function updateManualY() {
+            if (manualYEnabled) mainChart.redraw();
+        }
+
+        function toggleTheme() {
+            let html = document.documentElement;
+            if (html.classList.contains('dark')) {
+                html.classList.remove('dark');
+            } else {
+                html.classList.add('dark');
+            }
+            // Re-init charts with updated theme colors
+            let mainEl = document.getElementById('chart-main');
+            let navEl = document.getElementById('chart-nav');
+            mainEl.innerHTML = '';
+            navEl.innerHTML = '';
+            initCharts();
+        }
+
+        function exportCSV() {
+            let csv = "Time_ms,Raw_Value,Tared_Value,Moving_Average,Upper_Spread,Lower_Spread\n";
+            for (let i = 0; i < bufferSize; i++) {
+                csv += `${timeBuffer[i]},${rawBuffer[i].toFixed(4)},${taredBuffer[i].toFixed(4)},${maBuffer[i].toFixed(4)},${upperBuffer[i].toFixed(4)},${lowerBuffer[i].toFixed(4)}\n`;
+            }
+            let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
             let url = URL.createObjectURL(blob);
             let a = document.createElement('a');
             a.href = url;
             a.download = `telemetry_export_${Date.now()}.csv`;
             a.click();
-        });
-
-        document.getElementById('btnClearLog').addEventListener('click', () => {
-            document.getElementById('logTableBody').innerHTML = '';
-        });
-
-        // --- Sample Selection (Ctrl + Drag) & Logging ---
-        // Integrated via uPlot select plugin / custom mouse handling
-        let isSelecting = false;
-        let selectStartX = 0;
-
-        document.getElementById('mainChart').addEventListener('mousedown', (e) => {
-            if (e.ctrlKey) {
-                isSelecting = true;
-                selectStartX = e.clientX;
-                isLive = false;
-                document.getElementById('btnLive').classList.remove('hidden');
-                document.getElementById('zoomStatus').textContent = 'Mode: Inspection / Selection';
-            }
-        });
-
-        window.addEventListener('mouseup', (e) => {
-            if (isSelecting) {
-                isSelecting = false;
-                // Capture current selection bounds from uPlot
-                let sel = mainChart.select;
-                if (sel && sel.width > 5) {
-                    let tMin = mainChart.posToVal(sel.left, 'x');
-                    let tMax = mainChart.posToVal(sel.left + sel.width, 'x');
-
-                    // Calculate stats for selection
-                    let count = 0, sumRaw = 0, sumMA = 0, sumVar = 0;
-                    for (let i = 0; i < bufferSize; i++) {
-                        let t = timeBuffer[i];
-                        if (t >= tMin && t <= tMax) {
-                            count++;
-                            sumRaw += rawBuffer[i] / 100.0;
-                            sumMA += maBuffer[i];
-                        }
-                    }
-
-                    if (count > 0) {
-                        let avgRaw = sumRaw / count;
-                        let avgMA = sumMA / count;
-
-                        document.getElementById('selectionSummary').innerHTML =
-                            `<strong>Selected Range:</strong> ${tMin.toFixed(2)}s - ${tMax.toFixed(2)}s | <strong>Samples:</strong> ${count} | <strong>Avg Raw:</strong> ${avgRaw.toFixed(2)}g | <strong>Avg MA:</strong> ${avgMA.toFixed(2)}g`;
-
-                        // Add to log table
-                        let tbody = document.getElementById('logTableBody');
-                        let row = document.createElement('tr');
-                        row.className = 'hover:bg-slate-100 dark:hover:bg-slate-800 transition';
-                        row.innerHTML = `
-                            <td class="p-2">${new Date().toLocaleTimeString()}</td>
-                            <td class="p-2">${count}</td>
-                            <td class="p-2">${avgRaw.toFixed(2)} g</td>
-                            <td class="p-2">${avgMA.toFixed(2)} g</td>
-                            <td class="p-2">±${((avgRaw - avgMA)).toFixed(2)}</td>
-                        `;
-                        tbody.prepend(row);
-                    }
-                }
-            }
-        });
-
-        // --- Main Animation Loop (80 Hz Telemetry Ingestion) ---
-        let lastIngest = 0;
-        const ingestInterval = 1000 / 80; // ~12.5ms
-
-        function animationLoop(timestamp) {
-            if (!lastIngest) lastIngest = timestamp;
-            let elapsed = timestamp - lastIngest;
-
-            if (elapsed >= ingestInterval) {
-                lastIngest = timestamp - (elapsed % ingestInterval);
-                ingestData();
-
-                if (mainChart && miniChart && bufferSize > 1) {
-                    let data = getActiveDataSlice();
-                    mainChart.setData(data);
-                    miniChart.setData(data);
-
-                    if (isLive) {
-                        let maxT = timeBuffer[bufferSize - 1];
-                        let minT = Math.max(0, maxT - 10); // 10 second sliding live window
-                        mainChart.setScale('x', { min: minT, max: maxT });
-                    }
-                }
-            }
-
-            requestAnimationFrame(animationLoop);
+            URL.revokeObjectURL(url);
         }
 
-        // Initialize and Start
-        window.onload = () => {
+        function clearLog() {
+            document.getElementById('log-container').innerHTML = '<div class="p-3 text-slate-400 text-center italic">Log is empty.</div>';
+            document.getElementById('selection-stats').textContent = 'No sample range currently selected. Use Shift + Mouse Drag on the main chart to select a continuous range.';
+        }
+
+        // ==========================================================================
+        // 6. Shift + Mouse Sample Selection & Logging
+        // ==========================================================================
+        function setupSampleSelection() {
+            let chartEl = document.getElementById('chart-main');
+            let isSelecting = false;
+            let startXPixel = 0;
+
+            chartEl.addEventListener('mousedown', (e) => {
+                if (e.shiftKey) {
+                    isSelecting = true;
+                    startXPixel = e.clientX;
+                    e.preventDefault();
+                }
+            });
+
+            window.addEventListener('mouseup', (e) => {
+                if (isSelecting && mainChart) {
+                    isSelecting = false;
+                    let endXPixel = e.clientX;
+                    let rect = mainChart.over.getBoundingClientRect();
+                    let leftPixel = Math.min(startXPixel, endXPixel) - rect.left;
+                    let rightPixel = Math.max(startXPixel, endXPixel) - rect.left;
+
+                    if (rightPixel - leftPixel > 5) {
+                        let t1 = mainChart.posToVal(leftPixel, 'x');
+                        let t2 = mainChart.posToVal(rightPixel, 'x');
+                        processSelectionRange(t1, t2);
+                    }
+                }
+            });
+        }
+
+        function processSelectionRange(t1, t2) {
+            let startTimeSec = Math.min(t1, t2);
+            let endTimeSec = Math.max(t1, t2);
+
+            let sumTared = 0, count = 0, minVal = Infinity, maxVal = -Infinity;
+            let sumRaw = 0;
+
+            for (let i = 0; i < bufferSize; i++) {
+                let tSec = timeBuffer[i] / 1000.0;
+                if (tSec >= startTimeSec && tSec <= endTimeSec) {
+                    sumTared += taredBuffer[i];
+                    sumRaw += rawBuffer[i];
+                    if (taredBuffer[i] < minVal) minVal = taredBuffer[i];
+                    if (taredBuffer[i] > maxVal) maxVal = taredBuffer[i];
+                    count++;
+                }
+            }
+
+            if (count === 0) return;
+
+            let avgTared = sumTared / count;
+            let avgRaw = sumRaw / count;
+            let spreadVal = (maxVal - minVal) / 2;
+
+            let statsText = `Selected Range: [${startTimeSec.toFixed(2)}s - ${endTimeSec.toFixed(2)}s] | Samples: ${count} | Avg Tared: ${avgTared.toFixed(2)} | Avg Raw: ${avgRaw.toFixed(2)} | Min/Max: [${minVal.toFixed(2)}, ${maxVal.toFixed(2)}] | Spread: ±${spreadVal.toFixed(2)}`;
+            document.getElementById('selection-stats').textContent = statsText;
+
+            // Append to log container
+            let logContainer = document.getElementById('log-container');
+            if (logContainer.querySelector('.italic')) {
+                logContainer.innerHTML = '';
+            }
+            let logItem = document.createElement('div');
+            logItem.className = "p-2.5 hover:bg-slate-100 dark:hover:bg-slate-900 transition flex flex-col gap-1";
+            logItem.innerHTML = `<div class="flex justify-between text-[11px] text-slate-400"><span>Timestamp: ${new Date().toLocaleTimeString()}</span><span>Count: ${count} samples</span></div><div>${statsText}</div>`;
+            logContainer.prepend(logItem);
+        }
+
+        // ==========================================================================
+        // Initialization on Load
+        // ==========================================================================
+        window.addEventListener('DOMContentLoaded', () => {
             initCharts();
-            requestAnimationFrame(animationLoop);
-        };
+            setupSampleSelection();
+            requestAnimationFrame(simulationTick);
+        });
+
+        window.addEventListener('resize', () => {
+            if (mainChart && navChart) {
+                mainChart.setSize({ width: document.getElementById('chart-main').clientWidth, height: 360 });
+                navChart.setSize({ width: document.getElementById('chart-nav').clientWidth, height: 100 });
+            }
+        });
     </script>
 </body>
 </html>
