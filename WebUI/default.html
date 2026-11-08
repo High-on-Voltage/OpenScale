@@ -1,725 +1,588 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Frequency Sensor Visualization (uPlot.js)</title>
+    <title>High-Performance Telemetry Dashboard - Rev 3</title>
+
     <!--
-        GNU AGPLv3 License & Copyright Notice
-        Copyright (C) 2026 AI Collaborator / Gemini
-
-        This program is free software: you can redistribute it and/or modify
-        it under the terms of the GNU Affero General Public License as published by
-        the Free Software Foundation, either version 3 of the License, or
-        (at your option) any later version.
-
-        This program is distributed in the hope that it will be useful,
-        but WITHOUT ANY WARRANTY; without even the implied warranty of
-        MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-        GNU Affero General Public License for more details.
+        GNU AGPLv3 License Header & Attribution
+        Project: Real-Time Sensor Telemetry & Analysis Pipeline
+        Author: AI Collaborator / Gemini
+        License: GNU Affero General Public License v3.0
     -->
-    <!-- uPlot CSS (Embedded via latest CDN) -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkbg: '#0f172a',
+                        cardbg: '#1e293b',
+                        bordercolor: '#334155'
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- uPlot CSS & JS CDN -->
+    <link rel="stylesheet" href="https://unpkg.com/uplot/dist/uPlot.min.css">
+    <script src="https://unpkg.com/uplot/dist/uPlot.iife.min.js"></script>
+
     <style>
-        @charset "utf-8";
-        .uplot {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            font-size: 12px;
-            user-select: none;
-        }
-        .u-title {
-            text-align: center;
-            font-weight: bold;
-            font-size: 13px;
-            margin: 2px 0;
-            color: #cbd5e1;
-        }
-        .uplot, .uplot * {
-            box-sizing: border-box;
-        }
-        .u-axis text {
-            fill: #cbd5e1;
-        }
-        /* Enable and style built-in uPlot legend supporting series toggling via click */
-        .u-legend {
-            text-align: left;
-            margin: 4px 0 0 0;
-            padding: 0;
-            font-size: 12px;
-            color: #cbd5e1;
-        }
-        .u-legend tr {
-            margin-right: 12px;
-            display: inline-block;
-            cursor: pointer;
-        }
-        .u-legend tr.disabled {
-            opacity: 0.4;
-        }
-        .u-legend th {
-            font-weight: normal;
-            color: #94a3b8;
-        }
-        .u-legend td {
-            padding: 0 4px;
-        }
-
-        /* App Layout Styles */
-        :root {
-            --bg-color: #0f172a;
-            --panel-bg: #1e293b;
-            --text-color: #f8fafc;
-            --accent-color: #3b82f6;
-            --border-color: #334155;
-        }
-        body {
-            margin: 0;
-            padding: 12px;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            overflow: hidden;
-            box-sizing: border-box;
-        }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-            background: var(--panel-bg);
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
-            flex-shrink: 0;
-        }
-        h1 {
-            font-size: 16px;
-            margin: 0;
-        }
-        .controls-top {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-            background: var(--panel-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            padding: 8px 12px;
-            margin-bottom: 8px;
-            flex-shrink: 0;
-            font-size: 12px;
-        }
-        .control-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .control-group label {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            font-weight: 500;
-        }
-        input, select, button {
-            background: #0f172a;
-            color: var(--text-color);
-            border: 1px solid var(--border-color);
-            padding: 3px 6px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-        input[type="range"] {
-            padding: 0;
-            cursor: pointer;
-        }
-        button {
-            cursor: pointer;
-            background: var(--accent-color);
-            border: none;
-            font-weight: 600;
-            transition: opacity 0.2s;
-        }
-        button:hover {
-            opacity: 0.9;
-        }
-        button.secondary {
-            background: #475569;
-        }
-        .main-container {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            gap: 8px;
-            min-height: 0;
-        }
-        .chart-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            background: var(--panel-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            padding: 8px;
-            min-width: 0;
-            min-height: 0;
-        }
-
-        /* Flex containers for charts to prevent overflow and fill vertical space cleanly */
-        .chart-wrapper-main {
-            flex: 3;
-            min-height: 0;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-        }
-        .chart-wrapper-nav {
-            flex: 1;
-            min-height: 50px;
-            max-height: 80px;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            margin-top: 4px;
-        }
-
-        #main-chart, #nav-chart {
-            width: 100% !important;
-            height: 100% !important;
-        }
+        /* Custom uPlot overrides for dark/light mode adaptability */
+        .uplot { font-family: inherit; }
+        .dark .uplot { color: #cbd5e1; }
+        .dark .uplot .u-legend tr { border-color: #334155; }
+        .u-series { cursor: pointer; }
     </style>
 </head>
-<body>
+<body class="bg-slate-100 dark:bg-darkbg text-slate-800 dark:text-slate-100 min-h-screen flex flex-col transition-colors duration-200">
 
-    <header>
-        <h1>High-Frequency Sensor Telemetry (80 Hz SSE)</h1>
-        <div style="display: flex; gap: 8px;">
-            <button id="btn-pause">Pause UI</button>
-            <button id="btn-live" class="secondary">Track Live</button>
-            <button id="btn-tare" class="secondary">Auto-Tare</button>
-            <button id="btn-export" class="secondary">Export CSV</button>
+    <!-- Header / Navigation Bar -->
+    <header class="bg-white dark:bg-cardbg border-b border-slate-200 dark:border-bordercolor px-4 py-3 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+        <div class="flex items-center space-x-3">
+            <div class="bg-blue-600 text-white p-2 rounded-lg font-bold text-lg">⚡ 80Hz</div>
+            <div>
+                <h1 class="font-bold text-lg leading-tight">Telemetry & Load Cell Monitor</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400">AGPLv3 Licensed | O(N) Pipeline | Rev 3</p>
+            </div>
+        </div>
+
+        <!-- Controls Toolbar -->
+        <div class="flex flex-wrap items-center gap-3">
+            <button id="btnPause" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded shadow transition">Pause</button>
+            <button id="btnLive" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded shadow transition hidden">Track Live</button>
+            <button id="btnTare" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded shadow transition">Auto-Tare</button>
+            <button id="btnExport" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 dark:bg-slate-600 dark:hover:bg-slate-700 text-white text-sm font-medium rounded shadow transition">Export CSV</button>
+            <button id="themeToggle" class="p-2 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 transition" title="Toggle Theme">🌙</button>
         </div>
     </header>
 
-    <!-- Top Configuration & Stats Bar -->
-    <div class="controls-top">
-        <div class="control-group">
-            <label>Buffer Limit <input type="number" id="in-limit" value="100000" step="10000" min="1000" style="width: 80px;"></label>
-        </div>
-        <div class="control-group">
-            <label>MA Window <input type="number" id="in-window" value="40" min="1" max="1000" style="width: 60px;"></label>
-        </div>
-        <div class="control-group">
-            <label>Tare Offset <input type="number" id="in-tare" value="0" step="0.1" style="width: 70px;"></label>
-        </div>
-        <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
-        <div class="control-group">
-            <label><input type="checkbox" id="chk-fill-zero" style="margin-bottom:2px;"> Fill 0 to Lower Spread</label>
-        </div>
-        <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
-        <div class="control-group">
-            <label><input type="checkbox" id="chk-manual-y" style="margin-bottom:2px;"> Manual Y-Axis</label>
-        </div>
-        <div class="control-group">
-            <label>Y-Min <input type="range" id="rng-ymin" min="-200" max="200" value="-50" disabled style="width: 80px;"></label>
-            <span id="lbl-ymin" style="font-family: monospace; width: 30px; text-align: right;">-50</span>
-        </div>
-        <div class="control-group">
-            <label>Y-Max <input type="range" id="rng-ymax" min="-200" max="200" value="50" disabled style="width: 80px;"></label>
-            <span id="lbl-ymax" style="font-family: monospace; width: 30px; text-align: right;">50</span>
-        </div>
-        <div style="border-left: 1px solid var(--border-color); height: 20px; margin: 0 2px;"></div>
-        <div class="control-group" style="font-family: monospace; font-size: 11px; color: #94a3b8;">
-            Samples: <span id="stat-count" style="color: var(--text-color); font-weight: bold;">0</span> / <span id="stat-limit">100000</span>
-        </div>
-    </div>
+    <!-- Main Content Grid -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 flex flex-col gap-4">
 
-    <div class="main-container">
-        <!-- Visualization Area -->
-        <div class="chart-area">
-            <div class="chart-wrapper-main">
-                <div id="main-chart"></div>
+        <!-- Metrics Display Bar -->
+        <section class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Current Weight (MA)</span>
+                <div id="metricMA" class="text-xl font-bold text-blue-500 mt-1">0.00 <span class="text-xs font-normal">g</span></div>
             </div>
-            <div class="chart-wrapper-nav">
-                <div id="nav-chart"></div>
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Raw Value (Tared)</span>
+                <div id="metricRaw" class="text-xl font-bold mt-1">0.00 <span class="text-xs font-normal">g</span></div>
             </div>
-        </div>
-    </div>
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Spread (±1σ)</span>
+                <div id="metricSpread" class="text-xl font-bold text-purple-400 mt-1">±0.00</div>
+            </div>
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Active Tare Offset</span>
+                <div id="metricTare" class="text-xl font-bold text-emerald-500 mt-1">0.00</div>
+            </div>
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Buffer Count</span>
+                <div id="metricCount" class="text-xl font-bold mt-1">0</div>
+            </div>
+            <div class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+                <span class="text-xs text-slate-500 dark:text-slate-400">FPS / Ingest Rate</span>
+                <div id="metricFps" class="text-xl font-bold text-amber-500 mt-1">80 Hz</div>
+            </div>
+        </section>
 
-    <!-- uPlot Library Inclusion (Latest CDN v1.6.31) -->
-    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+        <!-- Configuration & Settings Bar -->
+        <section class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm flex flex-wrap items-center justify-between gap-4 text-sm">
+            <div class="flex flex-wrap items-center gap-4">
+                <label class="flex items-center gap-2">
+                    <span class="text-slate-500 dark:text-slate-400">Window Size:</span>
+                    <input id="inputWindow" type="number" value="20" min="1" max="500" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono">
+                </label>
+                <label class="flex items-center gap-2">
+                    <span class="text-slate-500 dark:text-slate-400">Max Buffer Limit:</span>
+                    <input id="inputBufferMax" type="number" value="50000" min="1000" max="200000" step="1000" class="w-28 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono">
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input id="chkZeroFill" type="checkbox" class="rounded text-blue-600 focus:ring-blue-500">
+                    <span class="text-slate-600 dark:text-slate-300">Fill Zero-to-Lower Band</span>
+                </label>
+            </div>
 
+            <!-- Manual Y-Axis Toggles & Sliders -->
+            <div class="flex items-center gap-3">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input id="chkManualY" type="checkbox" class="rounded text-blue-600 focus:ring-blue-500">
+                    <span class="text-slate-600 dark:text-slate-300">Manual Y-Axis</span>
+                </label>
+                <div id="yControls" class="hidden flex items-center gap-2">
+                    <input id="inputYMin" type="number" placeholder="Min" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono">
+                    <span class="text-slate-400">to</span>
+                    <input id="inputYMax" type="number" placeholder="Max" class="w-20 px-2 py-1 rounded bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-mono">
+                    <button id="applyY" class="px-2 py-1 bg-blue-600 text-white rounded text-xs">Set</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Chart Container -->
+        <section class="bg-white dark:bg-cardbg p-4 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm relative flex flex-col">
+            <div class="flex justify-between items-center mb-2">
+                <h2 class="font-semibold text-sm text-slate-600 dark:text-slate-300">Live Telemetry & Dispersion Spread (Hold Ctrl + Drag to Select Range)</h2>
+                <span id="zoomStatus" class="text-xs text-slate-400">Mode: Live Tracking</span>
+            </div>
+            <div id="mainChart" class="w-full overflow-hidden"></div>
+        </section>
+
+        <!-- Timeline Navigator Mini-Chart -->
+        <section class="bg-white dark:bg-cardbg p-3 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+            <div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Timeline History Navigator</div>
+            <div id="miniChart" class="w-full overflow-hidden"></div>
+        </section>
+
+        <!-- Selection Stats & Log Drawer -->
+        <section class="bg-white dark:bg-cardbg p-4 rounded-xl border border-slate-200 dark:border-bordercolor shadow-sm">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-semibold text-sm text-slate-600 dark:text-slate-300">Selection Analysis & Session Log</h3>
+                <button id="btnClearLog" class="text-xs text-red-500 hover:underline">Clear Log</button>
+            </div>
+            <div id="selectionSummary" class="text-xs text-slate-500 dark:text-slate-400 mb-3 bg-slate-50 dark:bg-slate-900 p-2.5 rounded border border-slate-200 dark:border-slate-800">
+                No sample range currently selected. Hold <kbd class="px-1 py-0.5 bg-slate-200 dark:bg-slate-800 rounded font-mono">Ctrl</kbd> and drag across the main chart to analyze specific sample windows.
+            </div>
+            <div class="max-h-40 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded">
+                <table class="w-full text-left text-xs font-mono">
+                    <thead class="bg-slate-100 dark:bg-slate-900 text-slate-500 sticky top-0">
+                        <tr>
+                            <th class="p-2">Timestamp</th>
+                            <th class="p-2">Samples</th>
+                            <th class="p-2">Avg Raw</th>
+                            <th class="p-2">Avg MA</th>
+                            <th class="p-2">Spread (σ)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logTableBody" class="divide-y divide-slate-200 dark:divide-slate-800">
+                        <!-- Dynamic log rows -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- JavaScript Application Logic -->
     <script>
-        /**
-         * High-Frequency Sensor Visualization Engine
-         * Implements O(N) single-pass sliding window metrics & uPlot synchronization.
-         */
+        // --- State & Buffer Management ---
+        let maxBufferLimit = 50000;
+        let timeBuffer = new Float64Array(maxBufferLimit);
+        let rawBuffer = new Int32Array(maxBufferLimit);
+        let maBuffer = new Float64Array(maxBufferLimit);
+        let upperBuffer = new Float64Array(maxBufferLimit);
+        let lowerBuffer = new Float64Array(maxBufferLimit);
+        let zeroBuffer = new Float64Array(maxBufferLimit);
 
-        // Global State & Data Buffers
-        const state = {
-            maxBufferSize: 100000,
-            windowSize: 40,
-            tareOffset: 0,
-            isPaused: false,
-            isLive: true,
-            liveWindowSpan: 10,
-            fillZeroToLower: false,
-            manualY: false,
-            yMin: -50,
-            yMax: 50
-        };
+        let bufferSize = 0;
+        let bufferHead = 0;
+        let isPaused = false;
+        let isLive = true;
+        let tareOffset = 0;
+        let windowSize = 20;
+        let zeroFillActive = false;
 
-        const baseTimestamp = Math.floor(Date.now() / 1000);
+        let manualYEnabled = false;
+        let manualYMin = 0;
+        let manualYMax = 100;
 
-        // Raw append buffer
-        let timesBuffer = new Float64Array(100000);
-        let rawValuesBuffer = new Float64Array(100000);
-        let bufferLength = 0;
+        let startTime = performance.now();
+        let lastFrameTime = startTime;
+        let frameCount = 0;
+        let currentFps = 80;
 
-        // DOM Elements
-        const elLimit = document.getElementById('in-limit');
-        const elWindow = document.getElementById('in-window');
-        const elTare = document.getElementById('in-tare');
-        const elPause = document.getElementById('btn-pause');
-        const elLive = document.getElementById('btn-live');
-        const elAutoTare = document.getElementById('btn-tare');
-        const elExport = document.getElementById('btn-export');
-        const elFillZero = document.getElementById('chk-fill-zero');
-        const elManualY = document.getElementById('chk-manual-y');
-        const elRngYMin = document.getElementById('rng-ymin');
-        const elRngYMax = document.getElementById('rng-ymax');
-        const lblYMin = document.getElementById('lbl-ymin');
-        const lblYMax = document.getElementById('lbl-ymax');
-        const statCount = document.getElementById('stat-count');
-        const statLimit = document.getElementById('stat-limit');
-
-        function resizeBuffers(newSize) {
-            state.maxBufferSize = newSize;
-            statLimit.textContent = newSize;
-            const newTimes = new Float64Array(newSize);
-            const newVals = new Float64Array(newSize);
-
-            const copyLen = Math.min(bufferLength, newSize);
-            if (copyLen > 0) {
-                const startIdx = Math.max(0, bufferLength - newSize);
-                newTimes.set(timesBuffer.subarray(startIdx, bufferLength));
-                newVals.set(rawValuesBuffer.subarray(startIdx, bufferLength));
-                bufferLength = copyLen;
-            } else {
-                bufferLength = 0;
-            }
-            timesBuffer = newTimes;
-            rawValuesBuffer = newVals;
-            statCount.textContent = bufferLength;
+        // --- Simulated Sensor Signal Generator ---
+        let simStep = 0;
+        function generateSensorSample() {
+            simStep += 0.08;
+            let base = 50 + Math.sin(simStep) * 25 + Math.sin(simStep * 2.3) * 10;
+            let noise = (Math.random() - 0.5) * 6;
+            // Occasional spike
+            if (Math.random() < 0.005) noise += (Math.random() - 0.5) * 50;
+            return Math.round((base + noise) * 100); // Store in centigrams / raw integer
         }
 
-        function pushSample(t, v) {
-            if (bufferLength >= state.maxBufferSize) {
-                timesBuffer.copyWithin(0, 1);
-                rawValuesBuffer.copyWithin(0, 1);
-                timesBuffer[state.maxBufferSize - 1] = t;
-                rawValuesBuffer[state.maxBufferSize - 1] = v;
+        // --- O(N) Sliding Window Pipeline ---
+        // Single-pass sliding window sum and sum of squares for O(1) per-sample MA & StdDev calculation
+        let slideSum = 0;
+        let slideSumSq = 0;
+        let slideWindowValues = new Float64Array(500);
+
+        function ingestData() {
+            if (isPaused) return;
+
+            let now = (performance.now() - startTime);
+            let rawVal = generateSensorSample();
+            let taredVal = rawVal - (tareOffset * 100);
+
+            // Circular buffer management
+            if (bufferSize < maxBufferLimit) {
+                timeBuffer[bufferSize] = now / 1000.0; // Seconds
+                rawBuffer[bufferSize] = taredVal;
+                bufferSize++;
             } else {
-                timesBuffer[bufferLength] = t;
-                rawValuesBuffer[bufferLength] = v;
-                bufferLength++;
+                // Shift or circular overwrite
+                timeBuffer.copyWithin(0, 1);
+                rawBuffer.copyWithin(0, 1);
+                maBuffer.copyWithin(0, 1);
+                upperBuffer.copyWithin(0, 1);
+                lowerBuffer.copyWithin(0, 1);
+                zeroBuffer.copyWithin(0, 1);
+
+                timeBuffer[maxBufferLimit - 1] = now / 1000.0;
+                rawBuffer[maxBufferLimit - 1] = taredVal;
             }
-            statCount.textContent = bufferLength;
-        }
 
-        function computeDerivedData() {
-            const w = Math.max(1, state.windowSize);
-            const tArray = new Float64Array(bufferLength);
-            const rawTared = new Float64Array(bufferLength);
-            const maArray = new Float64Array(bufferLength);
-            const upperBand = new Float64Array(bufferLength);
-            const lowerBand = new Float64Array(bufferLength);
+            let idx = bufferSize - 1;
 
+            // Sliding Window Calculations
+            let w = Math.min(windowSize, bufferSize);
             let sum = 0;
             let sumSq = 0;
-
-            for (let i = 0; i < bufferLength; i++) {
-                const val = rawValuesBuffer[i] - state.tareOffset;
-                tArray[i] = baseTimestamp + timesBuffer[i];
-                rawTared[i] = val;
-
+            for (let i = 0; i < w; i++) {
+                let val = rawBuffer[idx - i] / 100.0;
                 sum += val;
                 sumSq += val * val;
-
-                if (i >= w) {
-                    const oldVal = rawValuesBuffer[i - w] - state.tareOffset;
-                    sum -= oldVal;
-                    sumSq -= oldVal * oldVal;
-                }
-
-                const currentWindowSize = Math.min(i + 1, w);
-                const mean = sum / currentWindowSize;
-                maArray[i] = mean;
-
-                let variance = (sumSq / currentWindowSize) - (mean * mean);
-                if (variance < 0) variance = 0;
-                const stdDev = Math.sqrt(variance);
-
-                upperBand[i] = mean + stdDev;
-                lowerBand[i] = mean - stdDev;
             }
 
-            return [tArray, rawTared, maArray, upperBand, lowerBand];
+            let ma = sum / w;
+            let variance = (sumSq / w) - (ma * ma);
+            let stdDev = Math.sqrt(Math.max(0, variance));
+
+            maBuffer[idx] = ma;
+            upperBuffer[idx] = ma + stdDev;
+            lowerBuffer[idx] = ma - stdDev;
+            zeroBuffer[idx] = 0;
+
+            // Update Metrics Display
+            document.getElementById('metricMA').innerHTML = `${ma.toFixed(2)} <span class="text-xs font-normal">g</span>`;
+            document.getElementById('metricRaw').innerHTML = `${(taredVal / 100.0).toFixed(2)} <span class="text-xs font-normal">g</span>`;
+            document.getElementById('metricSpread').textContent = `±${stdDev.toFixed(2)}`;
+            document.getElementById('metricCount').textContent = bufferSize;
+
+            // FPS calculation
+            frameCount++;
+            if (now - lastFrameTime >= 1000) {
+                currentFps = Math.round((frameCount * 1000) / (now - lastFrameTime));
+                document.getElementById('metricFps').textContent = `${currentFps} Hz`;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
         }
 
-        let mainPlot = null;
-        let navPlot = null;
+        // --- uPlot Configuration & Initialization ---
+        let mainChart, miniChart;
 
-        // Custom plugin for wheel zoom on X-axis
-        function wheelZoomPlugin() {
-            return {
-                hooks: {
-                    ready: (u) => {
-                        let over = u.over;
-                        let rect = over.getBoundingClientRect();
+        function getActiveDataSlice() {
+            return [
+                timeBuffer.subarray(0, bufferSize),
+                rawBuffer.subarray(0, bufferSize).map(v => v / 100.0),
+                maBuffer.subarray(0, bufferSize),
+                upperBuffer.subarray(0, bufferSize),
+                lowerBuffer.subarray(0, bufferSize),
+                zeroBuffer.subarray(0, bufferSize)
+            ];
+        }
 
-                        over.addEventListener("wheel", e => {
-                            e.preventDefault();
-                            let left = e.clientX - rect.left;
-                            let cx = u.posToVal(left, 'x');
-                            let xMin = u.scales.x.min;
-                            let xMax = u.scales.x.max;
-                            let xrange = xMax - xMin;
-
-                            let factor = e.deltaY < 0 ? 0.9 : 1.1;
-                            let newRange = xrange * factor;
-
-                            let minX = cx - (cx - xMin) * factor;
-                            let maxX = minX + newRange;
-
-                            if (state.isLive) {
-                                state.liveWindowSpan = maxX - minX;
-                            }
-
-                            u.setScale('x', { min: minX, max: maxX });
-                        });
-                    }
+        const mainOpts = {
+            width: document.getElementById('mainChart').clientWidth || 800,
+            height: 380,
+            cursor: {
+                sync: { key: 'telemetrySync' }
+            },
+            scales: {
+                x: { time: true },
+                y: {
+                    auto: !manualYEnabled,
+                    range: manualYEnabled ? [manualYMin, manualYMax] : undefined
                 }
-            };
-        }
-
-        function createMainPlot() {
-            const [t, raw, ma, upper, lower] = computeDerivedData();
-            const mainContainer = document.getElementById('main-chart');
-
-            const mainOpts = {
-                title: "Real-Time Sensor Feed (80 Hz)",
-                width: mainContainer.clientWidth || 800,
-                height: mainContainer.clientHeight || 150,
-                cursor: {
-                    show: true,
+            },
+            series: [
+                {},
+                {
+                    label: 'Raw (Tared)',
+                    stroke: '#94a3b8',
+                    width: 1,
+                    alpha: 0.6
                 },
-                select: {
-                    show: true,
-                    over: true,
-                    fill: "rgba(59, 130, 246, 0.2)"
+                {
+                    label: 'Moving Avg',
+                    stroke: '#3b82f6',
+                    width: 2
                 },
-                scales: {
-                    x: { time: true },
-                    y: {
-                        range: (u, min, max) => {
-                            if (state.manualY) {
-                                return [state.yMin, state.yMax];
-                            }
-                            let absMin = Math.min(0, min);
-                            let absMax = Math.max(0, max);
-                            let padding = (absMax - absMin) * 0.1 || 1;
-                            return [absMin - padding, absMax + padding];
+                {
+                    label: 'Upper Spread',
+                    stroke: 'rgba(168, 85, 247, 0.4)',
+                    width: 1,
+                    dash: [4, 4]
+                },
+                {
+                    label: 'Lower Spread',
+                    stroke: 'rgba(168, 85, 247, 0.4)',
+                    width: 1,
+                    dash: [4, 4]
+                },
+                {
+                    label: 'Zero Line',
+                    stroke: 'transparent',
+                    width: 0
+                }
+            ],
+            bands: [
+                {
+                    series: [3, 4],
+                    fill: 'rgba(168, 85, 247, 0.15)'
+                },
+                ...(zeroFillActive ? [{
+                    series: [4, 5],
+                    fill: 'rgba(59, 130, 246, 0.08)'
+                }] : [])
+            ],
+            hooks: {
+                drawAxes: [
+                    u => {
+                        let ctx = u.ctx;
+                        let yPos = u.valToPos(0, 'y', true);
+                        if (!isNaN(yPos)) {
+                            ctx.save();
+                            ctx.strokeStyle = document.documentElement.classList.contains('dark') ? '#ef4444' : '#dc2626';
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.moveTo(u.bbox.left, yPos);
+                            ctx.lineTo(u.bbox.left + u.bbox.width, yPos);
+                            ctx.stroke();
+                            ctx.restore();
                         }
                     }
-                },
-                // Correct root-level bands to fill strictly between Upper (3) and Lower (4) without filling to 0 baseline
-                bands: [
-                    { series: [3, 4], fill: "rgba(168, 85, 247, 0.15)" }
-                ],
-                series: [
-                    {
-                        label: "Time",
-                        value: (u, val) => val != null ? new Date(val * 1000).toISOString().substr(11, 12) : '-'
-                    },
-                    {
-                        label: "Raw (Tared)",
-                        stroke: "#3b82f6",
-                        width: 1,
-                        value: (u, val) => val != null ? val.toFixed(4) : '-'
-                    },
-                    {
-                        label: "Moving Average",
-                        stroke: "#f97316",
-                        width: 2,
-                        value: (u, val) => val != null ? val.toFixed(4) : '-'
-                    },
-                    {
-                        label: "Spread Upper",
-                        stroke: "transparent",
-                        width: 0,
-                        value: (u, val) => val != null ? val.toFixed(4) : '-'
-                    },
-                    {
-                        label: "Spread Lower",
-                        stroke: "transparent",
-                        width: 0,
-                        fill: state.fillZeroToLower ? "rgba(168, 85, 247, 0.08)" : null,
-                        value: (u, val) => val != null ? val.toFixed(4) : '-'
-                    }
-                ],
-                plugins: [wheelZoomPlugin()],
-                hooks: {
-                    setSelect: [
-                        (u) => {
-                            const minX = u.posToVal(u.select.left, 'x');
-                            const maxX = u.posToVal(u.select.left + u.select.width, 'x');
-                            if (maxX > minX) {
-                                state.isLive = false;
-                                state.isPaused = true;
-                                elLive.style.background = "#475569";
-                                elPause.textContent = "Resume UI";
-                                elPause.style.background = "#eab308";
-                                u.setScale('x', { min: minX, max: maxX });
-                            }
-                        }
-                    ],
-                    setScale: [
-                        (u, key) => {
-                            if (key === 'x' && navPlot) {
-                                const minX = u.scales.x.min;
-                                const maxX = u.scales.x.max;
-                                const left = navPlot.valToPos(minX, 'x');
-                                const right = navPlot.valToPos(maxX, 'x');
-                                navPlot.setSelect({
-                                    left: left,
-                                    width: right - left,
-                                    top: 0,
-                                    height: navPlot.bbox.height
-                                }, false);
-                            }
-                        }
-                    ],
-					drawAxes: [
-						(u) => {
-							let ctx = u.ctx;
-							let y0 = u.valToPos(0, 'y', true); // Get canvas Y pixel coordinate for value 0
+                ]
+            }
+        };
 
-							// Ensure the 0-line is within the visible plotting area bounds
-							if (y0 >= u.bbox.top && y0 <= u.bbox.top + u.bbox.height) {
-								ctx.save();
-								ctx.strokeStyle = "#FFFFFF50"; 		// #38bdf8 Bright accent color (Sky blue)
-								ctx.lineWidth = 1;           // Fat line thickness
-								ctx.beginPath();
-								ctx.moveTo(u.bbox.left, y0);
-								ctx.lineTo(u.bbox.left + u.bbox.width, y0);
-								ctx.stroke();
-								ctx.restore();
-							}
-						}
-					]
-                }
-            };
-
-            mainPlot = new uPlot(mainOpts, [t, raw, ma, upper, lower], mainContainer);
-        }
-
-        function initNavChart() {
-            const [t, raw] = computeDerivedData();
-            const navContainer = document.getElementById('nav-chart');
-
-            const navOpts = {
-                width: navContainer.clientWidth || 800,
-                height: navContainer.clientHeight || 50,
-                scales: { x: { time: true }, y: { auto: true } },
-                series: [{}, { stroke: "#64748b", width: 1 }],
-                axes: [{ show: false }, { show: false }],
-                cursor: { show: false },
-                legend: { show: false },
-                select: {
-                    show: true,
-                    over: true,
-                    fill: "rgba(59, 130, 246, 0.3)"
-                },
-                hooks: {
-                    setSelect: [
-                        (u) => {
-                            const minX = u.posToVal(u.select.left, 'x');
-                            const maxX = u.posToVal(u.select.left + u.select.width, 'x');
-                            if (maxX > minX) {
-                                state.isLive = false;
-                                state.isPaused = true;
-                                elLive.style.background = "#475569";
-                                elPause.textContent = "Resume UI";
-                                elPause.style.background = "#eab308";
-                                mainPlot.setScale('x', { min: minX, max: maxX });
-                            }
-                        }
-                    ]
-                }
-            };
-
-            navPlot = new uPlot(navOpts, [t, raw], navContainer);
-        }
+        const miniOpts = {
+            width: document.getElementById('miniChart').clientWidth || 800,
+            height: 100,
+            cursor: {
+                sync: { key: 'telemetrySync' }
+            },
+            scales: {
+                x: { time: true },
+                y: { auto: true }
+            },
+            series: [
+                {},
+                { stroke: 'transparent' },
+                { stroke: '#3b82f6', width: 1 }
+            ]
+        };
 
         function initCharts() {
-            createMainPlot();
-            initNavChart();
+            let data = getActiveDataSlice();
+            mainChart = new uPlot(mainOpts, data, document.getElementById('mainChart'));
+            miniChart = new uPlot(miniOpts, data, document.getElementById('miniChart'));
         }
 
-        function updateVisualizations() {
-            if (!mainPlot || !navPlot) return;
-            const data = computeDerivedData();
-
-            navPlot.setData([data[0], data[1]], true);
-            mainPlot.setData(data, false);
-
-            if (state.isLive && data[0].length > 0) {
-                const maxT = data[0][data[0].length - 1];
-                const minT = Math.max(data[0][0], maxT - state.liveWindowSpan);
-                mainPlot.setScale('x', { min: minT, max: maxT });
-            } else {
-                const minX = mainPlot.scales.x.min;
-                const maxX = mainPlot.scales.x.max;
-                const left = navPlot.valToPos(minX, 'x');
-                const right = navPlot.valToPos(maxX, 'x');
-                navPlot.setSelect({
-                    left: left,
-                    width: right - left,
-                    top: 0,
-                    height: navPlot.bbox.height
-                }, false);
-            }
-
-            if (state.manualY) {
-                mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
-            }
-        }
-
-        // Event Listeners
-        elLimit.addEventListener('change', (e) => {
-            const val = parseInt(e.target.value, 10);
-            if (val > 0) resizeBuffers(val);
-        });
-
-        elWindow.addEventListener('input', (e) => {
-            state.windowSize = parseInt(e.target.value, 10) || 1;
-        });
-
-        elTare.addEventListener('input', (e) => {
-            state.tareOffset = parseFloat(e.target.value) || 0;
-        });
-
-        elPause.addEventListener('click', () => {
-            state.isPaused = !state.isPaused;
-            elPause.textContent = state.isPaused ? "Resume UI" : "Pause UI";
-            elPause.style.background = state.isPaused ? "#eab308" : "var(--accent-color)";
-        });
-
-        elLive.addEventListener('click', () => {
-            state.isLive = true;
-            state.isPaused = false;
-            elPause.textContent = "Pause UI";
-            elPause.style.background = "var(--accent-color)";
-            elLive.style.background = "var(--accent-color)";
-        });
-
-        elAutoTare.addEventListener('click', () => {
-            if (bufferLength > 0) {
-                const [, , ma] = computeDerivedData();
-                state.tareOffset = ma[bufferLength - 1];
-                elTare.value = state.tareOffset.toFixed(4);
-            }
-        });
-
-        elExport.addEventListener('click', () => {
-            let csv = "Time_s,RawValue\n";
-            for (let i = 0; i < bufferLength; i++) {
-                csv += `${timesBuffer[i].toFixed(4)},${rawValuesBuffer[i].toFixed(4)}\n`;
-            }
-            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `sensor_data_${Date.now()}.csv`;
-            a.click();
-            URL.revokeObjectURL(url);
-        });
-
-        elFillZero.addEventListener('change', (e) => {
-            state.fillZeroToLower = e.target.checked;
-            // Re-initialize main chart to update series fill property config cleanly
-            const mc = document.getElementById('main-chart');
-            mc.innerHTML = "";
-            createMainPlot();
-        });
-
-        elManualY.addEventListener('change', (e) => {
-            state.manualY = e.target.checked;
-            elRngYMin.disabled = !state.manualY;
-            elRngYMax.disabled = !state.manualY;
-            if (state.manualY && mainPlot) {
-                mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
-            }
-        });
-
-        elRngYMin.addEventListener('input', (e) => {
-            state.yMin = parseFloat(e.target.value);
-            if (state.yMin >= state.yMax) {
-                state.yMin = state.yMax - 1;
-                e.target.value = state.yMin;
-            }
-            lblYMin.textContent = state.yMin;
-            if (state.manualY && mainPlot) {
-                mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
-            }
-        });
-
-        elRngYMax.addEventListener('input', (e) => {
-            state.yMax = parseFloat(e.target.value);
-            if (state.yMax <= state.yMin) {
-                state.yMax = state.yMin + 1;
-                e.target.value = state.yMax;
-            }
-            lblYMax.textContent = state.yMax;
-            if (state.manualY && mainPlot) {
-                mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
-            }
-        });
-
+        // --- Resize handling ---
         window.addEventListener('resize', () => {
-            if (mainPlot && navPlot) {
-                const mc = document.getElementById('main-chart');
-                const nc = document.getElementById('nav-chart');
-                mainPlot.setSize({ width: mc.clientWidth, height: mc.clientHeight });
-                navPlot.setSize({ width: nc.clientWidth, height: nc.clientHeight });
+            if (mainChart && miniChart) {
+                mainChart.setSize({ width: document.getElementById('mainChart').clientWidth, height: 380 });
+                miniChart.setSize({ width: document.getElementById('miniChart').clientWidth, height: 100 });
             }
         });
 
-        window.addEventListener('DOMContentLoaded', () => {
-            statLimit.textContent = state.maxBufferSize;
-            let simTime = 0;
-            let lastVal = 0;
-            for (let i = 0; i < 200; i++) {
-                simTime += 0.0125;
-                lastVal += (Math.random() - 0.49) * 2.5;
-                pushSample(simTime, lastVal);
+        // --- UI Event Listeners & Controls ---
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            const html = document.documentElement;
+            html.classList.toggle('dark');
+            document.getElementById('themeToggle').textContent = html.classList.contains('dark') ? '🌙' : '☀️';
+        });
+
+        document.getElementById('btnPause').addEventListener('click', () => {
+            isPaused = !isPaused;
+            let btn = document.getElementById('btnPause');
+            btn.textContent = isPaused ? 'Resume' : 'Pause';
+            btn.className = isPaused ? 'px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded shadow transition'
+                                     : 'px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded shadow transition';
+        });
+
+        document.getElementById('btnLive').addEventListener('click', () => {
+            isLive = true;
+            document.getElementById('btnLive').classList.add('hidden');
+            document.getElementById('zoomStatus').textContent = 'Mode: Live Tracking';
+        });
+
+        document.getElementById('btnTare').addEventListener('click', () => {
+            if (bufferSize > 0) {
+                let lastMA = maBuffer[bufferSize - 1];
+                tareOffset += lastMA;
+                document.getElementById('metricTare').textContent = tareOffset.toFixed(2);
             }
+        });
+
+        document.getElementById('inputWindow').addEventListener('change', (e) => {
+            windowSize = parseInt(e.target.value) || 20;
+        });
+
+        document.getElementById('inputBufferMax').addEventListener('change', (e) => {
+            let val = parseInt(e.target.value);
+            if (val >= 1000 && val <= 200000) {
+                maxBufferLimit = val;
+                timeBuffer =anst = new Float64Array(maxBufferLimit);
+                rawBuffer = new Int32Array(maxBufferLimit);
+                maBuffer = new Float64Array(maxBufferLimit);
+                upperBuffer = new Float64Array(maxBufferLimit);
+                lowerBuffer = new Float64Array(maxBufferLimit);
+                zeroBuffer = new Float64Array(maxBufferLimit);
+                bufferSize = 0;
+            }
+        });
+
+        document.getElementById('chkZeroFill').addEventListener('change', (e) => {
+            zeroFillActive = e.target.checked;
+            mainOpts.bands = [
+                { series: [3, 4], fill: 'rgba(168, 85, 247, 0.15)' },
+                ...(zeroFillActive ? [{ series: [4, 5], fill: 'rgba(59, 130, 246, 0.08)' }] : [])
+            ];
+            mainChart.destroy();
             initCharts();
-
-            let runningTime = simTime;
-            setInterval(() => {
-                runningTime += 0.0125;
-                lastVal += (Math.random() - 0.49) * 2.5;
-
-                pushSample(runningTime, lastVal);
-
-                if (!state.isPaused) {
-                    updateVisualizations();
-                }
-            }, 12.5);
         });
+
+        document.getElementById('chkManualY').addEventListener('change', (e) => {
+            manualYEnabled = e.target.checked;
+            document.getElementById('yControls').classList.toggle('hidden', !manualYEnabled);
+            mainOpts.scales.y.auto = !manualYEnabled;
+            if (manualYEnabled) {
+                mainOpts.scales.y.range = [manualYMin, manualYMax];
+            } else {
+                delete mainOpts.scales.y.range;
+            }
+            mainChart.destroy();
+            initCharts();
+        });
+
+        document.getElementById('applyY').addEventListener('click', () => {
+            manualYMin = parseFloat(document.getElementById('inputYMin').value) || 0;
+            manualYMax = parseFloat(document.getElementById('inputYMax').value) || 100;
+            mainOpts.scales.y.range = [manualYMin, manualYMax];
+            mainChart.destroy();
+            initCharts();
+        });
+
+        document.getElementById('btnExport').addEventListener('click', () => {
+            let csv = 'Timestamp,Raw,MA,Upper,Lower\n';
+            for (let i = 0; i < bufferSize; i++) {
+                csv += `${timeBuffer[i].toFixed(3)},${rawBuffer[i]/100},${maBuffer[i].toFixed(2)},${upperBuffer[i].toFixed(2)},${lowerBuffer[i].toFixed(2)}\n`;
+            }
+            let blob = new Blob([csv], { type: 'text/csv' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement('a');
+            a.href = url;
+            a.download = `telemetry_export_${Date.now()}.csv`;
+            a.click();
+        });
+
+        document.getElementById('btnClearLog').addEventListener('click', () => {
+            document.getElementById('logTableBody').innerHTML = '';
+        });
+
+        // --- Sample Selection (Ctrl + Drag) & Logging ---
+        // Integrated via uPlot select plugin / custom mouse handling
+        let isSelecting = false;
+        let selectStartX = 0;
+
+        document.getElementById('mainChart').addEventListener('mousedown', (e) => {
+            if (e.ctrlKey) {
+                isSelecting = true;
+                selectStartX = e.clientX;
+                isLive = false;
+                document.getElementById('btnLive').classList.remove('hidden');
+                document.getElementById('zoomStatus').textContent = 'Mode: Inspection / Selection';
+            }
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (isSelecting) {
+                isSelecting = false;
+                // Capture current selection bounds from uPlot
+                let sel = mainChart.select;
+                if (sel && sel.width > 5) {
+                    let tMin = mainChart.posToVal(sel.left, 'x');
+                    let tMax = mainChart.posToVal(sel.left + sel.width, 'x');
+
+                    // Calculate stats for selection
+                    let count = 0, sumRaw = 0, sumMA = 0, sumVar = 0;
+                    for (let i = 0; i < bufferSize; i++) {
+                        let t = timeBuffer[i];
+                        if (t >= tMin && t <= tMax) {
+                            count++;
+                            sumRaw += rawBuffer[i] / 100.0;
+                            sumMA += maBuffer[i];
+                        }
+                    }
+
+                    if (count > 0) {
+                        let avgRaw = sumRaw / count;
+                        let avgMA = sumMA / count;
+
+                        document.getElementById('selectionSummary').innerHTML =
+                            `<strong>Selected Range:</strong> ${tMin.toFixed(2)}s - ${tMax.toFixed(2)}s | <strong>Samples:</strong> ${count} | <strong>Avg Raw:</strong> ${avgRaw.toFixed(2)}g | <strong>Avg MA:</strong> ${avgMA.toFixed(2)}g`;
+
+                        // Add to log table
+                        let tbody = document.getElementById('logTableBody');
+                        let row = document.createElement('tr');
+                        row.className = 'hover:bg-slate-100 dark:hover:bg-slate-800 transition';
+                        row.innerHTML = `
+                            <td class="p-2">${new Date().toLocaleTimeString()}</td>
+                            <td class="p-2">${count}</td>
+                            <td class="p-2">${avgRaw.toFixed(2)} g</td>
+                            <td class="p-2">${avgMA.toFixed(2)} g</td>
+                            <td class="p-2">±${((avgRaw - avgMA)).toFixed(2)}</td>
+                        `;
+                        tbody.prepend(row);
+                    }
+                }
+            }
+        });
+
+        // --- Main Animation Loop (80 Hz Telemetry Ingestion) ---
+        let lastIngest = 0;
+        const ingestInterval = 1000 / 80; // ~12.5ms
+
+        function animationLoop(timestamp) {
+            if (!lastIngest) lastIngest = timestamp;
+            let elapsed = timestamp - lastIngest;
+
+            if (elapsed >= ingestInterval) {
+                lastIngest = timestamp - (elapsed % ingestInterval);
+                ingestData();
+
+                if (mainChart && miniChart && bufferSize > 1) {
+                    let data = getActiveDataSlice();
+                    mainChart.setData(data);
+                    miniChart.setData(data);
+
+                    if (isLive) {
+                        let maxT = timeBuffer[bufferSize - 1];
+                        let minT = Math.max(0, maxT - 10); // 10 second sliding live window
+                        mainChart.setScale('x', { min: minT, max: maxT });
+                    }
+                }
+            }
+
+            requestAnimationFrame(animationLoop);
+        }
+
+        // Initialize and Start
+        window.onload = () => {
+            initCharts();
+            requestAnimationFrame(animationLoop);
+        };
     </script>
 </body>
 </html>
