@@ -148,7 +148,7 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
         <div class="panel-note" id="selectionHint">Tip: Shift + drag across the chart to select a sample interval. On touch screens, use two-finger drag or the navigator.</div>
       </section>
       <section class="panel navigator">
-        <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history · drag selection to navigate</span></div>
+        <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history overview · drag selection to navigate</span></div>
         <div id="miniChart"></div>
       </section>
       <section class="panel log-panel">
@@ -176,6 +176,7 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
         <div class="panel-head"><h2>Display options</h2></div>
         <label class="check"><input type="checkbox" id="spreadToggle" checked> Show standard deviation band</label>
         <label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
+        <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
         <label class="check"><input type="checkbox" id="rawToggle" checked> Show raw signal</label>
         <label class="check"><input type="checkbox" id="maToggle" checked> Show moving average</label>
         <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
@@ -360,51 +361,40 @@ function colors() {
 function createPlotBuffer(size) {
   return {
     x: new Float64Array(size), raw: new Float64Array(size), ma: new Float64Array(size),
-    upper: new Float64Array(size), lower: new Float64Array(size), lowerZero: new Float64Array(size)
+    upper: new Float64Array(size), lower: new Float64Array(size)
   };
 }
 
-// Build a pixel-bounded envelope of the visible interval, retaining local raw extrema.
+function ensurePlotBuffers(required) {
+  const current = state.plotBuffers[0]?.x.length || 0;
+  if (current >= required) return;
+  let size = Math.max(4096, current || 0);
+  while (size < required) size = Math.min(state.capacity, size * 2);
+  state.plotBuffers = [createPlotBuffer(size), createPlotBuffer(size)];
+  state.plotBufferIndex = 0;
+}
+
+// Pack every visible sample without downsampling. Buffers are reused between frames.
 function buildVisibleData() {
   const [lo, hi] = visibleIndices();
-  if (hi < lo) return [[], [], [], [], [], []];
-  const width = Math.max(250, (state.mainPlot?.width || 800) * 3);
+  if (hi < lo) return [[], [], [], [], []];
   const count = hi - lo + 1;
-  const bucketCount = Math.max(1, Math.min(Math.floor(width / 4), Math.ceil(count / 4)));
+  ensurePlotBuffers(count);
   const buf = state.plotBuffers[state.plotBufferIndex ^= 1];
-  let out = 0, lastLogical = -1;
-
-  function emit(i) {
-    if (i === lastLogical || out >= buf.x.length) return;
-    lastLogical = i;
-    const raw = getRaw(i) - state.tare;
-    const ma = getMA(i) - state.tare;
+  let out = 0;
+  for (let i = lo; i <= hi; i++) {
+    const raw = getRaw(i);
+    const ma = getMA(i);
     const sd = getSpread(i);
     buf.x[out] = getTime(i) / 1000;
-    buf.raw[out] = raw;
-    buf.ma[out] = ma;
-    buf.upper[out] = ma + sd;
-    buf.lower[out] = ma - sd;
-    buf.lowerZero[out] = Math.min(0, ma - sd);
+    buf.raw[out] = raw - state.tare;
+    buf.ma[out] = ma - state.tare;
+    buf.upper[out] = ma + sd - state.tare;
+    buf.lower[out] = ma - sd - state.tare;
     out++;
   }
-
-  for (let b = 0; b < bucketCount; b++) {
-    const a = lo + Math.floor(b * count / bucketCount);
-    const z = Math.max(a, lo + Math.floor((b + 1) * count / bucketCount) - 1);
-    let minIndex = a, maxIndex = a, minValue = Infinity, maxValue = -Infinity;
-    for (let i = a; i <= z; i++) {
-      const v = getRaw(i);
-      if (v < minValue) { minValue = v; minIndex = i; }
-      if (v > maxValue) { maxValue = v; maxIndex = i; }
-    }
-    emit(a);
-    if (minIndex <= maxIndex) { emit(minIndex); emit(maxIndex); }
-    else { emit(maxIndex); emit(minIndex); }
-    emit(z);
-  }
   return [buf.x.subarray(0,out), buf.raw.subarray(0,out), buf.ma.subarray(0,out),
-          buf.upper.subarray(0,out), buf.lower.subarray(0,out), buf.lowerZero.subarray(0,out)];
+          buf.upper.subarray(0,out), buf.lower.subarray(0,out)];
 }
 
 function buildMiniData() {
@@ -427,16 +417,26 @@ function buildMiniData() {
 function zeroFillPlugin() {
   return { hooks: { drawClear: [u => {
     if (!$('zeroFillToggle').checked || !u.data[0]?.length) return;
-    const xs = u.data[0], lows = u.data[5], ctx = u.ctx;
+    const xs = u.data[0], lower = u.data[4], ctx = u.ctx;
     const yZero = u.valToPos(0, 'y', true);
-    ctx.save(); ctx.fillStyle = 'rgba(95,190,160,.13)'; ctx.beginPath();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(95,190,160,.18)';
+    ctx.beginPath();
     for (let i = 0; i < xs.length; i++) {
-      const x = u.valToPos(xs[i], 'x', true), y = u.valToPos(lows[i], 'y', true);
+      const x = u.valToPos(xs[i], 'x', true);
+      const y = u.valToPos(lower[i], 'y', true);
       if (i === 0) ctx.moveTo(x, yZero);
       ctx.lineTo(x, y);
     }
-    for (let i = xs.length - 1; i >= 0; i--) ctx.lineTo(u.valToPos(xs[i], 'x', true), yZero);
-    ctx.closePath(); ctx.fill(); ctx.restore();
+    for (let i = xs.length - 1; i >= 0; i--) {
+      ctx.lineTo(u.valToPos(xs[i], 'x', true), yZero);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }] } };
 }
 
@@ -447,7 +447,18 @@ function makeMainOptions() {
     title: '', legend: { show: true },
     cursor: { drag: { x: false, y: false }, focus: { prox: 30 } },
     select: { show: true, left: 0, top: 0, width: 0, height: 0 },
-    scales: { x: { time: false, auto: false }, y: { auto: !state.manualY, range: state.manualY ? () => [state.yMin,state.yMax] : null } },
+    scales: {
+      x: { time: false, auto: false },
+      y: {
+        auto: !state.manualY,
+        range: (u, min, max) => {
+          if (state.manualY) return [state.yMin, state.yMax];
+          if ($('zeroFillToggle').checked || $('zeroLineToggle').checked)
+            return [Math.min(0, min), Math.max(0, max)];
+          return [min, max];
+        }
+      }
+    },
     axes: [
       { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line }, values: (u, vals) => vals.map(v => `${v.toFixed(1)}s`) },
       { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line } }
@@ -457,11 +468,11 @@ function makeMainOptions() {
       { label: 'Raw − tare', stroke: c.raw, width: 1.3, points: { show: false }, value: (u,v) => fmt(v) },
       { label: 'Moving average', stroke: c.ma, width: 2.1, points: { show: false }, value: (u,v) => fmt(v) },
       { label: 'Upper +1σ', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) },
-      { label: 'Lower −1σ', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) },
-      { label: 'Zero-to-lower fill', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) }
+      { label: 'Lower −1σ', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) }
     ],
     bands: [{ series: [3,4], fill: 'rgba(190,112,220,.16)' }],
     hooks: { drawAxes: [u => {
+      if (!$('zeroLineToggle').checked) return;
       const y = u.valToPos(0, 'y', true);
       if (Number.isFinite(y) && y >= u.bbox.top && y <= u.bbox.top + u.bbox.height) {
         const ctx = u.ctx; ctx.save(); ctx.strokeStyle = c.zero; ctx.lineWidth = 2.6;
@@ -482,7 +493,14 @@ function makeMiniOptions() {
     cursor: { show: false, drag: { x: false, y: false } },
     select: { show: true, left: 0, top: 0, width: 0, height: 0 },
     scales: { x: { time: false, auto: false }, y: { auto: true } },
-    axes: [{ show: false }, { show: false }],
+    axes: [
+      { show: true, size: 7, stroke: 'transparent', values: () => [],
+        grid: { show: true, stroke: 'rgba(130,150,180,.18)', width: 1 },
+        ticks: { show: false }, border: { show: false } },
+      { show: true, size: 7, stroke: 'transparent', values: () => [],
+        grid: { show: true, stroke: 'rgba(130,150,180,.18)', width: 1 },
+        ticks: { show: false }, border: { show: false } }
+    ],
     series: [{}, { label: 'History', stroke: c.raw, width: 1, points: { show: false } }]
   };
 }
@@ -493,13 +511,12 @@ function createCharts() {
     return;
   }
   state.plotBuffers = [createPlotBuffer(12000), createPlotBuffer(12000)];
-  state.mainPlot = new uPlot(makeMainOptions(), [[],[],[],[],[],[]], $('mainChart'));
+  state.mainPlot = new uPlot(makeMainOptions(), [[],[],[],[],[]], $('mainChart'));
   state.miniPlot = new uPlot(makeMiniOptions(), [[],[]], $('miniChart'));
   state.mainPlot.setSeries(1, { show: $('rawToggle').checked });
   state.mainPlot.setSeries(2, { show: $('maToggle').checked });
   state.mainPlot.setSeries(3, { show: $('spreadToggle').checked });
   state.mainPlot.setSeries(4, { show: $('spreadToggle').checked });
-  state.mainPlot.setSeries(5, { show: $('zeroFillToggle').checked });
   wireMainInteractions();
   wireMiniInteractions();
 }
@@ -853,8 +870,7 @@ function applySeriesVisibility(){
   state.mainPlot.setSeries(2,{show:$('maToggle').checked});
   state.mainPlot.setSeries(3,{show:$('spreadToggle').checked});
   state.mainPlot.setSeries(4,{show:$('spreadToggle').checked});
-  state.mainPlot.setSeries(5,{show:$('zeroFillToggle').checked});
-  state.mainPlot.redraw();
+  scheduleRender();
 }
 function initializeManualYAxis(){
   if(!state.count)return;
@@ -882,7 +898,7 @@ function initEvents(){
   $('tareBtn').addEventListener('click',autoTare);
   $('exportBtn').addEventListener('click',exportCSV);
   $('applySettingsBtn').addEventListener('click',applySettings);
-  ['spreadToggle','zeroFillToggle','rawToggle','maToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
+  ['spreadToggle','zeroFillToggle','zeroLineToggle','rawToggle','maToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
   $('yControlsToggle').addEventListener('change',e=>{
     $('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;
     if(state.manualY)initializeManualYAxis();
