@@ -1,667 +1,678 @@
 <!DOCTYPE html>
 <!--
-  GNU AGPLv3 License Header
-  Telemetry & Sensor Analysis Dashboard
-  Author: AI Collaborator / Gemini
+  GNU AFFERO GENERAL PUBLIC LICENSE
+  Version 3, 19 November 2007
+
+  Copyright (C) 2026 AI Collaborator / Gemini
 
   This program is free software: you can redistribute it and/or modify
-  it under the terms of the GNU Affero General Public License as published
-  by the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
+  it under the terms of the GNU Affero General Public License as
+  published by the Free Software Foundation, either version 3 of the
+  License, or (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU Affero General Public License for more details.
+
+  You should have received a copy of the GNU Affero General Public License
+  along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+  Attribution: AI Collaborator / Gemini
+  Note: uPlot is loaded from its approved CDN; see its license and attribution
+  at https://github.com/leeoniya/uPlot.
 -->
-<html lang="en" class="dark">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Frequency Telemetry & Sensor Dashboard</title>
-
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        darkbg: '#0f172a',
-                        cardbg: '#1e293b',
-                        bordercolor: '#334155'
-                    }
-                }
-            }
-        }
-    </script>
-
-    <!-- uPlot CSS & JS via CDN -->
-    <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.27/dist/uPlot.min.css">
-    <script src="https://unpkg.com/uplot@1.6.27/dist/uPlot.iife.min.js"></script>
-
-    <style>
-        /* Custom uPlot styling tweaks for dark/light mode integration */
-        .uplot { font-family: ui-sans-serif, system-ui, sans-serif; }
-        .u-legend { font-size: 0.85rem; padding: 4px; }
-        .u-series { margin-right: 12px; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Telemetry Workbench</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css">
+<style>
+:root {
+  color-scheme: dark;
+  --bg:#0b1020; --panel:#121a2b; --panel2:#182338; --text:#e8eef8;
+  --muted:#91a0b8; --line:#2a3851; --accent:#62d6c8; --accent2:#f6c85f;
+  --raw:#8bb8ff; --ma:#f5bd55; --upper:#e58bff; --lower:#e58bff;
+  --zero:#f4f7ff; --danger:#ff7d86; --input:#0d1525;
+}
+:root.light {
+  color-scheme:light;
+  --bg:#f2f5fa; --panel:#fff; --panel2:#edf2f8; --text:#182338;
+  --muted:#60708a; --line:#d5deeb; --accent:#087f75; --accent2:#b47a08;
+  --raw:#2866bd; --ma:#b77708; --upper:#a23bbd; --lower:#a23bbd;
+  --zero:#17243b; --danger:#c43b49; --input:#f8faff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+button,input{font:inherit}
+button{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;padding:8px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#062522;border-color:transparent;font-weight:700}
+button:disabled{opacity:.45;cursor:not-allowed}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px clamp(12px,2vw,26px);border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{display:flex;align-items:center;gap:10px}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#5685ff);display:grid;place-items:center;color:#071629;font-weight:900}
+h1{font-size:17px;margin:0;letter-spacing:.2px}
+.sub{font-size:11px;color:var(--muted)}
+.header-actions,.toolbar,.inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}
+.toolbar{justify-content:space-between;margin-bottom:12px}
+.toolbar-left,.toolbar-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.status{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.dot.paused{background:var(--danger)}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.metric,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}
+.metric{padding:12px 14px;min-width:0}
+.metric .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.metric .value{font-size:clamp(19px,2.4vw,27px);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
+.metric .detail{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;align-items:start}
+.panel{padding:13px;min-width:0}
+.panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.panel h2{font-size:13px;margin:0;font-weight:700}
+.panel-note{font-size:11px;color:var(--muted)}
+.chart-wrap{width:100%;min-height:280px;position:relative}
+#mainChart{height:clamp(300px,47vh,560px);width:100%}
+#miniChart{height:105px;width:100%;margin-top:3px}
+.uplot{max-width:100%}
+.u-legend{font-size:11px!important}
+.u-legend th,.u-legend td{padding:3px 7px!important}
+.u-series>*{font-variant-numeric:tabular-nums}
+.side{display:flex;flex-direction:column;gap:12px}
+.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field.full{grid-column:1/-1}
+.field label{font-size:11px;color:var(--muted)}
+input[type=number],input[type=text]{width:100%;min-width:0;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=checkbox]{accent-color:var(--accent)}
+.check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin:5px 0}
+.small{font-size:11px;color:var(--muted)}
+.button-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+.button-row button{flex:1}
+.readout{font-size:12px;line-height:1.7;color:var(--muted)}
+.readout strong{color:var(--text);font-variant-numeric:tabular-nums}
+#selectionSummary{padding:9px;background:var(--panel2);border-radius:9px;margin-top:8px;min-height:46px}
+.navigator{margin-top:12px}
+.log-panel{margin-top:12px}
+details summary{cursor:pointer;font-weight:700;font-size:13px}
+.log-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:10px 0}
+.log-list{max-height:260px;overflow:auto;border-top:1px solid var(--line)}
+.log-row{display:grid;grid-template-columns:90px 1fr;gap:10px;padding:7px 2px;border-bottom:1px solid var(--line);font-size:11px}
+.log-row time{color:var(--muted);font-variant-numeric:tabular-nums}
+#selectionHint{font-size:11px;color:var(--muted)}
+footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.side .panel:last-child{grid-column:1/-1}}
+@media(max-width:600px){header{align-items:flex-start}.header-actions{justify-content:flex-end}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.side{grid-template-columns:1fr}.side .panel:last-child{grid-column:auto}.metric{padding:10px}.metric .value{font-size:21px}#mainChart{height:340px}.toolbar{align-items:flex-start}.toolbar-left,.toolbar-right{width:100%}.toolbar-right{justify-content:space-between}}
+</style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans transition-colors duration-200">
+<body>
+<header>
+  <div class="brand"><div class="logo">TW</div><div><h1>Telemetry Workbench</h1><div class="sub">80 Hz live signal · local-only session</div></div></div>
+  <div class="header-actions">
+    <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
+    <button id="themeBtn" aria-label="Toggle color theme">☼ Light mode</button>
+  </div>
+</header>
+<main>
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <button id="pauseBtn">Ⅱ Pause</button>
+      <button id="trackBtn" class="primary">Track Live</button>
+      <button id="tareBtn">Auto-Tare</button>
+      <button id="exportBtn">Export CSV</button>
+    </div>
+    <div class="toolbar-right">
+      <span class="small">Signal generator: bounded random walk</span>
+      <span class="small" id="sampleCount">0 samples</span>
+    </div>
+  </div>
 
-    <!-- Top Navigation / Header -->
-    <header class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
-        <div class="flex items-center space-x-3">
-            <div class="bg-blue-600 p-2 rounded-lg text-white font-bold text-lg">⚡</div>
-            <div>
-                <h1 class="text-xl font-bold tracking-tight">Telemetry & Sensor Engine</h1>
-                <p class="text-xs text-slate-400">80Hz High-Frequency Ingestion • O(N) Sliding Window • AGPLv3</p>
-            </div>
+  <section class="metrics">
+    <div class="metric"><div class="label">Current average · tared</div><div class="value" id="currentAvg">—</div><div class="detail" id="currentAvgRaw">Raw —</div></div>
+    <div class="metric"><div class="label">Spread · standard deviation</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
+    <div class="metric"><div class="label">Tare offset</div><div class="value" id="tareValue">0.000</div><div class="detail">Applied to display values only</div></div>
+    <div class="metric"><div class="label">Latest sensor reading</div><div class="value" id="latestValue">—</div><div class="detail" id="latestRaw">Raw sensor value</div></div>
+  </section>
+
+  <div class="layout">
+    <div>
+      <section class="panel">
+        <div class="panel-head"><h2>Main signal</h2><span id="viewLabel" class="panel-note">Live viewport</span></div>
+        <div id="mainChart" class="chart-wrap"></div>
+        <div class="panel-note" id="selectionHint">Tip: Shift + drag across the chart to select a sample interval. On touch screens, use two-finger drag or the navigator.</div>
+      </section>
+      <section class="panel navigator">
+        <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history · drag selection to navigate</span></div>
+        <div id="miniChart"></div>
+      </section>
+      <section class="panel log-panel">
+        <details id="logDetails">
+          <summary>Selection & event log <span id="logCount" class="small">(0 entries)</span></summary>
+          <div class="log-actions"><span class="small">Selection statistics are appended here for this session.</span><button id="clearLogBtn">Clear log</button></div>
+          <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No selection events yet.</div></div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="side">
+      <section class="panel">
+        <div class="panel-head"><h2>Signal processing</h2></div>
+        <div class="control-grid">
+          <div class="field"><label for="windowInput">MA window (samples)</label><input id="windowInput" type="number" min="2" max="10000" value="80"></div>
+          <div class="field"><label for="bufferInput">Buffer limit</label><input id="bufferInput" type="number" min="1000" max="2000000" step="1000" value="100000"></div>
+          <div class="field full"><label for="tareInput">Manual tare offset</label><input id="tareInput" type="number" step="0.001" value="0"></div>
         </div>
+        <div class="button-row"><button id="applySettingsBtn" class="primary">Apply settings</button></div>
+        <div class="small" style="margin-top:8px">The raw ring buffer is retained unchanged. Tare and smoothing are derived for display and export.</div>
+      </section>
 
-        <!-- Global Status & Quick Controls -->
-        <div class="flex items-center flex-wrap gap-3">
-            <div id="statusBadge" class="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                Live Tracking (80 Hz)
-            </div>
-            <button id="pauseBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-sm font-medium border border-slate-700 transition">
-                Pause
-            </button>
-            <button id="trackLiveBtn" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition hidden">
-                Track Live
-            </button>
-            <button id="themeToggle" class="bg-slate-800 hover:bg-slate-700 text-slate-200 p-2 rounded-lg text-sm border border-slate-700 transition" title="Toggle Theme">
-                ☀️/🌙
-            </button>
+      <section class="panel">
+        <div class="panel-head"><h2>Display options</h2></div>
+        <label class="check"><input type="checkbox" id="spreadToggle" checked> Show standard deviation band</label>
+        <label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
+        <label class="check"><input type="checkbox" id="rawToggle" checked> Show raw signal</label>
+        <label class="check"><input type="checkbox" id="maToggle" checked> Show moving average</label>
+        <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
+        <div id="yControls" hidden>
+          <div class="field"><label for="yMinRange">Y minimum: <strong id="yMinText">-10</strong></label><input id="yMinRange" type="range" min="-100" max="100" step=".1" value="-10"></div>
+          <div class="field" style="margin-top:8px"><label for="yMaxRange">Y maximum: <strong id="yMaxText">10</strong></label><input id="yMaxRange" type="range" min="-100" max="100" step=".1" value="10"></div>
+          <div class="button-row"><button id="autoYBtn">Restore auto scale</button></div>
         </div>
-    </header>
+      </section>
 
-    <!-- Main Dashboard Grid -->
-    <main class="flex-1 p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6 max-w-[1700px] w-full mx-auto">
+      <section class="panel">
+        <div class="panel-head"><h2>Selection analysis</h2></div>
+        <div class="readout" id="selectionSummary">No interval selected.<br>Shift-drag on the main chart or drag the navigator.</div>
+        <div class="button-row"><button id="clearSelectionBtn">Clear selection</button></div>
+      </section>
 
-        <!-- Left Column: Controls & Metrics (1 col) -->
-        <div class="space-y-6 lg:col-span-1 flex flex-col">
+      <section class="panel">
+        <div class="panel-head"><h2>Navigation</h2></div>
+        <div class="small">Mouse wheel / pinch: zoom X-axis. Drag the main chart to inspect history. Track Live returns to the newest data.</div>
+        <div class="button-row"><button id="zoomInBtn">＋ Zoom in</button><button id="zoomOutBtn">－ Zoom out</button></div>
+        <div class="button-row"><button id="backBtn">← Older</button><button id="forwardBtn">Newer →</button></div>
+      </section>
+    </aside>
+  </div>
+  <footer>All telemetry is generated and processed locally in this browser. CSV export includes raw samples and derived values. uPlot is loaded from jsDelivr CDN.</footer>
+</main>
 
-            <!-- Live Metrics Card -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-                <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Current Telemetry</h2>
-                <div class="space-y-3">
-                    <div>
-                        <div class="text-xs text-slate-400">Current Average (MA)</div>
-                        <div id="metricMA" class="text-3xl font-black text-blue-400 font-mono">0.00</div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
-                        <div>
-                            <div class="text-xs text-slate-400">Spread (±1σ)</div>
-                            <div id="metricSpread" class="text-lg font-bold text-slate-200 font-mono">0.00</div>
-                        </div>
-                        <div>
-                            <div class="text-xs text-slate-400">Active Tare</div>
-                            <div id="metricTare" class="text-lg font-bold text-amber-400 font-mono">0.00</div>
-                        </div>
-                    </div>
-                    <div class="text-[11px] text-slate-500 pt-1 italic">Tip: Hover over chart or check logs for raw & tared point details.</div>
-                </div>
-            </div>
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+<script>
+"use strict";
 
-            <!-- Configuration & Tare Panel -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
-                <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Sensor & Signal Controls</h3>
+// Store raw sensor readings and relative runtime in typed circular buffers.
+// Derived values are recalculated from raw history without modifying either buffer.
+const RATE_HZ = 80;
+const PERIOD_MS = 1000.0 / RATE_HZ;
+const $ = id => document.getElementById(id);
+const state = {
+  capacity: 100000, count: 0, head: 0,
+  times: new Float64Array(100000),
+  raw: new Int32Array(100000),
+  nextTime: 0, timer: null, paused: false, live: true,
+  liveWindowSpan: 15000, viewMin: 0, viewMax: 15000,
+  tare: 0, window: 80, derived: null, mainPlot: null, miniPlot: null,
+  selection: null, logs: [], manualY: false, yMin: -10, yMax: 10,
+  lastRender: 0, renderPending: false, seedValue: 5000, drift: 0
+};
 
-                <!-- Tare Control -->
-                <div class="space-y-1.5">
-                    <label class="text-xs text-slate-300 font-medium">Tare Offset</label>
-                    <div class="flex gap-2">
-                        <input type="number" id="tareInput" value="0" step="any" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm w-full font-mono text-slate-200 focus:outline-none focus:border-blue-500">
-                        <button id="autoTareBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-sm font-medium border border-slate-700 whitespace-nowrap transition">Auto-Tare</button>
-                    </div>
-                </div>
+function physicalIndex(logicalIndex) {
+  return (state.head + logicalIndex) % state.capacity;
+}
+function getTime(i) { return state.times[physicalIndex(i)]; }
+function getRaw(i) { return state.raw[physicalIndex(i)]; }
+function oldestTime() { return state.count ? getTime(0) : 0; }
+function newestTime() { return state.count ? getTime(state.count - 1) : 0; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function fmt(v, digits = 3) { return Number.isFinite(v) ? v.toFixed(digits) : "—"; }
 
-                <!-- Moving Average Window -->
-                <div class="space-y-1.5">
-                    <div class="flex justify-between text-xs">
-                        <span class="text-slate-300 font-medium">MA Window Samples</span>
-                        <span id="maWindowVal" class="font-mono text-blue-400">40</span>
-                    </div>
-                    <input type="range" id="maWindowRange" min="5" max="500" value="40" class="w-full accent-blue-500 cursor-pointer">
-                </div>
-
-                <!-- Buffer Limit -->
-                <div class="space-y-1.5">
-                    <label class="text-xs text-slate-300 font-medium">RAM Buffer Limit (Points)</label>
-                    <input type="number" id="bufferLimitInput" value="50000" step="10000" min="10000" max="200000" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm w-full font-mono text-slate-200 focus:outline-none focus:border-blue-500">
-                </div>
-
-                <!-- Toggles -->
-                <div class="space-y-2 pt-2 border-t border-slate-800">
-                    <label class="flex items-center space-x-2 text-sm cursor-pointer">
-                        <input type="checkbox" id="fillZeroToggle" class="rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-0">
-                        <span class="text-slate-300">Fill Zero to Lower Spread</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Manual Y-Axis Controls -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Y-Axis Scaling</h3>
-                    <label class="flex items-center space-x-2 text-xs cursor-pointer">
-                        <input type="checkbox" id="manualYToggle" class="rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-0">
-                        <span class="text-slate-300">Manual Override</span>
-                    </label>
-                </div>
-                <div id="yControlsContainer" class="space-y-3 opacity-50 pointer-events-none transition-opacity">
-                    <div>
-                        <div class="flex justify-between text-xs mb-1">
-                            <span class="text-slate-400">Max (Y)</span>
-                            <span id="yMaxVal" class="font-mono">100</span>
-                        </div>
-                        <input type="range" id="yMaxRange" min="-100" max="500" value="100" class="w-full accent-blue-500">
-                    </div>
-                    <div>
-                        <div class="flex justify-between text-xs mb-1">
-                            <span class="text-slate-400">Min (Y)</span>
-                            <span id="yMinVal" class="font-mono">-100</span>
-                        </div>
-                        <input type="range" id="yMinRange" min="-500" max="100" value="-100" class="w-full accent-blue-500">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Actions -->
-            <div class="flex gap-2">
-                <button id="exportCsvBtn" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-xl text-sm font-medium border border-slate-700 transition">Export CSV</button>
-                <button id="clearDataBtn" class="bg-red-950/40 hover:bg-red-900/50 text-red-400 px-4 py-2 rounded-xl text-sm font-medium border border-red-900/50 transition">Clear</button>
-            </div>
-
-        </div>
-
-        <!-- Right Column: Visualizations & Logs (3 cols) -->
-        <div class="lg:col-span-3 space-y-6 flex flex-col">
-
-            <!-- Main Chart Card -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="text-sm font-semibold text-slate-300 flex items-center gap-2">
-                        <span>Telemetry Main Stream</span>
-                        <span class="text-xs font-normal text-slate-500">(Shift + Drag on chart to select sample range)</span>
-                    </h2>
-                    <div id="selectionSummary" class="text-xs text-blue-400 font-mono hidden">Selection Active</div>
-                </div>
-                <!-- Chart Container -->
-                <div id="mainChart" class="w-full"></div>
-            </div>
-
-            <!-- Timeline Navigator (Mini-Chart) -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
-                <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">History Navigator</div>
-                <div id="navChart" class="w-full"></div>
-            </div>
-
-            <!-- Sample Selection Log (Collapsible) -->
-            <details class="bg-slate-900 border border-slate-800 rounded-xl shadow-lg group" open>
-                <summary class="p-4 cursor-pointer font-semibold text-sm text-slate-300 flex items-center justify-between select-none">
-                    <span>Sample Selection & Analysis Log (<span id="logCount">0</span> entries)</span>
-                    <span class="text-xs text-slate-500 group-open:rotate-180 transition-transform">▼</span>
-                </summary>
-                <div class="p-4 pt-0 border-t border-slate-800 max-h-60 overflow-y-auto font-mono text-xs space-y-2" id="logContainer">
-                    <div class="text-slate-500 italic">No sample ranges selected yet. Hold Shift and drag across the main chart to analyze specific sample windows.</div>
-                </div>
-            </details>
-
-        </div>
-    </main>
-
-    <!-- Core Application Logic -->
-    <script>
-        // --- Circular Buffer & High-Performance TypedArray Architecture ---
-        class TelemetryBuffer {
-            constructor(maxCapacity = 50000) {
-                this.maxCapacity = maxCapacity;
-                this.times = new Float64Array(maxCapacity);
-                this.raw = new Int32Array(maxCapacity);
-                this.tared = new Float64Array(maxCapacity);
-                this.ma = new Float64Array(maxCapacity);
-                this.upper = new Float64Array(maxCapacity);
-                this.lower = new Float64Array(maxCapacity);
-                this.size = 0;
-                this.head = 0;
-                this.tail = 0;
-                this.totalCount = 0;
-            }
-
-            resize(newCapacity) {
-                if (newCapacity === this.maxCapacity) return;
-                const oldSize = this.size;
-                const newTimes = new Float64Array(newCapacity);
-                const newRaw = new Int32Array(newCapacity);
-                const newTared = new Float64Array(newCapacity);
-                const newMa = new Float64Array(newCapacity);
-                const newUpper = new Float64Array(newCapacity);
-                const newLower = new Float64Array(newCapacity);
-
-                let copyCount = Math.min(oldSize, newCapacity);
-                for (let i = 0; i < copyCount; i++) {
-                    let srcIdx = (this.tail + oldSize - copyCount + i) % this.maxCapacity;
-                    newTimes[i] = this.times[srcIdx];
-                    newRaw[i] = this.raw[srcIdx];
-                    newTared[i] = this.tared[srcIdx];
-                    newMa[i] = this.ma[srcIdx];
-                    newUpper[i] = this.upper[srcIdx];
-                    newLower[i] = this.lower[srcIdx];
-                }
-
-                this.maxCapacity = newCapacity;
-                this.times = newTimes;
-                this.raw = newRaw;
-                this.tared = newTared;
-                this.ma = newMa;
-                this.upper = newUpper;
-                this.lower = newLower;
-                this.tail = 0;
-                this.head = copyCount % newCapacity;
-                this.size = copyCount;
-            }
-
-            push(time, rawVal, tareVal, maVal, upperVal, lowerVal) {
-                this.times[this.head] = time;
-                this.raw[this.head] = rawVal;
-                this.tared[this.head] = rawVal - tareVal;
-                this.ma[this.head] = maVal;
-                this.upper[this.head] = upperVal;
-                this.lower[this.head] = lowerVal;
-
-                if (this.size < this.maxCapacity) {
-                    this.size++;
-                } else {
-                    this.tail = (this.tail + 1) % this.maxCapacity;
-                }
-                this.head = (this.head + 1) % this.maxCapacity;
-                this.totalCount++;
-            }
-
-            clear() {
-                this.size = 0;
-                this.head = 0;
-                this.tail = 0;
-                this.totalCount = 0;
-            }
-
-            // Export views suitable for uPlot [times, tared, ma, upper, lower]
-            getArrays() {
-                let s = this.size;
-                let t = new Float64Array(s);
-                let r = new Float64Array(s);
-                let m = new Float64Array(s);
-                let u = new Float64Array(s);
-                let l = new Float64Array(s);
-
-                for (let i = 0; i < s; i++) {
-                    let idx = (this.tail + i) % this.maxCapacity;
-                    t[i] = this.times[idx];
-                    r[i] = this.tared[idx];
-                    m[i] = this.ma[idx];
-                    u[i] = this.upper[idx];
-                    l[i] = this.lower[idx];
-                }
-                return [t, r, m, u, l];
-            }
+// Generate correlated "marching randomness": a bounded random walk with occasional
+// directional changes, gentle mean reversion, and small measurement noise.
+function nextSensorValue() {
+  const turn = Math.random();
+  if (turn < 0.018) state.drift = (Math.random() - 0.5) * 0.7;
+  const pull = (5000 - state.seedValue) * 0.0015;
+  const step = state.drift + pull + (Math.random() - 0.5) * 1.8;
+  state.seedValue = clamp(state.seedValue + step, 4600, 5400);
+  return Math.round(state.seedValue + (Math.random() - 0.5) * 2);
+}
+function appendSample(value) {
+  const idx = (state.head + state.count) % state.capacity;
+  if (state.count === state.capacity) {
+    state.head = (state.head + 1) % state.capacity;
+    const writeIdx = (state.head + state.count - 1) % state.capacity;
+    state.times[writeIdx] = state.nextTime;
+    state.raw[writeIdx] = value;
+  } else {
+    state.times[idx] = state.nextTime;
+    state.raw[idx] = value;
+    state.count++;
+  }
+  state.nextTime += PERIOD_MS;
+}
+function resizeBuffers(newCapacity) {
+  const cap = clamp(Math.floor(newCapacity), 1000, 2000000);
+  const keep = Math.min(state.count, cap);
+  const t = new Float64Array(cap), r = new Int32Array(cap);
+  const start = state.count - keep;
+  for (let i = 0; i < keep; i++) {
+    t[i] = getTime(start + i);
+    r[i] = getRaw(start + i);
+  }
+  state.times = t; state.raw = r; state.capacity = cap;
+  state.count = keep; state.head = 0;
+  state.selection = null;
+  if (state.live) fitLiveWindow();
+  else {
+    state.viewMin = Math.max(oldestTime(), state.viewMin);
+    state.viewMax = Math.min(newestTime(), state.viewMax);
+  }
+}
+function computeDerived() {
+  const n = state.count;
+  const x = new Float64Array(n), raw = new Float64Array(n);
+  const ma = new Float64Array(n), upper = new Float64Array(n), lower = new Float64Array(n), lowerZero = new Float64Array(n);
+  const w = Math.max(2, state.window);
+  let sum = 0, sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const value = getRaw(i);
+    x[i] = getTime(i) / 1000;
+    raw[i] = value - state.tare;
+    sum += value; sumSq += value * value;
+    if (i >= w) {
+      const old = getRaw(i - w);
+      sum -= old; sumSq -= old * old;
+    }
+    const k = Math.min(i + 1, w);
+    const avg = sum / k;
+    const variance = Math.max(0, sumSq / k - avg * avg);
+    const sd = Math.sqrt(variance);
+    ma[i] = avg - state.tare;
+    upper[i] = ma[i] + sd;
+    lower[i] = ma[i] - sd;
+    lowerZero[i] = Math.min(0, lower[i]);
+  }
+  state.derived = {x, raw, ma, upper, lower, lowerZero};
+}
+function buildPlotData() {
+  const d = state.derived;
+  return [d.x, d.raw, d.ma, d.upper, d.lower, d.lowerZero];
+}
+function visibleRangeIndices() {
+  const x = state.derived?.x;
+  if (!x || !x.length) return [0, 0];
+  let lo = 0, hi = x.length - 1;
+  const min = state.viewMin / 1000, max = state.viewMax / 1000;
+  while (lo < hi && x[lo] < min) lo++;
+  while (hi > lo && x[hi] > max) hi--;
+  return [lo, hi];
+}
+function chartColors() {
+  const css = getComputedStyle(document.documentElement);
+  return {
+    raw: css.getPropertyValue("--raw").trim(),
+    ma: css.getPropertyValue("--ma").trim(),
+    band: css.getPropertyValue("--upper").trim(),
+    zero: css.getPropertyValue("--zero").trim()
+  };
+}
+function makeMainOptions() {
+  const c = chartColors();
+  return {
+    width: $("mainChart").clientWidth || 800, height: 390,
+    title: "", legend: {show: true}, cursor: {drag: {x: true, y: false, setScale: false}, focus: {prox: 30}},
+    select: {show: true, left: 0, width: 0},
+    scales: {x: {time: false}, y: {auto: !state.manualY, range: state.manualY ? [state.yMin, state.yMax] : null}},
+    axes: [
+      {stroke: "var(--muted)", grid: {stroke: "rgba(130,150,180,.12)"}, ticks: {stroke: "var(--line)"}, values: (u, vals) => vals.map(v => `${v.toFixed(1)}s`)},
+      {stroke: "var(--muted)", grid: {stroke: "rgba(130,150,180,.12)"}, ticks: {stroke: "var(--line)"}}
+    ],
+    series: [
+      {label: "Runtime (s)", value: (u, v) => v == null ? "—" : `${v.toFixed(2)} s`},
+      {label: "Raw − tare", stroke: c.raw, width: 1.3, points: {show: false}, value: (u, v) => fmt(v)},
+      {label: "Moving average", stroke: c.ma, width: 2.1, points: {show: false}, value: (u, v) => fmt(v)},
+      {label: "Upper +1σ", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)},
+      {label: "Lower −1σ", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)},
+      {label: "Zero-to-lower fill", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)}
+    ],
+    bands: [{series: [3, 4], fill: "rgba(190,112,220,.16)"}],
+    hooks: {
+      drawAxes: [u => {
+        const y = u.valToPos(0, "y", true);
+        if (Number.isFinite(y) && y >= u.bbox.top && y <= u.bbox.top + u.bbox.height) {
+          const ctx = u.ctx;
+          ctx.save(); ctx.strokeStyle = c.zero; ctx.lineWidth = 2.6;
+          ctx.globalAlpha = .9; ctx.beginPath();
+          ctx.moveTo(u.bbox.left, Math.round(y) + .5);
+          ctx.lineTo(u.bbox.left + u.bbox.width, Math.round(y) + .5);
+          ctx.stroke(); ctx.restore();
         }
-
-        // --- Application State ---
-        const state = {
-            buffer: new TelemetryBuffer(50000),
-            tare: 0.0,
-            maWindow: 40,
-            spreadMultiplier: 1.0,
-            isPaused: false,
-            isLive: true,
-            fillZero: false,
-            manualY: false,
-            yMin: -100,
-            yMax: 100,
-            liveWindowSpan: 15, // seconds shown in live view
-            startTime: Date.now() / 1000,
-            lastTickTime: performance.now()
-        };
-
-        // --- O(N) Sliding Window Statistics Engine ---
-        let runningSum = 0;
-        let runningSumSq = 0;
-        let windowQueue = [];
-
-        function updateSlidingWindow(newVal, windowSize) {
-            windowQueue.push(newVal);
-            runningSum += newVal;
-            runningSumSq += newVal * newVal;
-
-            if (windowQueue.length > windowSize) {
-                let oldVal = windowQueue.shift();
-                runningSum -= oldVal;
-                runningSumSq -= oldVal * oldVal;
-            }
-
-            let count = windowQueue.length;
-            let mean = runningSum / count;
-            let variance = (runningSumSq / count) - (mean * mean);
-            let stdDev = Math.sqrt(Math.max(0, variance));
-
-            return { mean, stdDev };
+      }],
+      setSelect: [u => handleMainSelection(u)]
+    },
+    plugins: [zeroFillPlugin()],
+    scales: {x: {time: false}, y: {auto: !state.manualY, range: state.manualY ? () => [state.yMin, state.yMax] : null}}
+  };
+}
+function zeroFillPlugin() {
+  return {
+    hooks: {
+      draw: [u => {
+        if (!$("zeroFillToggle").checked || !state.derived) return;
+        const d = state.derived, [a,b] = visibleRangeIndices();
+        const ctx = u.ctx, y0 = u.valToPos(0, "y", true);
+        ctx.save(); ctx.fillStyle = "rgba(95,190,160,.13)";
+        ctx.beginPath(); let started = false;
+        for (let i = a; i <= b; i++) {
+          const px = u.valToPos(d.x[i], "x", true), py = u.valToPos(d.lower[i], "y", true);
+          if (!started) { ctx.moveTo(px, y0); ctx.lineTo(px, py); started = true; }
+          else ctx.lineTo(px, py);
         }
-
-        // --- uPlot Initialization ---
-        let mainChart = null;
-        let navChart = null;
-
-        function initCharts() {
-            let data = state.buffer.getArrays();
-
-            // Main uPlot Options
-            const mainOpts = {
-                id: "main-telemetry",
-                width: document.getElementById('mainChart').clientWidth || 800,
-                height: 420,
-                cursor: {
-                    drag: { setScale: false } // Custom handling for sample selection
-                },
-                scales: {
-                    x: { time: true },
-                    y: { auto: !state.manualY, range: state.manualY ? [state.yMin, state.yMax] : null }
-                },
-                series: [
-                    { label: "Time" },
-                    {
-                        label: "Sensor (Tared)",
-                        stroke: "#38bdf8", // Sky blue
-                        width: 1.5,
-                        points: { show: false }
-                    },
-                    {
-                        label: "Moving Average",
-                        stroke: "#60a5fa", // Blue
-                        width: 2.5,
-                        points: { show: false }
-                    },
-                    {
-                        label: "Upper Spread",
-                        stroke: "rgba(96, 165, 250, 0.4)",
-                        width: 1,
-                        points: { show: false }
-                    },
-                    {
-                        label: "Lower Spread",
-                        stroke: "rgba(96, 165, 250, 0.4)",
-                        width: 1,
-                        points: { show: false }
-                    }
-                ],
-                bands: [
-                    {
-                        series: [3, 4],
-                        fill: "rgba(59, 130, 246, 0.12)"
-                    }
-                ],
-                hooks: {
-                    drawAxes: [
-                        u => {
-                            let { ctx, rej, bbox } = u;
-                            let yPos = u.valToPos(0, 'y', true);
-                            if (yPos >= bbox.top && yPos <= bbox.top + bbox.height) {
-                                ctx.save();
-                                ctx.strokeStyle = '#ef4444'; // Fat High-Vis Zero Line
-                                ctx.lineWidth = 2.5;
-                                ctx.beginPath();
-                                ctx.moveTo(bbox.left, yPos);
-                                ctx.lineTo(bbox.left + bbox.width, yPos);
-                                ctx.stroke();
-                                ctx.restore();
-                            }
-                        }
-                    ],
-                    // Time scale synchronization with navigator / live tracking
-                    setSelect: [
-                        u => {
-                            let min = u.posToVal(u.select.left, 'x');
-                            let max = u.posToVal(u.select.left + u.select.width, 'x');
-                            if (max > min) {
-                                handleSampleSelection(min, max);
-                            }
-                        }
-                    ]
-                }
-            };
-
-            // Navigator uPlot Options
-            const navOpts = {
-                id: "nav-telemetry",
-                width: document.getElementById('navChart').clientWidth || 800,
-                height: 100,
-                cursor: { show: false },
-                scales: {
-                    x: { time: true },
-                    y: { auto: true }
-                },
-                series: [
-                    { label: "Time" },
-                    { stroke: "transparent" },
-                    { stroke: "#3b82f6", width: 1, points: { show: false } },
-                    { stroke: "transparent" },
-                    { stroke: "transparent" }
-                ]
-            };
-
-            mainChart = new uPlot(mainOpts, data, document.getElementById('mainChart'));
-            navChart = new uPlot(navOpts, data, document.getElementById('navChart'));
-
-            // Handle window resizing
-            window.addEventListener('resize', () => {
-                const w = document.getElementById('mainChart').clientWidth;
-                mainChart.setSize({ width: w, height: 420 });
-                navChart.setSize({ width: document.getElementById('navChart').clientWidth, height: 100 });
-            });
+        if (started) {
+          for (let i = b; i >= a; i--) ctx.lineTo(u.valToPos(d.x[i], "x", true), y0);
+          ctx.closePath(); ctx.fill();
         }
+        ctx.restore();
+      }]
+    }
+  };
+}
+function makeMiniOptions() {
+  const c = chartColors();
+  return {
+    width: $("miniChart").clientWidth || 800, height: 105, legend: {show:false},
+    cursor: {show:false}, select: {show:true, left:0, width:0},
+    scales: {x:{time:false},y:{auto:true}},
+    axes: [{show:false},{show:false}],
+    series: [{}, {label:"History",stroke:c.raw,width:1,points:{show:false}}],
+    hooks: {setSelect:[u => {
+      const s = u.select;
+      if (!s || !s.width || !state.derived?.x.length) return;
+      const x0 = u.posToVal(s.left, "x", false) * 1000;
+      const x1 = u.posToVal(s.left + s.width, "x", false) * 1000;
+      state.live = false;
+      state.viewMin = Math.max(oldestTime(), Math.min(x0,x1));
+      state.viewMax = Math.min(newestTime(), Math.max(x0,x1));
+      updateViewLabel(); updateMainScale();
+    }]}
+  };
+}
+function handleMainSelection(u) {
+  const s = u.select;
+  if (!s || s.width < 3 || !state.derived?.x.length) return;
+  const x0 = u.posToVal(s.left, "x", false) * 1000;
+  const x1 = u.posToVal(s.left + s.width, "x", false) * 1000;
+  if (u.cursor && u.cursor.left != null && u.cursor.left >= 0) {
+    state.pendingSelection = [Math.min(x0,x1), Math.max(x0,x1)];
+  }
+}
+function createCharts() {
+  if (!window.uPlot) {
+    $("mainChart").innerHTML = '<p style="color:var(--danger)">uPlot could not be loaded. Check your network connection to the approved CDN.</p>';
+    return;
+  }
+  const opts = makeMainOptions();
+  state.mainPlot = new uPlot(opts, [new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0)], $("mainChart"));
+  state.miniPlot = new uPlot(makeMiniOptions(), [new Float64Array(0), new Float64Array(0)], $("miniChart"));
+  const mainEl = $("mainChart");
+  mainEl.addEventListener("pointerup", () => {
+    if (state.pendingSelection) {
+      const range = state.pendingSelection; state.pendingSelection = null;
+      selectInterval(range[0], range[1]);
+    }
+  });
+  mainEl.addEventListener("wheel", onWheelZoom, {passive:false});
+  let touchStart = null;
+  mainEl.addEventListener("touchstart", e => {
+    if (e.touches.length === 2) touchStart = {dist: Math.abs(e.touches[0].clientX-e.touches[1].clientX), span: state.viewMax-state.viewMin, center:(state.viewMin+state.viewMax)/2};
+  }, {passive:true});
+  mainEl.addEventListener("touchmove", e => {
+    if (e.touches.length === 2 && touchStart) {
+      const dist = Math.abs(e.touches[0].clientX-e.touches[1].clientX);
+      const factor = touchStart.dist / Math.max(20,dist);
+      setWindowSpan(clamp(touchStart.span*factor, 500, Math.max(500, newestTime()-oldestTime())));
+    }
+  }, {passive:true});
+  mainEl.addEventListener("touchend", () => { touchStart = null; });
+}
+function updateMainScale() {
+  if (!state.mainPlot || !state.derived) return;
+  const d = state.derived;
+  const min = state.viewMin / 1000, max = state.viewMax / 1000;
+  state.mainPlot.setScale("x", {min, max});
+  state.mainPlot.setData(buildPlotData());
+  state.mainPlot.setSeries(1, {show:$("rawToggle").checked});
+  state.mainPlot.setSeries(2, {show:$("maToggle").checked});
+  state.mainPlot.setSeries(3, {show:$("spreadToggle").checked});
+  state.mainPlot.setSeries(4, {show:$("spreadToggle").checked});
+  state.mainPlot.setSeries(5, {show:$("zeroFillToggle").checked});
+  if (state.manualY) state.mainPlot.setScale("y", {min:state.yMin,max:state.yMax});
+}
+function updateMini() {
+  if (!state.miniPlot || !state.derived) return;
+  const d = state.derived;
+  state.miniPlot.setData([d.x,d.raw]);
+  const xMin = d.x.length ? d.x[0] : 0, xMax = d.x.length ? d.x[d.x.length-1] : 1;
+  state.miniPlot.setScale("x", {min:xMin,max:Math.max(xMin+0.01,xMax)});
+  const left = state.miniPlot.valToPos(state.viewMin/1000,"x");
+  const right = state.miniPlot.valToPos(state.viewMax/1000,"x");
+  state.miniPlot.setSelect({left:Math.max(0,left),top:0,width:Math.max(1,right-left),height:state.miniPlot.bbox.height});
+}
+function fitLiveWindow() {
+  const newest = newestTime();
+  state.viewMax = newest;
+  state.viewMin = Math.max(oldestTime(), newest - state.liveWindowSpan);
+}
+function updateViewLabel() {
+  $("viewLabel").textContent = state.live ? `Live · ${(state.liveWindowSpan/1000).toFixed(1)} s window` : `Historical · ${(Math.max(0,state.viewMax-state.viewMin)/1000).toFixed(1)} s span`;
+}
+function setWindowSpan(span) {
+  const maxSpan = Math.max(500, newestTime()-oldestTime());
+  state.liveWindowSpan = clamp(span, 500, maxSpan || 15000);
+  if (state.live) fitLiveWindow();
+  else {
+    const center = (state.viewMin+state.viewMax)/2;
+    state.viewMin = clamp(center-state.liveWindowSpan/2, oldestTime(), Math.max(oldestTime(),newestTime()-state.liveWindowSpan));
+    state.viewMax = Math.min(newestTime(),state.viewMin+state.liveWindowSpan);
+  }
+  updateMainScale(); updateMini(); updateViewLabel();
+}
+function onWheelZoom(e) {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? .82 : 1.22;
+  setWindowSpan(state.liveWindowSpan*factor);
+}
+function refresh() {
+  if (!state.count) return;
+  computeDerived();
+  if (state.live) fitLiveWindow();
+  updateMainScale(); updateMini(); updateViewLabel(); updateMetrics();
+  $("sampleCount").textContent = `${state.count.toLocaleString()} samples`;
+  if (state.selection) updateSelectionReadout();
+}
+function updateMetrics() {
+  const d = state.derived, n = state.count;
+  if (!n) return;
+  const k = Math.min(state.window,n);
+  let sum=0, sumSq=0, rawSum=0;
+  for (let i=n-k;i<n;i++) { const v=getRaw(i); sum+=v; sumSq+=v*v; rawSum+=v; }
+  const avg=sum/k, sd=Math.sqrt(Math.max(0,sumSq/k-avg*avg)), latest=getRaw(n-1);
+  $("currentAvg").textContent=fmt(avg-state.tare);
+  $("currentAvgRaw").textContent=`Raw average ${fmt(avg)} · ${k} samples`;
+  $("currentSpread").textContent=fmt(sd);
+  $("spreadDetail").textContent=`±1σ · MA window ${state.window}`;
+  $("tareValue").textContent=fmt(state.tare);
+  $("latestValue").textContent=fmt(latest-state.tare);
+  $("latestRaw").textContent=`Raw ${latest.toLocaleString()} · tared ${fmt(latest-state.tare)}`;
+}
+function selectInterval(t0,t1) {
+  const n=state.count;
+  let first=-1,last=-1,sum=0,sumSq=0,rawSum=0,min=Infinity,max=-Infinity;
+  for (let i=0;i<n;i++) {
+    const t=getTime(i);
+    if (t>=t0 && t<=t1) {
+      const v=getRaw(i), vt=v-state.tare;
+      if (first<0) first=i;
+      last=i; sum+=vt; sumSq+=vt*vt; rawSum+=v;
+      min=Math.min(min,vt); max=Math.max(max,vt);
+    }
+  }
+  if (first<0) return;
+  const count=last-first+1, avg=sum/count, sd=Math.sqrt(Math.max(0,sumSq/count-avg*avg));
+  state.selection={t0:getTime(first),t1:getTime(last),first,last,count,avg,sd,rawAvg:rawSum/count,min,max};
+  state.live=false;
+  state.viewMin=Math.max(oldestTime(),t0); state.viewMax=Math.min(newestTime(),t1);
+  updateSelectionReadout(); appendLog(state.selection);
+  updateMainScale(); updateMini(); updateViewLabel();
+}
+function updateSelectionReadout() {
+  const s=state.selection;
+  if (!s) { $("selectionSummary").textContent="No interval selected."; return; }
+  $("selectionSummary").innerHTML =
+    `<strong>${s.count.toLocaleString()} samples</strong><br>`+
+    `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
+    `Average (tared): <strong>${fmt(s.avg)}</strong><br>`+
+    `Average (raw): <strong>${fmt(s.rawAvg)}</strong><br>`+
+    `Spread (σ): <strong>${fmt(s.sd)}</strong><br>`+
+    `Min / max (tared): <strong>${fmt(s.min)} / ${fmt(s.max)}</strong>`;
+}
+function appendLog(s) {
+  const entry={...s, created:new Date().toLocaleTimeString()};
+  state.logs.unshift(entry);
+  renderLog();
+}
+function renderLog() {
+  $("logCount").textContent=`(${state.logs.length} entries)`;
+  const list=$("logList");
+  if (!state.logs.length) { list.innerHTML='<div class="small" style="padding:10px 0">No selection events yet.</div>'; return; }
+  list.innerHTML=state.logs.map((s,i)=>
+    `<div class="log-row"><time>${s.created}</time><div><strong>${s.count.toLocaleString()} samples</strong> · ${((s.t1-s.t0)/1000).toFixed(2)} s<br>`+
+    `Tared avg ${fmt(s.avg)} · Raw avg ${fmt(s.rawAvg)} · σ ${fmt(s.sd)} · min ${fmt(s.min)} · max ${fmt(s.max)}</div></div>`
+  ).join("");
+}
+function tick() {
+  if (state.paused) return;
+  appendSample(nextSensorValue());
+  const now=performance.now();
+  if (now-state.lastRender>=100) {
+    state.lastRender=now;
+    if (!state.renderPending) {
+      state.renderPending=true;
+      requestAnimationFrame(()=>{state.renderPending=false;refresh();});
+    }
+  }
+}
+function startStream() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer=setInterval(tick,PERIOD_MS);
+}
+function togglePause() {
+  state.paused=!state.paused;
+  $("pauseBtn").textContent=state.paused?"▶ Resume":"Ⅱ Pause";
+  $("statusText").textContent=state.paused?"Paused":"Streaming";
+  $("statusDot").classList.toggle("paused",state.paused);
+}
+function trackLive() {
+  state.live=true; fitLiveWindow(); state.selection=null;
+  $("selectionSummary").textContent="No interval selected.";
+  updateMainScale(); updateMini(); updateViewLabel();
+}
+function autoTare() {
+  const k=Math.min(state.window,state.count);
+  if (!k) return;
+  let sum=0;
+  for(let i=state.count-k;i<state.count;i++) sum+=getRaw(i);
+  state.tare=sum/k;
+  $("tareInput").value=state.tare.toFixed(3);
+  refresh();
+}
+function exportCSV() {
+  if (!state.count) return;
+  const d=state.derived;
+  const rows=["runtime_ms,raw_sensor,tared_raw,moving_average,spread_1sigma,upper_1sigma,lower_1sigma,tare_offset"];
+  for(let i=0;i<state.count;i++) {
+    const spread=(d.upper[i]-d.lower[i])/2;
+    rows.push([getTime(i),getRaw(i),d.raw[i],d.ma[i],spread,d.upper[i],d.lower[i],state.tare].join(","));
+  }
+  const blob=new Blob([rows.join("\n")],{type:"text/csv;charset=utf-8"});
+  const url=URL.createObjectURL(blob), a=document.createElement("a");
+  a.href=url; a.download=`telemetry-${new Date().toISOString().replace(/[:.]/g,"-")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+function applyDisplayOptions() {
+  if (!state.mainPlot) return;
+  updateMainScale();
+}
+function resizeCharts() {
+  if (!state.mainPlot || !state.miniPlot) return;
+  state.mainPlot.setSize({width:$("mainChart").clientWidth,height:Math.max(300,Math.min(560,window.innerHeight*.47))});
+  state.miniPlot.setSize({width:$("miniChart").clientWidth,height:105});
+}
+function initEvents() {
+  $("pauseBtn").addEventListener("click",togglePause);
+  $("trackBtn").addEventListener("click",trackLive);
+  $("tareBtn").addEventListener("click",autoTare);
+  $("exportBtn").addEventListener("click",exportCSV);
+  $("applySettingsBtn").addEventListener("click",()=>{
+    state.window=clamp(Math.floor(Number($("windowInput").value)||80),2,10000);
+    $("windowInput").value=state.window;
+    state.tare=Number($("tareInput").value)||0;
+    const cap=clamp(Math.floor(Number($("bufferInput").value)||100000),1000,2000000);
+    $("bufferInput").value=cap;
+    if(cap!==state.capacity) resizeBuffers(cap);
+    refresh();
+  });
+  ["spreadToggle","zeroFillToggle","rawToggle","maToggle"].forEach(id=>$(id).addEventListener("change",applyDisplayOptions));
+  $("yControlsToggle").addEventListener("change",e=>{
+    $("yControls").hidden=!e.target.checked;
+    state.manualY=e.target.checked;
+    if(!state.manualY) state.mainPlot.setScale("y",{auto:true});
+    else state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});
+  });
+  $("yMinRange").addEventListener("input",e=>{state.yMin=Number(e.target.value);$("yMinText").textContent=fmt(state.yMin,1);if(state.manualY)state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});});
+  $("yMaxRange").addEventListener("input",e=>{state.yMax=Number(e.target.value);$("yMaxText").textContent=fmt(state.yMax,1);if(state.manualY)state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});});
+  $("autoYBtn").addEventListener("click",()=>{$("yControlsToggle").checked=false;$("yControls").hidden=true;state.manualY=false;state.mainPlot.setScale("y",{auto:true});});
+  $("zoomInBtn").addEventListener("click",()=>setWindowSpan(state.liveWindowSpan*.75));
+  $("zoomOutBtn").addEventListener("click",()=>setWindowSpan(state.liveWindowSpan*1.33));
+  $("backBtn").addEventListener("click",()=>{
+    state.live=false;const span=state.viewMax-state.viewMin;
+    state.viewMin=Math.max(oldestTime(),state.viewMin-span*.8);state.viewMax=state.viewMin+span;
+    updateMainScale();updateMini();updateViewLabel();
+  });
+  $("forwardBtn").addEventListener("click",()=>{
+    const span=state.viewMax-state.viewMin;
+    state.viewMin=Math.min(newestTime()-span,state.viewMin+span*.8);state.viewMax=state.viewMin+span;
+    if(state.viewMax>=newestTime()-1) state.live=true;
+    updateMainScale();updateMini();updateViewLabel();
+  });
+  $("clearSelectionBtn").addEventListener("click",()=>{state.selection=null;$("selectionSummary").textContent="No interval selected.";});
+  $("clearLogBtn").addEventListener("click",()=>{state.logs=[];renderLog();});
+  $("themeBtn").addEventListener("click",()=>{
+    const light=document.documentElement.classList.toggle("light");
+    $("themeBtn").textContent=light?"☾ Dark mode":"☼ Light mode";
+    if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();refresh();}
+  });
+  window.addEventListener("resize",resizeCharts);
+}
 
-        // --- Data Ingestion Loop (80 Hz Simulation) ---
-        let simCounter = 0;
-        function ingestLoop() {
-            if (!state.isPaused) {
-                let now = Date.now() / 1000;
-                simCounter++;
-                // Generate realistic signal: Sine wave + harmonic + noise
-                let rawVal = Math.sin(simCounter * 0.05) * 45 + Math.sin(simCounter * 0.005) * 20 + (Math.random() - 0.5) * 8;
-
-                let stats = updateSlidingWindow(rawVal, state.maWindow);
-                let upperVal = stats.mean + (stats.stdDev * state.spreadMultiplier);
-                let lowerVal = stats.mean - (stats.stdDev * state.spreadMultiplier);
-
-                state.buffer.push(now, Math.round(rawVal * 100), Math.round(state.tare * 100), stats.mean, upperVal, lowerVal);
-
-                // Update metrics UI
-                document.getElementById('metricMA').innerText = (stats.mean - state.tare).toFixed(2);
-                document.getElementById('metricSpread').innerText = `±${stats.stdDev.toFixed(2)}`;
-                document.getElementById('metricTare').innerText = state.tare.toFixed(2);
-
-                // Refresh charts data
-                let freshData = state.buffer.getArrays();
-                mainChart.setData(freshData);
-                navChart.setData(freshData);
-
-                // Live tracking X-axis management
-                if (state.isLive && freshData[0].length > 0) {
-                    let maxTime = freshData[0][freshData[0].length - 1];
-                    let minTime = Math.max(freshData[0][0], maxTime - state.liveWindowSpan);
-                    mainChart.setScale('x', { min: minTime, max: maxTime });
-                }
-            }
-            setTimeout(ingestLoop, 12.5); // ~80 Hz
-        }
-
-        // --- Sample Selection & Logging ---
-        function handleSampleSelection(minTime, maxTime) {
-            let arrays = state.buffer.getArrays();
-            let times = arrays[0];
-            let tared = arrays[1];
-            let ma = arrays[2];
-
-            let count = 0;
-            let sum = 0;
-            let rawSum = 0;
-
-            for (let i = 0; i < times.length; i++) {
-                if (times[i] >= minTime && times[i] <= maxTime) {
-                    sum += tared[i];
-                    count++;
-                }
-            }
-
-            if (count === 0) return;
-            let avg = sum / count;
-            let timeSpanStr = `${new Date(minTime * 1000).toLocaleTimeString()} - ${new Date(maxTime * 1000).toLocaleTimeString()}`;
-
-            // Add to Log Container
-            const logContainer = document.getElementById('logContainer');
-            if (logContainer.querySelector('.italic')) {
-                logContainer.innerHTML = '';
-            }
-
-            const logEntry = document.createElement('div');
-            logEntry.className = "p-2.5 bg-slate-950 border border-slate-800 rounded-lg flex flex-col gap-1";
-            logEntry.innerHTML = `
-                <div class="flex justify-between text-slate-400 text-[10px]">
-                    <span>Range: ${timeSpanStr}</span>
-                    <span class="text-blue-400">${count} samples</span>
-                </div>
-                <div class="flex justify-between font-bold text-slate-200">
-                    <span>Average Tared: <span class="text-emerald-400">${avg.toFixed(2)}</span></span>
-                </div>
-            `;
-            logContainer.prepend(logEntry);
-            document.getElementById('logCount').innerText = logContainer.children.length;
-            document.getElementById('selectionSummary').classList.remove('hidden');
-            document.getElementById('selectionSummary').innerText = `Selected: ${count} pts (Avg: ${avg.toFixed(2)})`;
-        }
-
-        // --- Event Listeners & UI Binding ---
-        document.addEventListener('DOMContentLoaded', () => {
-            initCharts();
-            ingestLoop();
-
-            // Pause / Resume
-            const pauseBtn = document.getElementById('pauseBtn');
-            const statusBadge = document.getElementById('statusBadge');
-            const trackLiveBtn = document.getElementById('trackLiveBtn');
-
-            pauseBtn.addEventListener('click', () => {
-                state.isPaused = !state.isPaused;
-                if (state.isPaused) {
-                    pauseBtn.innerText = "Resume";
-                    pauseBtn.classList.replace('bg-slate-800', 'bg-amber-600');
-                    statusBadge.className = "px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1.5";
-                    statusBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400"></span> Paused`;
-                } else {
-                    pauseBtn.innerText = "Pause";
-                    pauseBtn.classList.replace('bg-amber-600', 'bg-slate-800');
-                    statusBadge.className = "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5";
-                    statusBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Live Tracking (80 Hz)`;
-                    state.isLive = true;
-                    trackLiveBtn.classList.add('hidden');
-                }
-            });
-
-            // Detect manual zoom / pan to trigger track live toggle
-            document.getElementById('mainChart').addEventListener('wheel', () => {
-                if (state.isLive) {
-                    state.isLive = false;
-                    trackLiveBtn.classList.remove('hidden');
-                }
-            });
-
-            trackLiveBtn.addEventListener('click', () => {
-                state.isLive = true;
-                trackLiveBtn.classList.add('hidden');
-            });
-
-            // Buffer limit change
-            document.getElementById('bufferLimitInput').addEventListener('change', (e) => {
-                let limit = parseInt(e.target.value);
-                if (limit >= 10000) {
-                    state.buffer.resize(limit);
-                }
-            });
-
-            // Moving average window slider
-            const maRange = document.getElementById('maWindowRange');
-            const maValLabel = document.getElementById('maWindowVal');
-            maRange.addEventListener('input', (e) => {
-                state.maWindow = parseInt(e.target.value);
-                maValLabel.innerText = state.maWindow;
-            });
-
-            // Auto-Tare & Direct Tare
-            document.getElementById('autoTareBtn').addEventListener('click', () => {
-                state.tare = parseFloat(document.getElementById('metricMA').innerText) + state.tare;
-                document.getElementById('tareInput').value = state.tare.toFixed(2);
-            });
-
-            document.getElementById('tareInput').addEventListener('input', (e) => {
-                state.tare = parseFloat(e.target.value) || 0;
-            });
-
-            // Manual Y-Axis Controls
-            const manualYToggle = document.getElementById('manualYToggle');
-            const yContainer = document.getElementById('yControlsContainer');
-            const yMaxRange = document.getElementById('yMaxRange');
-            const yMinRange = document.getElementById('yMinRange');
-
-            manualYToggle.addEventListener('change', (e) => {
-                state.manualY = e.target.checked;
-                if (state.manualY) {
-                    yContainer.classList.remove('opacity-50', 'pointer-events-none');
-                } else {
-                    yContainer.classList.add('opacity-50', 'pointer-events-none');
-                }
-                mainChart.setScale('y', { auto: !state.manualY, range: state.manualY ? [state.yMin, state.yMax] : null });
-            });
-
-            yMaxRange.addEventListener('input', (e) => {
-                state.yMax = parseFloat(e.target.value);
-                document.getElementById('yMaxVal').innerText = state.yMax;
-                if (state.manualY) mainChart.setScale('y', { min: state.yMin, max: state.yMax });
-            });
-
-            yMinRange.addEventListener('input', (e) => {
-                state.yMin = parseFloat(e.target.value);
-                document.getElementById('yMinVal').innerText = state.yMin;
-                if (state.manualY) mainChart.setScale('y', { min: state.yMin, max: state.yMax });
-            });
-
-            // Theme Toggle
-            document.getElementById('themeToggle').addEventListener('click', () => {
-                document.documentElement.classList.toggle('dark');
-            });
-
-            // Clear Data
-            document.getElementById('clearDataBtn').addEventListener('click', () => {
-                state.buffer.clear();
-                windowQueue = [];
-                runningSum = 0;
-                runningSumSq = 0;
-                mainChart.setData(state.buffer.getArrays());
-                navChart.setData(state.buffer.getArrays());
-            });
-
-            // CSV Export
-            document.getElementById('exportCsvBtn').addEventListener('click', () => {
-                let arrays = state.buffer.getArrays();
-                let csv = "Timestamp,RawTared,MovingAverage,UpperSpread,LowerSpread\n";
-                for (let i = 0; i < arrays[0].length; i++) {
-                    csv += `${arrays[0][i]},${arrays[1][i]},${arrays[2][i]},${arrays[3][i]},${arrays[4][i]}\n`;
-                }
-                let blob = new Blob([csv], { type: 'text/csv' });
-                let url = URL.createObjectURL(blob);
-                let a = document.createElement('a');
-                a.href = url;
-                a.download = `telemetry_export_${Date.now()}.csv`;
-                a.click();
-            });
-        });
-    </script>
+function boot() {
+  initEvents();
+  createCharts();
+  const start=performance.now();
+  for(let i=0;i<800;i++) {
+    appendSample(nextSensorValue());
+  }
+  state.nextTime=Math.max(state.nextTime,PERIOD_MS);
+  state.liveWindowSpan=15000;
+  refresh();
+  startStream();
+}
+boot();
+</script>
 </body>
 </html>
