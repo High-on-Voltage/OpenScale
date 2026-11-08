@@ -131,6 +131,7 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
       <button id="selectModeBtn" aria-pressed="false">Select interval</button>
       <button id="tareBtn">Auto-Tare</button>
       <button id="exportBtn">Export CSV</button>
+      <button id="testSamplesBtn">＋ Add 100k test samples</button>
     </div>
     <div class="toolbar-right">
       <span class="small">Signal generator: bounded random walk</span>
@@ -170,11 +171,11 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
         <div class="panel-head"><h2>Signal processing</h2></div>
         <div class="control-grid">
           <div class="field full"><label for="windowRange">MA window (samples)</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Moving average window sample count"></div></div>
-          <div class="field full"><label for="bufferInput">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="2000000">2,000,000 samples</option><option value="unlimited">Unlimited (grow as needed)</option></select></div>
+          <div class="field full"><label for="bufferInput">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="2000000">2,000,000 samples</option><option value="unlimited">Unlimited (grow in 100k chunks)</option></select></div>
           <div class="field full"><label for="tareInput">Manual tare offset</label><input id="tareInput" type="number" step="0.001" value="0"></div>
         </div>
         <div class="button-row"><button id="applySettingsBtn" class="primary">Apply settings</button></div>
-        <div class="small" style="margin-top:8px">The raw ring buffer is retained unchanged. Unlimited grows as needed and remains subject to available browser memory.</div>
+        <div class="small" style="margin-top:8px">The raw ring buffer is retained unchanged. MA changes recalculate history automatically. Unlimited mode grows in 100,000-sample increments and remains subject to available browser memory.</div>
       </section>
 
       <section class="panel">
@@ -182,6 +183,7 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
         <label class="check"><input type="checkbox" id="spreadToggle" checked> Show standard deviation band</label>
         <label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
         <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
+        <div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1" value="5"><div class="small">Slow response at low values · immediate at 100%</div></div>
         <label class="check"><input type="checkbox" id="rawToggle" checked> Show raw signal</label>
         <label class="check"><input type="checkbox" id="maToggle" checked> Show moving average</label>
         <label class="check"><input type="checkbox" id="downsampleToggle"> Downsample large windows (min/max envelope)</label>
@@ -227,9 +229,10 @@ const state = {
   spread: new Float64Array(100000),
   nextTime: 0, timer: null, paused: false, live: true,
   liveWindowSpan: 5000, viewMin: 0, viewMax: PERIOD_MS,
-  tare: 0, window: 80, rollSum: 0, rollSumSq: 0, rollCount: 0,
+  tare: 0, window: 80, activeWindow: 80, rollSum: 0, rollSumSq: 0, rollCount: 0,
   mainPlot: null, miniPlot: null, selection: null, pendingSelection: null,
   logs: [], manualY: false, yMin: -10, yMax: 10,
+  autoYMin: null, autoYMax: null, maRebuildTimer: null, testBatchRunning: false,
   renderPending: false, miniLastRender: 0, seedValue: 5000, drift: 0,
   plotBuffers: [], plotBufferIndex: 0, selectMode: false
 };
@@ -254,12 +257,13 @@ function nextSensorValue() {
 
 function appendSample(value) {
   if (state.unlimited && state.count === state.capacity) {
-    resizeBuffers(state.capacity * 2, true);
+    // Grow by a bounded chunk instead of doubling potentially very large allocations.
+    resizeBuffers(state.capacity + 100000);
   }
   const bufferWasFull = state.count === state.capacity;
   // Remove the sample that falls out of the rolling window before writing into the ring.
-  if (state.rollCount >= state.window) {
-    const old = getRaw(state.count - state.window);
+  if (state.rollCount >= state.activeWindow) {
+    const old = getRaw(state.count - state.activeWindow);
     state.rollSum -= old;
     state.rollSumSq -= old * old;
     state.rollCount--;
@@ -294,6 +298,7 @@ function rebuildDerived() {
   state.rollCount = 0;
   const w = Math.min(state.window, state.capacity);
   state.window = Math.max(2, w);
+  state.activeWindow = state.window;
   for (let i = 0; i < state.count; i++) {
     const value = getRaw(i);
     if (state.rollCount >= state.window) {
@@ -491,9 +496,28 @@ function makeMainOptions() {
         auto: !state.manualY,
         range: (u, min, max) => {
           if (state.manualY) return [state.yMin, state.yMax];
-          if ($('zeroFillToggle').checked || $('zeroLineToggle').checked)
-            return [Math.min(0, min), Math.max(0, max)];
-          return [min, max];
+          if (!Number.isFinite(min) || !Number.isFinite(max)) return [min, max];
+          // Only the explicit zero-line option may pull zero into the visible Y range.
+          // The fill uses zero as a clipped geometric boundary and must not alter autoscale.
+          let targetMin = min, targetMax = max;
+          if ($('zeroLineToggle').checked) {
+            targetMin = Math.min(0, targetMin);
+            targetMax = Math.max(0, targetMax);
+          }
+          let span = targetMax - targetMin;
+          if (!(span > 0)) span = Math.max(1, Math.abs(targetMax) * 0.02);
+          const padding = span * 0.04;
+          targetMin -= padding;
+          targetMax += padding;
+          if (state.autoYMin == null || state.autoYMax == null) {
+            state.autoYMin = targetMin;
+            state.autoYMax = targetMax;
+          } else {
+            const response = clamp(Number($('yResponseRange').value || 5) / 100, 0.01, 1);
+            state.autoYMin += (targetMin - state.autoYMin) * response;
+            state.autoYMax += (targetMax - state.autoYMax) * response;
+          }
+          return [state.autoYMin, state.autoYMax];
         }
       }
     },
@@ -876,6 +900,7 @@ function togglePause(){
 }
 function autoTare(){
   if(!state.count)return;
+  if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;rebuildDerived();}
   state.tare=state.maRaw[physicalIndex(state.count-1)];
   $('tareInput').value=state.tare.toFixed(3);
   scheduleRender();
@@ -892,6 +917,22 @@ function exportCSV(){
   a.href=url;a.download=`telemetry-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
   document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
+function setMovingAverageWindow(rawValue, immediate=false, preserveInput=false){
+  if (rawValue === '' || !Number.isFinite(Number(rawValue))) return;
+  const value=clamp(Math.floor(Number(rawValue)),2,10000);
+  state.window=Math.min(value,state.capacity);
+  if(!preserveInput) $('windowInput').value=state.window;
+  $('windowRange').value=state.window;
+  $('spreadDetail').textContent=`±1σ · MA window ${state.window}`;
+  if (state.maRebuildTimer) clearTimeout(state.maRebuildTimer);
+  // Rebuild once the user pauses input; the numeric setting itself takes effect immediately.
+  state.maRebuildTimer=setTimeout(()=>{
+    state.maRebuildTimer=null;
+    rebuildDerived();
+    scheduleRender();
+  }, immediate ? 0 : 90);
+}
+
 function applySettings(){
   const requestedWindow=clamp(Math.floor(Number($('windowInput').value)||80),2,10000);
   const bufferChoice=$('bufferInput').value;
@@ -906,8 +947,33 @@ function applySettings(){
   state.window=Math.min(requestedWindow,state.capacity);
   $('windowInput').value=state.window;
   $('windowRange').value=state.window;
+  if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;}
   rebuildDerived();scheduleRender();
 }
+function addTestSamples(){
+  if(state.testBatchRunning) return;
+  state.testBatchRunning=true;
+  const button=$('testSamplesBtn');
+  const total=100000, chunkSize=10000;
+  let added=0;
+  button.disabled=true;
+  const runChunk=()=>{
+    const end=Math.min(total,added+chunkSize);
+    for(;added<end;added++) appendSample(nextSensorValue());
+    button.textContent=`Adding test samples · ${Math.round(added/total*100)}%`;
+    scheduleRender();
+    if(added<total){
+      requestAnimationFrame(runChunk);
+    }else{
+      state.testBatchRunning=false;
+      button.disabled=false;
+      button.textContent='＋ Add 100k test samples';
+      scheduleRender();
+    }
+  };
+  requestAnimationFrame(runChunk);
+}
+
 function applySeriesVisibility(){
   if(!state.mainPlot)return;
   state.mainPlot.setSeries(1,{show:$('rawToggle').checked});
@@ -942,20 +1008,25 @@ function initEvents(){
   $('tareBtn').addEventListener('click',autoTare);
   $('exportBtn').addEventListener('click',exportCSV);
   $('applySettingsBtn').addEventListener('click',applySettings);
-  $('windowRange').addEventListener('input',e=>{$('windowInput').value=e.target.value;});
-  $('windowInput').addEventListener('input',e=>{
-    const value=clamp(Math.floor(Number(e.target.value)||2),2,10000);
-    $('windowRange').value=value;
+  $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));
+  $('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
+  $('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));
+  $('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
+  $('yResponseRange').addEventListener('input',e=>{
+    $('yResponseText').textContent=`${e.target.value}%`;
+    scheduleRender();
   });
+  $('testSamplesBtn').addEventListener('click',addTestSamples);
   ['spreadToggle','zeroFillToggle','zeroLineToggle','rawToggle','maToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
   $('yControlsToggle').addEventListener('change',e=>{
     $('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;
     if(state.manualY)initializeManualYAxis();
+    else {state.autoYMin=null;state.autoYMax=null;}
     scheduleRender();
   });
   $('yMinRange').addEventListener('input',e=>{state.yMin=Number(e.target.value);$('yMinText').textContent=fmt(state.yMin,1);if(state.manualY)scheduleRender();});
   $('yMaxRange').addEventListener('input',e=>{state.yMax=Number(e.target.value);$('yMaxText').textContent=fmt(state.yMax,1);if(state.manualY)scheduleRender();});
-  $('autoYBtn').addEventListener('click',()=>{$('yControlsToggle').checked=false;$('yControls').hidden=true;state.manualY=false;scheduleRender();});
+  $('autoYBtn').addEventListener('click',()=>{$('yControlsToggle').checked=false;$('yControls').hidden=true;state.manualY=false;state.autoYMin=null;state.autoYMax=null;scheduleRender();});
   $('zoomInBtn').addEventListener('click',()=>zoomBy(.75));
   $('zoomOutBtn').addEventListener('click',()=>zoomBy(1.33));
   $('backBtn').addEventListener('click',()=>{
