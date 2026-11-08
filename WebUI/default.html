@@ -28,7 +28,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>Telemetry Workbench</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preload" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" as="style">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css"></noscript>
 <style>
 :root {
   color-scheme: dark;
@@ -87,8 +90,10 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}
 .field{display:flex;flex-direction:column;gap:4px;min-width:0}
 .field.full{grid-column:1/-1}
 .field label{font-size:11px;color:var(--muted)}
-input[type=number],input[type=text]{width:100%;min-width:0;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}
+input[type=number],input[type=text],select{width:100%;min-width:0;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}
 input[type=range]{width:100%;accent-color:var(--accent)}
+.range-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:10px;align-items:center}
+.range-row input[type=number]{padding:6px 7px}
 input[type=checkbox]{accent-color:var(--accent)}
 .check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin:5px 0}
 .small{font-size:11px;color:var(--muted)}
@@ -164,12 +169,12 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
       <section class="panel">
         <div class="panel-head"><h2>Signal processing</h2></div>
         <div class="control-grid">
-          <div class="field"><label for="windowInput">MA window (samples)</label><input id="windowInput" type="number" min="2" max="10000" value="80"></div>
-          <div class="field"><label for="bufferInput">Buffer limit</label><input id="bufferInput" type="number" min="1000" max="2000000" step="1000" value="100000"></div>
+          <div class="field full"><label for="windowRange">MA window (samples)</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Moving average window sample count"></div></div>
+          <div class="field full"><label for="bufferInput">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="2000000">2,000,000 samples</option><option value="unlimited">Unlimited (grow as needed)</option></select></div>
           <div class="field full"><label for="tareInput">Manual tare offset</label><input id="tareInput" type="number" step="0.001" value="0"></div>
         </div>
         <div class="button-row"><button id="applySettingsBtn" class="primary">Apply settings</button></div>
-        <div class="small" style="margin-top:8px">The raw ring buffer is retained unchanged. Tare and smoothing are derived for display and export.</div>
+        <div class="small" style="margin-top:8px">The raw ring buffer is retained unchanged. Unlimited grows as needed and remains subject to available browser memory.</div>
       </section>
 
       <section class="panel">
@@ -179,7 +184,9 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
         <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
         <label class="check"><input type="checkbox" id="rawToggle" checked> Show raw signal</label>
         <label class="check"><input type="checkbox" id="maToggle" checked> Show moving average</label>
+        <label class="check"><input type="checkbox" id="downsampleToggle"> Downsample large windows (min/max envelope)</label>
         <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
+        <div class="small">When enabled, downsampling activates only above roughly four plotted points per horizontal pixel. Leave it off to always plot every visible sample.</div>
         <div id="yControls" hidden>
           <div class="field"><label for="yMinRange">Y minimum: <strong id="yMinText">-10</strong></label><input id="yMinRange" type="range" min="-100" max="100" step=".1" value="-10"></div>
           <div class="field" style="margin-top:8px"><label for="yMaxRange">Y maximum: <strong id="yMaxText">10</strong></label><input id="yMaxRange" type="range" min="-100" max="100" step=".1" value="10"></div>
@@ -201,10 +208,9 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
       </section>
     </aside>
   </div>
-  <footer>All telemetry is generated and processed locally in this browser. CSV export includes raw samples and derived values. uPlot is loaded from jsDelivr CDN.</footer>
+  <footer>All telemetry is generated and processed locally in this browser. CSV export includes raw samples and derived values. uPlot is loaded asynchronously from jsDelivr CDN after the dashboard shell appears.</footer>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
 
@@ -214,7 +220,7 @@ const RATE_HZ = 80;
 const PERIOD_MS = 1000 / RATE_HZ;
 const $ = id => document.getElementById(id);
 const state = {
-  capacity: 100000, count: 0, head: 0,
+  capacity: 100000, unlimited: false, count: 0, head: 0,
   times: new Float64Array(100000),
   raw: new Int32Array(100000),
   maRaw: new Float64Array(100000),
@@ -247,6 +253,9 @@ function nextSensorValue() {
 }
 
 function appendSample(value) {
+  if (state.unlimited && state.count === state.capacity) {
+    resizeBuffers(state.capacity * 2, true);
+  }
   const bufferWasFull = state.count === state.capacity;
   // Remove the sample that falls out of the rolling window before writing into the ring.
   if (state.rollCount >= state.window) {
@@ -305,7 +314,7 @@ function rebuildDerived() {
 }
 
 function resizeBuffers(requested) {
-  const capacity = clamp(Math.floor(requested), 1000, 2000000);
+  const capacity = Math.max(1000, Math.floor(requested));
   const keep = Math.min(state.count, capacity);
   const oldStart = state.count - keep;
   const times = new Float64Array(capacity);
@@ -374,15 +383,21 @@ function ensurePlotBuffers(required) {
   state.plotBufferIndex = 0;
 }
 
-// Pack every visible sample without downsampling. Buffers are reused between frames.
+// Pack visible data into reusable typed buffers. Optional min/max envelope reduction
+// keeps sharp excursions while bounding very wide views to about four points per pixel.
 function buildVisibleData() {
   const [lo, hi] = visibleIndices();
   if (hi < lo) return [[], [], [], [], []];
   const count = hi - lo + 1;
-  ensurePlotBuffers(count);
+  const pixelWidth = Math.max(320, Math.floor(state.mainPlot?.bbox?.width || $('mainChart').clientWidth || 800));
+  const maxBuckets = Math.max(160, pixelWidth * 2);
+  const useDownsample = $('downsampleToggle').checked && count > maxBuckets * 2;
+  const outputCapacity = useDownsample ? Math.min(count, maxBuckets * 2) : count;
+  ensurePlotBuffers(outputCapacity);
   const buf = state.plotBuffers[state.plotBufferIndex ^= 1];
   let out = 0;
-  for (let i = lo; i <= hi; i++) {
+
+  const writePoint = i => {
     const raw = getRaw(i);
     const ma = getMA(i);
     const sd = getSpread(i);
@@ -392,6 +407,29 @@ function buildVisibleData() {
     buf.upper[out] = ma + sd - state.tare;
     buf.lower[out] = ma - sd - state.tare;
     out++;
+  };
+
+  if (!useDownsample) {
+    for (let i = lo; i <= hi; i++) writePoint(i);
+  } else {
+    const bucketSize = Math.ceil(count / maxBuckets);
+    for (let start = lo; start <= hi; start += bucketSize) {
+      const end = Math.min(hi + 1, start + bucketSize);
+      let minIndex = start, maxIndex = start;
+      let minValue = getRaw(start), maxValue = minValue;
+      for (let i = start + 1; i < end; i++) {
+        const value = getRaw(i);
+        if (value < minValue) { minValue = value; minIndex = i; }
+        if (value > maxValue) { maxValue = value; maxIndex = i; }
+      }
+      if (minIndex === maxIndex) {
+        writePoint(minIndex);
+      } else if (minIndex < maxIndex) {
+        writePoint(minIndex); writePoint(maxIndex);
+      } else {
+        writePoint(maxIndex); writePoint(minIndex);
+      }
+    }
   }
   return [buf.x.subarray(0,out), buf.raw.subarray(0,out), buf.ma.subarray(0,out),
           buf.upper.subarray(0,out), buf.lower.subarray(0,out)];
@@ -461,7 +499,7 @@ function makeMainOptions() {
     },
     axes: [
       { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line }, values: (u, vals) => vals.map(v => `${v.toFixed(1)}s`) },
-      { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line } }
+      { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)', filter: (u, splits) => splits.map(v => (!$('zeroLineToggle').checked && Math.abs(v) < 1e-12) ? null : v) }, ticks: { stroke: c.line } }
     ],
     series: [
       { label: 'Runtime (s)', value: (u,v) => v == null ? '—' : `${v.toFixed(2)} s` },
@@ -510,7 +548,6 @@ function createCharts() {
     $('mainChart').innerHTML = '<p style="color:var(--danger)">uPlot could not be loaded. Check your network connection to the approved CDN.</p>';
     return;
   }
-  state.plotBuffers = [createPlotBuffer(12000), createPlotBuffer(12000)];
   state.mainPlot = new uPlot(makeMainOptions(), [[],[],[],[],[]], $('mainChart'));
   state.miniPlot = new uPlot(makeMiniOptions(), [[],[]], $('miniChart'));
   state.mainPlot.setSeries(1, { show: $('rawToggle').checked });
@@ -548,8 +585,12 @@ function scheduleRender() {
   });
 }
 function renderFrame() {
-  if (!state.count || !state.mainPlot) return;
+  if (!state.count) return;
   if (state.live) fitLiveWindow();
+  updateMetrics();
+  $('sampleCount').textContent = `${state.count.toLocaleString()} samples`;
+  updateViewLabel();
+  if (!state.mainPlot) return;
   const plotData = buildVisibleData();
   const minX = state.viewMin / 1000;
   const maxX = Math.max(minX + PERIOD_MS/1000, state.viewMax / 1000);
@@ -558,9 +599,6 @@ function renderFrame() {
     state.mainPlot.setScale('x', { min: minX, max: maxX });
     if (state.manualY) state.mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
   });
-  updateMetrics();
-  $('sampleCount').textContent = `${state.count.toLocaleString()} samples`;
-  updateViewLabel();
   const now = performance.now();
   if (now - state.miniLastRender >= 250) {
     updateMini();
@@ -856,12 +894,18 @@ function exportCSV(){
 }
 function applySettings(){
   const requestedWindow=clamp(Math.floor(Number($('windowInput').value)||80),2,10000);
-  const capacity=clamp(Math.floor(Number($('bufferInput').value)||100000),1000,2000000);
+  const bufferChoice=$('bufferInput').value;
   state.tare=Number($('tareInput').value)||0;
-  $('bufferInput').value=capacity;
-  if(capacity!==state.capacity) resizeBuffers(capacity);
+  if(bufferChoice==='unlimited') {
+    state.unlimited=true;
+  } else {
+    state.unlimited=false;
+    const capacity=clamp(Math.floor(Number(bufferChoice)||100000),1000,2000000);
+    if(capacity!==state.capacity) resizeBuffers(capacity);
+  }
   state.window=Math.min(requestedWindow,state.capacity);
   $('windowInput').value=state.window;
+  $('windowRange').value=state.window;
   rebuildDerived();scheduleRender();
 }
 function applySeriesVisibility(){
@@ -898,7 +942,12 @@ function initEvents(){
   $('tareBtn').addEventListener('click',autoTare);
   $('exportBtn').addEventListener('click',exportCSV);
   $('applySettingsBtn').addEventListener('click',applySettings);
-  ['spreadToggle','zeroFillToggle','zeroLineToggle','rawToggle','maToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
+  $('windowRange').addEventListener('input',e=>{$('windowInput').value=e.target.value;});
+  $('windowInput').addEventListener('input',e=>{
+    const value=clamp(Math.floor(Number(e.target.value)||2),2,10000);
+    $('windowRange').value=value;
+  });
+  ['spreadToggle','zeroFillToggle','zeroLineToggle','rawToggle','maToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
   $('yControlsToggle').addEventListener('change',e=>{
     $('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;
     if(state.manualY)initializeManualYAxis();
@@ -931,14 +980,41 @@ function initEvents(){
 function tick(){
   if(state.paused)return;
   appendSample(nextSensorValue());
-  scheduleRender();
+  if(state.mainPlot) {
+    scheduleRender();
+  } else if(state.count % 8 === 0) {
+    updateMetrics();
+    $('sampleCount').textContent = `${state.count.toLocaleString()} samples`;
+  }
+}
+function loadUPlotAsync(){
+  return new Promise((resolve,reject)=>{
+    if(window.uPlot){resolve();return;}
+    const script=document.createElement('script');
+    script.src='https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js';
+    script.async=true;
+    script.onload=()=>resolve();
+    script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));
+    document.head.appendChild(script);
+  });
 }
 function boot(){
   initEvents();
-  rebuildDerived();
-  createCharts();
   updateViewLabel();
+  $('statusText').textContent='Streaming · loading chart';
   state.timer=setInterval(tick,PERIOD_MS);
+  // Let the dashboard shell paint before downloading the chart library.
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    loadUPlotAsync().then(()=>{
+      createCharts();
+      $('statusText').textContent=state.paused?'Paused':'Streaming';
+      scheduleRender();
+    }).catch(err=>{
+      $('statusText').textContent='Chart library unavailable';
+      $('mainChart').innerHTML='<p style="color:var(--danger)">The uPlot library could not be loaded. Check the internet connection and reload the file.</p>';
+      console.error(err);
+    });
+  }));
 }
 boot();
 </script>
