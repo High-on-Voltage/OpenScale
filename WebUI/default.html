@@ -80,6 +80,7 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}
 .uplot{max-width:100%}
 .u-legend{font-size:11px!important}
 .u-legend th,.u-legend td{padding:3px 7px!important}
+#mainChart .u-over,#miniChart .u-over{touch-action:none}
 .u-series>*{font-variant-numeric:tabular-nums}
 .side{display:flex;flex-direction:column;gap:12px}
 .control-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
@@ -122,6 +123,7 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
     <div class="toolbar-left">
       <button id="pauseBtn">Ⅱ Pause</button>
       <button id="trackBtn" class="primary">Track Live</button>
+      <button id="selectModeBtn" aria-pressed="false">Select interval</button>
       <button id="tareBtn">Auto-Tare</button>
       <button id="exportBtn">Export CSV</button>
     </div>
@@ -205,472 +207,722 @@ footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}
 <script>
 "use strict";
 
-// Store raw sensor readings and relative runtime in typed circular buffers.
-// Derived values are recalculated from raw history without modifying either buffer.
+// Raw measurements and relative runtime are kept in circular TypedArray buffers.
+// Derived moving-average and dispersion values are updated incrementally per sample.
 const RATE_HZ = 80;
-const PERIOD_MS = 1000.0 / RATE_HZ;
+const PERIOD_MS = 1000 / RATE_HZ;
 const $ = id => document.getElementById(id);
 const state = {
   capacity: 100000, count: 0, head: 0,
   times: new Float64Array(100000),
   raw: new Int32Array(100000),
+  maRaw: new Float64Array(100000),
+  spread: new Float64Array(100000),
   nextTime: 0, timer: null, paused: false, live: true,
-  liveWindowSpan: 15000, viewMin: 0, viewMax: 15000,
-  tare: 0, window: 80, derived: null, mainPlot: null, miniPlot: null,
-  selection: null, logs: [], manualY: false, yMin: -10, yMax: 10,
-  lastRender: 0, renderPending: false, seedValue: 5000, drift: 0
+  liveWindowSpan: 5000, viewMin: 0, viewMax: PERIOD_MS,
+  tare: 0, window: 80, rollSum: 0, rollSumSq: 0, rollCount: 0,
+  mainPlot: null, miniPlot: null, selection: null, pendingSelection: null,
+  logs: [], manualY: false, yMin: -10, yMax: 10,
+  renderPending: false, miniLastRender: 0, seedValue: 5000, drift: 0,
+  plotBuffers: [], plotBufferIndex: 0, selectMode: false
 };
 
-function physicalIndex(logicalIndex) {
-  return (state.head + logicalIndex) % state.capacity;
-}
+function physicalIndex(i) { return (state.head + i) % state.capacity; }
 function getTime(i) { return state.times[physicalIndex(i)]; }
 function getRaw(i) { return state.raw[physicalIndex(i)]; }
+function getMA(i) { return state.maRaw[physicalIndex(i)]; }
+function getSpread(i) { return state.spread[physicalIndex(i)]; }
 function oldestTime() { return state.count ? getTime(0) : 0; }
 function newestTime() { return state.count ? getTime(state.count - 1) : 0; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function fmt(v, digits = 3) { return Number.isFinite(v) ? v.toFixed(digits) : "—"; }
 
-// Generate correlated "marching randomness": a bounded random walk with occasional
-// directional changes, gentle mean reversion, and small measurement noise.
+// Correlated "marching randomness": a bounded random walk with slow direction changes.
 function nextSensorValue() {
-  const turn = Math.random();
-  if (turn < 0.018) state.drift = (Math.random() - 0.5) * 0.7;
+  if (Math.random() < 0.018) state.drift = (Math.random() - 0.5) * 0.7;
   const pull = (5000 - state.seedValue) * 0.0015;
-  const step = state.drift + pull + (Math.random() - 0.5) * 1.8;
-  state.seedValue = clamp(state.seedValue + step, 4600, 5400);
+  state.seedValue = clamp(state.seedValue + state.drift + pull + (Math.random() - 0.5) * 1.8, 4600, 5400);
   return Math.round(state.seedValue + (Math.random() - 0.5) * 2);
 }
+
 function appendSample(value) {
-  const idx = (state.head + state.count) % state.capacity;
-  if (state.count === state.capacity) {
-    state.head = (state.head + 1) % state.capacity;
-    const writeIdx = (state.head + state.count - 1) % state.capacity;
-    state.times[writeIdx] = state.nextTime;
-    state.raw[writeIdx] = value;
-  } else {
-    state.times[idx] = state.nextTime;
-    state.raw[idx] = value;
+  const bufferWasFull = state.count === state.capacity;
+  // Remove the sample that falls out of the rolling window before writing into the ring.
+  if (state.rollCount >= state.window) {
+    const old = getRaw(state.count - state.window);
+    state.rollSum -= old;
+    state.rollSumSq -= old * old;
+    state.rollCount--;
+  }
+
+  let writeIndex;
+  if (state.count < state.capacity) {
+    writeIndex = physicalIndex(state.count);
     state.count++;
+  } else {
+    state.head = (state.head + 1) % state.capacity;
+    writeIndex = physicalIndex(state.count - 1);
   }
+
+  state.times[writeIndex] = state.nextTime;
+  state.raw[writeIndex] = value;
   state.nextTime += PERIOD_MS;
+
+  state.rollSum += value;
+  state.rollSumSq += value * value;
+  state.rollCount++;
+  const avg = state.rollSum / state.rollCount;
+  const variance = Math.max(0, state.rollSumSq / state.rollCount - avg * avg);
+  state.maRaw[writeIndex] = avg;
+  state.spread[writeIndex] = Math.sqrt(variance);
+  if (bufferWasFull && !state.live) clampHistoricalView();
 }
-function resizeBuffers(newCapacity) {
-  const cap = clamp(Math.floor(newCapacity), 1000, 2000000);
-  const keep = Math.min(state.count, cap);
-  const t = new Float64Array(cap), r = new Int32Array(cap);
-  const start = state.count - keep;
-  for (let i = 0; i < keep; i++) {
-    t[i] = getTime(start + i);
-    r[i] = getRaw(start + i);
-  }
-  state.times = t; state.raw = r; state.capacity = cap;
-  state.count = keep; state.head = 0;
-  state.selection = null;
-  if (state.live) fitLiveWindow();
-  else {
-    state.viewMin = Math.max(oldestTime(), state.viewMin);
-    state.viewMax = Math.min(newestTime(), state.viewMax);
-  }
-}
-function computeDerived() {
-  const n = state.count;
-  const x = new Float64Array(n), raw = new Float64Array(n);
-  const ma = new Float64Array(n), upper = new Float64Array(n), lower = new Float64Array(n), lowerZero = new Float64Array(n);
-  const w = Math.max(2, state.window);
-  let sum = 0, sumSq = 0;
-  for (let i = 0; i < n; i++) {
+
+function rebuildDerived() {
+  state.rollSum = 0;
+  state.rollSumSq = 0;
+  state.rollCount = 0;
+  const w = Math.min(state.window, state.capacity);
+  state.window = Math.max(2, w);
+  for (let i = 0; i < state.count; i++) {
     const value = getRaw(i);
-    x[i] = getTime(i) / 1000;
-    raw[i] = value - state.tare;
-    sum += value; sumSq += value * value;
-    if (i >= w) {
-      const old = getRaw(i - w);
-      sum -= old; sumSq -= old * old;
+    if (state.rollCount >= state.window) {
+      const old = getRaw(i - state.window);
+      state.rollSum -= old;
+      state.rollSumSq -= old * old;
+      state.rollCount--;
     }
-    const k = Math.min(i + 1, w);
-    const avg = sum / k;
-    const variance = Math.max(0, sumSq / k - avg * avg);
-    const sd = Math.sqrt(variance);
-    ma[i] = avg - state.tare;
-    upper[i] = ma[i] + sd;
-    lower[i] = ma[i] - sd;
-    lowerZero[i] = Math.min(0, lower[i]);
+    state.rollSum += value;
+    state.rollSumSq += value * value;
+    state.rollCount++;
+    const avg = state.rollSum / state.rollCount;
+    const variance = Math.max(0, state.rollSumSq / state.rollCount - avg * avg);
+    const ix = physicalIndex(i);
+    state.maRaw[ix] = avg;
+    state.spread[ix] = Math.sqrt(variance);
   }
-  state.derived = {x, raw, ma, upper, lower, lowerZero};
 }
-function buildPlotData() {
-  const d = state.derived;
-  return [d.x, d.raw, d.ma, d.upper, d.lower, d.lowerZero];
+
+function resizeBuffers(requested) {
+  const capacity = clamp(Math.floor(requested), 1000, 2000000);
+  const keep = Math.min(state.count, capacity);
+  const oldStart = state.count - keep;
+  const times = new Float64Array(capacity);
+  const raw = new Int32Array(capacity);
+  const maRaw = new Float64Array(capacity);
+  const spread = new Float64Array(capacity);
+  for (let i = 0; i < keep; i++) {
+    times[i] = getTime(oldStart + i);
+    raw[i] = getRaw(oldStart + i);
+  }
+  state.capacity = capacity;
+  state.times = times;
+  state.raw = raw;
+  state.maRaw = maRaw;
+  state.spread = spread;
+  state.count = keep;
+  state.head = 0;
+  state.window = Math.min(state.window, capacity);
+  state.selection = null;
+  rebuildDerived();
+  if (state.live) fitLiveWindow();
+  else clampHistoricalView();
 }
-function visibleRangeIndices() {
-  const x = state.derived?.x;
-  if (!x || !x.length) return [0, 0];
-  let lo = 0, hi = x.length - 1;
-  const min = state.viewMin / 1000, max = state.viewMax / 1000;
-  while (lo < hi && x[lo] < min) lo++;
-  while (hi > lo && x[hi] > max) hi--;
+
+function lowerBoundTime(ms) {
+  let lo = 0, hi = state.count;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (getTime(mid) < ms) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+function visibleIndices() {
+  if (!state.count) return [0, -1];
+  let lo = Math.max(0, lowerBoundTime(state.viewMin) - 1);
+  let hi = Math.min(state.count - 1, lowerBoundTime(state.viewMax));
+  if (hi < lo) hi = lo;
   return [lo, hi];
 }
-function chartColors() {
+
+function colors() {
   const css = getComputedStyle(document.documentElement);
   return {
     raw: css.getPropertyValue("--raw").trim(),
     ma: css.getPropertyValue("--ma").trim(),
-    band: css.getPropertyValue("--upper").trim(),
-    zero: css.getPropertyValue("--zero").trim()
+    zero: css.getPropertyValue("--zero").trim(),
+    muted: css.getPropertyValue("--muted").trim(),
+    line: css.getPropertyValue("--line").trim()
   };
-}
-function makeMainOptions() {
-  const c = chartColors();
-  return {
-    width: $("mainChart").clientWidth || 800, height: 390,
-    title: "", legend: {show: true}, cursor: {drag: {x: true, y: false, setScale: false}, focus: {prox: 30}},
-    select: {show: true, left: 0, width: 0},
-    scales: {x: {time: false}, y: {auto: !state.manualY, range: state.manualY ? [state.yMin, state.yMax] : null}},
-    axes: [
-      {stroke: "var(--muted)", grid: {stroke: "rgba(130,150,180,.12)"}, ticks: {stroke: "var(--line)"}, values: (u, vals) => vals.map(v => `${v.toFixed(1)}s`)},
-      {stroke: "var(--muted)", grid: {stroke: "rgba(130,150,180,.12)"}, ticks: {stroke: "var(--line)"}}
-    ],
-    series: [
-      {label: "Runtime (s)", value: (u, v) => v == null ? "—" : `${v.toFixed(2)} s`},
-      {label: "Raw − tare", stroke: c.raw, width: 1.3, points: {show: false}, value: (u, v) => fmt(v)},
-      {label: "Moving average", stroke: c.ma, width: 2.1, points: {show: false}, value: (u, v) => fmt(v)},
-      {label: "Upper +1σ", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)},
-      {label: "Lower −1σ", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)},
-      {label: "Zero-to-lower fill", stroke: "rgba(0,0,0,0)", width: 0, points: {show: false}, value: (u, v) => fmt(v)}
-    ],
-    bands: [{series: [3, 4], fill: "rgba(190,112,220,.16)"}],
-    hooks: {
-      drawAxes: [u => {
-        const y = u.valToPos(0, "y", true);
-        if (Number.isFinite(y) && y >= u.bbox.top && y <= u.bbox.top + u.bbox.height) {
-          const ctx = u.ctx;
-          ctx.save(); ctx.strokeStyle = c.zero; ctx.lineWidth = 2.6;
-          ctx.globalAlpha = .9; ctx.beginPath();
-          ctx.moveTo(u.bbox.left, Math.round(y) + .5);
-          ctx.lineTo(u.bbox.left + u.bbox.width, Math.round(y) + .5);
-          ctx.stroke(); ctx.restore();
-        }
-      }],
-      setSelect: [u => handleMainSelection(u)]
-    },
-    plugins: [zeroFillPlugin()],
-    scales: {x: {time: false}, y: {auto: !state.manualY, range: state.manualY ? () => [state.yMin, state.yMax] : null}}
-  };
-}
-function zeroFillPlugin() {
-  return {
-    hooks: {
-      draw: [u => {
-        if (!$("zeroFillToggle").checked || !state.derived) return;
-        const d = state.derived, [a,b] = visibleRangeIndices();
-        const ctx = u.ctx, y0 = u.valToPos(0, "y", true);
-        ctx.save(); ctx.fillStyle = "rgba(95,190,160,.13)";
-        ctx.beginPath(); let started = false;
-        for (let i = a; i <= b; i++) {
-          const px = u.valToPos(d.x[i], "x", true), py = u.valToPos(d.lower[i], "y", true);
-          if (!started) { ctx.moveTo(px, y0); ctx.lineTo(px, py); started = true; }
-          else ctx.lineTo(px, py);
-        }
-        if (started) {
-          for (let i = b; i >= a; i--) ctx.lineTo(u.valToPos(d.x[i], "x", true), y0);
-          ctx.closePath(); ctx.fill();
-        }
-        ctx.restore();
-      }]
-    }
-  };
-}
-function makeMiniOptions() {
-  const c = chartColors();
-  return {
-    width: $("miniChart").clientWidth || 800, height: 105, legend: {show:false},
-    cursor: {show:false}, select: {show:true, left:0, width:0},
-    scales: {x:{time:false},y:{auto:true}},
-    axes: [{show:false},{show:false}],
-    series: [{}, {label:"History",stroke:c.raw,width:1,points:{show:false}}],
-    hooks: {setSelect:[u => {
-      const s = u.select;
-      if (!s || !s.width || !state.derived?.x.length) return;
-      const x0 = u.posToVal(s.left, "x", false) * 1000;
-      const x1 = u.posToVal(s.left + s.width, "x", false) * 1000;
-      state.live = false;
-      state.viewMin = Math.max(oldestTime(), Math.min(x0,x1));
-      state.viewMax = Math.min(newestTime(), Math.max(x0,x1));
-      updateViewLabel(); updateMainScale();
-    }]}
-  };
-}
-function handleMainSelection(u) {
-  const s = u.select;
-  if (!s || s.width < 3 || !state.derived?.x.length) return;
-  const x0 = u.posToVal(s.left, "x", false) * 1000;
-  const x1 = u.posToVal(s.left + s.width, "x", false) * 1000;
-  if (u.cursor && u.cursor.left != null && u.cursor.left >= 0) {
-    state.pendingSelection = [Math.min(x0,x1), Math.max(x0,x1)];
-  }
-}
-function createCharts() {
-  if (!window.uPlot) {
-    $("mainChart").innerHTML = '<p style="color:var(--danger)">uPlot could not be loaded. Check your network connection to the approved CDN.</p>';
-    return;
-  }
-  const opts = makeMainOptions();
-  state.mainPlot = new uPlot(opts, [new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0), new Float64Array(0)], $("mainChart"));
-  state.miniPlot = new uPlot(makeMiniOptions(), [new Float64Array(0), new Float64Array(0)], $("miniChart"));
-  const mainEl = $("mainChart");
-  mainEl.addEventListener("pointerup", () => {
-    if (state.pendingSelection) {
-      const range = state.pendingSelection; state.pendingSelection = null;
-      selectInterval(range[0], range[1]);
-    }
-  });
-  mainEl.addEventListener("wheel", onWheelZoom, {passive:false});
-  let touchStart = null;
-  mainEl.addEventListener("touchstart", e => {
-    if (e.touches.length === 2) touchStart = {dist: Math.abs(e.touches[0].clientX-e.touches[1].clientX), span: state.viewMax-state.viewMin, center:(state.viewMin+state.viewMax)/2};
-  }, {passive:true});
-  mainEl.addEventListener("touchmove", e => {
-    if (e.touches.length === 2 && touchStart) {
-      const dist = Math.abs(e.touches[0].clientX-e.touches[1].clientX);
-      const factor = touchStart.dist / Math.max(20,dist);
-      setWindowSpan(clamp(touchStart.span*factor, 500, Math.max(500, newestTime()-oldestTime())));
-    }
-  }, {passive:true});
-  mainEl.addEventListener("touchend", () => { touchStart = null; });
-}
-function updateMainScale() {
-  if (!state.mainPlot || !state.derived) return;
-  const d = state.derived;
-  const min = state.viewMin / 1000, max = state.viewMax / 1000;
-  state.mainPlot.setScale("x", {min, max});
-  state.mainPlot.setData(buildPlotData());
-  state.mainPlot.setSeries(1, {show:$("rawToggle").checked});
-  state.mainPlot.setSeries(2, {show:$("maToggle").checked});
-  state.mainPlot.setSeries(3, {show:$("spreadToggle").checked});
-  state.mainPlot.setSeries(4, {show:$("spreadToggle").checked});
-  state.mainPlot.setSeries(5, {show:$("zeroFillToggle").checked});
-  if (state.manualY) state.mainPlot.setScale("y", {min:state.yMin,max:state.yMax});
-}
-function updateMini() {
-  if (!state.miniPlot || !state.derived) return;
-  const d = state.derived;
-  state.miniPlot.setData([d.x,d.raw]);
-  const xMin = d.x.length ? d.x[0] : 0, xMax = d.x.length ? d.x[d.x.length-1] : 1;
-  state.miniPlot.setScale("x", {min:xMin,max:Math.max(xMin+0.01,xMax)});
-  const left = state.miniPlot.valToPos(state.viewMin/1000,"x");
-  const right = state.miniPlot.valToPos(state.viewMax/1000,"x");
-  state.miniPlot.setSelect({left:Math.max(0,left),top:0,width:Math.max(1,right-left),height:state.miniPlot.bbox.height});
-}
-function fitLiveWindow() {
-  const newest = newestTime();
-  state.viewMax = newest;
-  state.viewMin = Math.max(oldestTime(), newest - state.liveWindowSpan);
-}
-function updateViewLabel() {
-  $("viewLabel").textContent = state.live ? `Live · ${(state.liveWindowSpan/1000).toFixed(1)} s window` : `Historical · ${(Math.max(0,state.viewMax-state.viewMin)/1000).toFixed(1)} s span`;
-}
-function setWindowSpan(span) {
-  const maxSpan = Math.max(500, newestTime()-oldestTime());
-  state.liveWindowSpan = clamp(span, 500, maxSpan || 15000);
-  if (state.live) fitLiveWindow();
-  else {
-    const center = (state.viewMin+state.viewMax)/2;
-    state.viewMin = clamp(center-state.liveWindowSpan/2, oldestTime(), Math.max(oldestTime(),newestTime()-state.liveWindowSpan));
-    state.viewMax = Math.min(newestTime(),state.viewMin+state.liveWindowSpan);
-  }
-  updateMainScale(); updateMini(); updateViewLabel();
-}
-function onWheelZoom(e) {
-  e.preventDefault();
-  const factor = e.deltaY < 0 ? .82 : 1.22;
-  setWindowSpan(state.liveWindowSpan*factor);
-}
-function refresh() {
-  if (!state.count) return;
-  computeDerived();
-  if (state.live) fitLiveWindow();
-  updateMainScale(); updateMini(); updateViewLabel(); updateMetrics();
-  $("sampleCount").textContent = `${state.count.toLocaleString()} samples`;
-  if (state.selection) updateSelectionReadout();
-}
-function updateMetrics() {
-  const d = state.derived, n = state.count;
-  if (!n) return;
-  const k = Math.min(state.window,n);
-  let sum=0, sumSq=0, rawSum=0;
-  for (let i=n-k;i<n;i++) { const v=getRaw(i); sum+=v; sumSq+=v*v; rawSum+=v; }
-  const avg=sum/k, sd=Math.sqrt(Math.max(0,sumSq/k-avg*avg)), latest=getRaw(n-1);
-  $("currentAvg").textContent=fmt(avg-state.tare);
-  $("currentAvgRaw").textContent=`Raw average ${fmt(avg)} · ${k} samples`;
-  $("currentSpread").textContent=fmt(sd);
-  $("spreadDetail").textContent=`±1σ · MA window ${state.window}`;
-  $("tareValue").textContent=fmt(state.tare);
-  $("latestValue").textContent=fmt(latest-state.tare);
-  $("latestRaw").textContent=`Raw ${latest.toLocaleString()} · tared ${fmt(latest-state.tare)}`;
-}
-function selectInterval(t0,t1) {
-  const n=state.count;
-  let first=-1,last=-1,sum=0,sumSq=0,rawSum=0,min=Infinity,max=-Infinity;
-  for (let i=0;i<n;i++) {
-    const t=getTime(i);
-    if (t>=t0 && t<=t1) {
-      const v=getRaw(i), vt=v-state.tare;
-      if (first<0) first=i;
-      last=i; sum+=vt; sumSq+=vt*vt; rawSum+=v;
-      min=Math.min(min,vt); max=Math.max(max,vt);
-    }
-  }
-  if (first<0) return;
-  const count=last-first+1, avg=sum/count, sd=Math.sqrt(Math.max(0,sumSq/count-avg*avg));
-  state.selection={t0:getTime(first),t1:getTime(last),first,last,count,avg,sd,rawAvg:rawSum/count,min,max};
-  state.live=false;
-  state.viewMin=Math.max(oldestTime(),t0); state.viewMax=Math.min(newestTime(),t1);
-  updateSelectionReadout(); appendLog(state.selection);
-  updateMainScale(); updateMini(); updateViewLabel();
-}
-function updateSelectionReadout() {
-  const s=state.selection;
-  if (!s) { $("selectionSummary").textContent="No interval selected."; return; }
-  $("selectionSummary").innerHTML =
-    `<strong>${s.count.toLocaleString()} samples</strong><br>`+
-    `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
-    `Average (tared): <strong>${fmt(s.avg)}</strong><br>`+
-    `Average (raw): <strong>${fmt(s.rawAvg)}</strong><br>`+
-    `Spread (σ): <strong>${fmt(s.sd)}</strong><br>`+
-    `Min / max (tared): <strong>${fmt(s.min)} / ${fmt(s.max)}</strong>`;
-}
-function appendLog(s) {
-  const entry={...s, created:new Date().toLocaleTimeString()};
-  state.logs.unshift(entry);
-  renderLog();
-}
-function renderLog() {
-  $("logCount").textContent=`(${state.logs.length} entries)`;
-  const list=$("logList");
-  if (!state.logs.length) { list.innerHTML='<div class="small" style="padding:10px 0">No selection events yet.</div>'; return; }
-  list.innerHTML=state.logs.map((s,i)=>
-    `<div class="log-row"><time>${s.created}</time><div><strong>${s.count.toLocaleString()} samples</strong> · ${((s.t1-s.t0)/1000).toFixed(2)} s<br>`+
-    `Tared avg ${fmt(s.avg)} · Raw avg ${fmt(s.rawAvg)} · σ ${fmt(s.sd)} · min ${fmt(s.min)} · max ${fmt(s.max)}</div></div>`
-  ).join("");
-}
-function tick() {
-  if (state.paused) return;
-  appendSample(nextSensorValue());
-  const now=performance.now();
-  if (now-state.lastRender>=100) {
-    state.lastRender=now;
-    if (!state.renderPending) {
-      state.renderPending=true;
-      requestAnimationFrame(()=>{state.renderPending=false;refresh();});
-    }
-  }
-}
-function startStream() {
-  if (state.timer) clearInterval(state.timer);
-  state.timer=setInterval(tick,PERIOD_MS);
-}
-function togglePause() {
-  state.paused=!state.paused;
-  $("pauseBtn").textContent=state.paused?"▶ Resume":"Ⅱ Pause";
-  $("statusText").textContent=state.paused?"Paused":"Streaming";
-  $("statusDot").classList.toggle("paused",state.paused);
-}
-function trackLive() {
-  state.live=true; fitLiveWindow(); state.selection=null;
-  $("selectionSummary").textContent="No interval selected.";
-  updateMainScale(); updateMini(); updateViewLabel();
-}
-function autoTare() {
-  const k=Math.min(state.window,state.count);
-  if (!k) return;
-  let sum=0;
-  for(let i=state.count-k;i<state.count;i++) sum+=getRaw(i);
-  state.tare=sum/k;
-  $("tareInput").value=state.tare.toFixed(3);
-  refresh();
-}
-function exportCSV() {
-  if (!state.count) return;
-  const d=state.derived;
-  const rows=["runtime_ms,raw_sensor,tared_raw,moving_average,spread_1sigma,upper_1sigma,lower_1sigma,tare_offset"];
-  for(let i=0;i<state.count;i++) {
-    const spread=(d.upper[i]-d.lower[i])/2;
-    rows.push([getTime(i),getRaw(i),d.raw[i],d.ma[i],spread,d.upper[i],d.lower[i],state.tare].join(","));
-  }
-  const blob=new Blob([rows.join("\n")],{type:"text/csv;charset=utf-8"});
-  const url=URL.createObjectURL(blob), a=document.createElement("a");
-  a.href=url; a.download=`telemetry-${new Date().toISOString().replace(/[:.]/g,"-")}.csv`;
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-}
-function applyDisplayOptions() {
-  if (!state.mainPlot) return;
-  updateMainScale();
-}
-function resizeCharts() {
-  if (!state.mainPlot || !state.miniPlot) return;
-  state.mainPlot.setSize({width:$("mainChart").clientWidth,height:Math.max(300,Math.min(560,window.innerHeight*.47))});
-  state.miniPlot.setSize({width:$("miniChart").clientWidth,height:105});
-}
-function initEvents() {
-  $("pauseBtn").addEventListener("click",togglePause);
-  $("trackBtn").addEventListener("click",trackLive);
-  $("tareBtn").addEventListener("click",autoTare);
-  $("exportBtn").addEventListener("click",exportCSV);
-  $("applySettingsBtn").addEventListener("click",()=>{
-    state.window=clamp(Math.floor(Number($("windowInput").value)||80),2,10000);
-    $("windowInput").value=state.window;
-    state.tare=Number($("tareInput").value)||0;
-    const cap=clamp(Math.floor(Number($("bufferInput").value)||100000),1000,2000000);
-    $("bufferInput").value=cap;
-    if(cap!==state.capacity) resizeBuffers(cap);
-    refresh();
-  });
-  ["spreadToggle","zeroFillToggle","rawToggle","maToggle"].forEach(id=>$(id).addEventListener("change",applyDisplayOptions));
-  $("yControlsToggle").addEventListener("change",e=>{
-    $("yControls").hidden=!e.target.checked;
-    state.manualY=e.target.checked;
-    if(!state.manualY) state.mainPlot.setScale("y",{auto:true});
-    else state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});
-  });
-  $("yMinRange").addEventListener("input",e=>{state.yMin=Number(e.target.value);$("yMinText").textContent=fmt(state.yMin,1);if(state.manualY)state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});});
-  $("yMaxRange").addEventListener("input",e=>{state.yMax=Number(e.target.value);$("yMaxText").textContent=fmt(state.yMax,1);if(state.manualY)state.mainPlot.setScale("y",{min:state.yMin,max:state.yMax});});
-  $("autoYBtn").addEventListener("click",()=>{$("yControlsToggle").checked=false;$("yControls").hidden=true;state.manualY=false;state.mainPlot.setScale("y",{auto:true});});
-  $("zoomInBtn").addEventListener("click",()=>setWindowSpan(state.liveWindowSpan*.75));
-  $("zoomOutBtn").addEventListener("click",()=>setWindowSpan(state.liveWindowSpan*1.33));
-  $("backBtn").addEventListener("click",()=>{
-    state.live=false;const span=state.viewMax-state.viewMin;
-    state.viewMin=Math.max(oldestTime(),state.viewMin-span*.8);state.viewMax=state.viewMin+span;
-    updateMainScale();updateMini();updateViewLabel();
-  });
-  $("forwardBtn").addEventListener("click",()=>{
-    const span=state.viewMax-state.viewMin;
-    state.viewMin=Math.min(newestTime()-span,state.viewMin+span*.8);state.viewMax=state.viewMin+span;
-    if(state.viewMax>=newestTime()-1) state.live=true;
-    updateMainScale();updateMini();updateViewLabel();
-  });
-  $("clearSelectionBtn").addEventListener("click",()=>{state.selection=null;$("selectionSummary").textContent="No interval selected.";});
-  $("clearLogBtn").addEventListener("click",()=>{state.logs=[];renderLog();});
-  $("themeBtn").addEventListener("click",()=>{
-    const light=document.documentElement.classList.toggle("light");
-    $("themeBtn").textContent=light?"☾ Dark mode":"☼ Light mode";
-    if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();refresh();}
-  });
-  window.addEventListener("resize",resizeCharts);
 }
 
-function boot() {
-  initEvents();
-  createCharts();
-  const start=performance.now();
-  for(let i=0;i<800;i++) {
-    appendSample(nextSensorValue());
+function createPlotBuffer(size) {
+  return {
+    x: new Float64Array(size), raw: new Float64Array(size), ma: new Float64Array(size),
+    upper: new Float64Array(size), lower: new Float64Array(size), lowerZero: new Float64Array(size)
+  };
+}
+
+// Build a pixel-bounded envelope of the visible interval, retaining local raw extrema.
+function buildVisibleData() {
+  const [lo, hi] = visibleIndices();
+  if (hi < lo) return [[], [], [], [], [], []];
+  const width = Math.max(250, (state.mainPlot?.width || 800) * 3);
+  const count = hi - lo + 1;
+  const bucketCount = Math.max(1, Math.min(Math.floor(width / 4), Math.ceil(count / 4)));
+  const buf = state.plotBuffers[state.plotBufferIndex ^= 1];
+  let out = 0, lastLogical = -1;
+
+  function emit(i) {
+    if (i === lastLogical || out >= buf.x.length) return;
+    lastLogical = i;
+    const raw = getRaw(i) - state.tare;
+    const ma = getMA(i) - state.tare;
+    const sd = getSpread(i);
+    buf.x[out] = getTime(i) / 1000;
+    buf.raw[out] = raw;
+    buf.ma[out] = ma;
+    buf.upper[out] = ma + sd;
+    buf.lower[out] = ma - sd;
+    buf.lowerZero[out] = Math.min(0, ma - sd);
+    out++;
   }
-  state.nextTime=Math.max(state.nextTime,PERIOD_MS);
-  state.liveWindowSpan=15000;
-  refresh();
-  startStream();
+
+  for (let b = 0; b < bucketCount; b++) {
+    const a = lo + Math.floor(b * count / bucketCount);
+    const z = Math.max(a, lo + Math.floor((b + 1) * count / bucketCount) - 1);
+    let minIndex = a, maxIndex = a, minValue = Infinity, maxValue = -Infinity;
+    for (let i = a; i <= z; i++) {
+      const v = getRaw(i);
+      if (v < minValue) { minValue = v; minIndex = i; }
+      if (v > maxValue) { maxValue = v; maxIndex = i; }
+    }
+    emit(a);
+    if (minIndex <= maxIndex) { emit(minIndex); emit(maxIndex); }
+    else { emit(maxIndex); emit(minIndex); }
+    emit(z);
+  }
+  return [buf.x.subarray(0,out), buf.raw.subarray(0,out), buf.ma.subarray(0,out),
+          buf.upper.subarray(0,out), buf.lower.subarray(0,out), buf.lowerZero.subarray(0,out)];
+}
+
+function buildMiniData() {
+  const maxPoints = 1400;
+  const n = state.count;
+  if (!n) return [new Float64Array(0), new Float64Array(0)];
+  const step = Math.max(1, Math.ceil(n / maxPoints));
+  const length = Math.ceil(n / step);
+  const x = new Float64Array(length);
+  const y = new Float64Array(length);
+  let j = 0;
+  for (let i = 0; i < n; i += step) {
+    x[j] = getTime(i) / 1000;
+    y[j] = getRaw(i) - state.tare;
+    j++;
+  }
+  return [x.subarray(0,j), y.subarray(0,j)];
+}
+
+function zeroFillPlugin() {
+  return { hooks: { drawClear: [u => {
+    if (!$('zeroFillToggle').checked || !u.data[0]?.length) return;
+    const xs = u.data[0], lows = u.data[5], ctx = u.ctx;
+    const yZero = u.valToPos(0, 'y', true);
+    ctx.save(); ctx.fillStyle = 'rgba(95,190,160,.13)'; ctx.beginPath();
+    for (let i = 0; i < xs.length; i++) {
+      const x = u.valToPos(xs[i], 'x', true), y = u.valToPos(lows[i], 'y', true);
+      if (i === 0) ctx.moveTo(x, yZero);
+      ctx.lineTo(x, y);
+    }
+    for (let i = xs.length - 1; i >= 0; i--) ctx.lineTo(u.valToPos(xs[i], 'x', true), yZero);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }] } };
+}
+
+function makeMainOptions() {
+  const c = colors();
+  return {
+    width: $('mainChart').clientWidth || 800, height: 390,
+    title: '', legend: { show: true },
+    cursor: { drag: { x: false, y: false }, focus: { prox: 30 } },
+    select: { show: true, left: 0, top: 0, width: 0, height: 0 },
+    scales: { x: { time: false, auto: false }, y: { auto: !state.manualY, range: state.manualY ? () => [state.yMin,state.yMax] : null } },
+    axes: [
+      { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line }, values: (u, vals) => vals.map(v => `${v.toFixed(1)}s`) },
+      { stroke: c.muted, grid: { stroke: 'rgba(130,150,180,.12)' }, ticks: { stroke: c.line } }
+    ],
+    series: [
+      { label: 'Runtime (s)', value: (u,v) => v == null ? '—' : `${v.toFixed(2)} s` },
+      { label: 'Raw − tare', stroke: c.raw, width: 1.3, points: { show: false }, value: (u,v) => fmt(v) },
+      { label: 'Moving average', stroke: c.ma, width: 2.1, points: { show: false }, value: (u,v) => fmt(v) },
+      { label: 'Upper +1σ', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) },
+      { label: 'Lower −1σ', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) },
+      { label: 'Zero-to-lower fill', stroke: 'rgba(0,0,0,0)', width: 0, points: { show: false }, value: (u,v) => fmt(v) }
+    ],
+    bands: [{ series: [3,4], fill: 'rgba(190,112,220,.16)' }],
+    hooks: { drawAxes: [u => {
+      const y = u.valToPos(0, 'y', true);
+      if (Number.isFinite(y) && y >= u.bbox.top && y <= u.bbox.top + u.bbox.height) {
+        const ctx = u.ctx; ctx.save(); ctx.strokeStyle = c.zero; ctx.lineWidth = 2.6;
+        ctx.globalAlpha = .92; ctx.beginPath();
+        ctx.moveTo(u.bbox.left, Math.round(y)+.5);
+        ctx.lineTo(u.bbox.left+u.bbox.width, Math.round(y)+.5);
+        ctx.stroke(); ctx.restore();
+      }
+    }] },
+    plugins: [zeroFillPlugin()]
+  };
+}
+
+function makeMiniOptions() {
+  const c = colors();
+  return {
+    width: $('miniChart').clientWidth || 800, height: 105, legend: { show: false },
+    cursor: { show: false, drag: { x: false, y: false } },
+    select: { show: true, left: 0, top: 0, width: 0, height: 0 },
+    scales: { x: { time: false, auto: false }, y: { auto: true } },
+    axes: [{ show: false }, { show: false }],
+    series: [{}, { label: 'History', stroke: c.raw, width: 1, points: { show: false } }]
+  };
+}
+
+function createCharts() {
+  if (!window.uPlot) {
+    $('mainChart').innerHTML = '<p style="color:var(--danger)">uPlot could not be loaded. Check your network connection to the approved CDN.</p>';
+    return;
+  }
+  state.plotBuffers = [createPlotBuffer(12000), createPlotBuffer(12000)];
+  state.mainPlot = new uPlot(makeMainOptions(), [[],[],[],[],[],[]], $('mainChart'));
+  state.miniPlot = new uPlot(makeMiniOptions(), [[],[]], $('miniChart'));
+  state.mainPlot.setSeries(1, { show: $('rawToggle').checked });
+  state.mainPlot.setSeries(2, { show: $('maToggle').checked });
+  state.mainPlot.setSeries(3, { show: $('spreadToggle').checked });
+  state.mainPlot.setSeries(4, { show: $('spreadToggle').checked });
+  state.mainPlot.setSeries(5, { show: $('zeroFillToggle').checked });
+  wireMainInteractions();
+  wireMiniInteractions();
+}
+
+function fitLiveWindow() {
+  if (!state.count) { state.viewMin = 0; state.viewMax = PERIOD_MS; return; }
+  const first = oldestTime(), last = newestTime();
+  state.viewMax = Math.max(last, first + PERIOD_MS);
+  state.viewMin = Math.max(first, state.viewMax - state.liveWindowSpan);
+}
+function clampHistoricalView() {
+  const span = Math.max(PERIOD_MS, state.viewMax - state.viewMin);
+  const first = oldestTime(), last = newestTime();
+  state.viewMin = clamp(state.viewMin, first, Math.max(first, last - span));
+  state.viewMax = Math.min(last, state.viewMin + span);
+}
+function updateViewLabel() {
+  const spanSeconds = Math.max(0, state.viewMax - state.viewMin) / 1000;
+  $('viewLabel').textContent = state.live
+    ? `Live · ${(state.liveWindowSpan / 1000).toFixed(2)} s window`
+    : `Historical · ${spanSeconds.toFixed(2)} s span`;
+}
+function scheduleRender() {
+  if (state.renderPending) return;
+  state.renderPending = true;
+  requestAnimationFrame(() => {
+    state.renderPending = false;
+    renderFrame();
+  });
+}
+function renderFrame() {
+  if (!state.count || !state.mainPlot) return;
+  if (state.live) fitLiveWindow();
+  const plotData = buildVisibleData();
+  const minX = state.viewMin / 1000;
+  const maxX = Math.max(minX + PERIOD_MS/1000, state.viewMax / 1000);
+  state.mainPlot.batch(() => {
+    state.mainPlot.setData(plotData, true);
+    state.mainPlot.setScale('x', { min: minX, max: maxX });
+    if (state.manualY) state.mainPlot.setScale('y', { min: state.yMin, max: state.yMax });
+  });
+  updateMetrics();
+  $('sampleCount').textContent = `${state.count.toLocaleString()} samples`;
+  updateViewLabel();
+  const now = performance.now();
+  if (now - state.miniLastRender >= 250) {
+    updateMini();
+    state.miniLastRender = now;
+  } else {
+    updateMiniSelection();
+  }
+  if (state.selection) updateSelectionReadout();
+}
+function updateMiniSelection() {
+  if (!state.miniPlot) return;
+  const left = state.miniPlot.valToPos(state.viewMin/1000, 'x');
+  const right = state.miniPlot.valToPos(state.viewMax/1000, 'x');
+  state.miniPlot.setSelect({ left: Math.max(0,left), top: 0, width: Math.max(1,right-left), height: state.miniPlot.height });
+}
+function updateMini() {
+  if (!state.miniPlot) return;
+  const data = buildMiniData();
+  const first = state.count ? oldestTime()/1000 : 0;
+  const last = state.count ? newestTime()/1000 : PERIOD_MS/1000;
+  const maxX = Math.max(first + PERIOD_MS/1000, last);
+  state.miniPlot.batch(() => {
+    state.miniPlot.setData(data, true);
+    state.miniPlot.setScale('x', { min: first, max: maxX });
+  });
+  updateMiniSelection();
+}
+
+function updateMetrics() {
+  if (!state.count) return;
+  const last = state.count - 1;
+  const raw = getRaw(last), avg = getMA(last), sd = getSpread(last);
+  $('currentAvg').textContent = fmt(avg - state.tare);
+  $('currentAvgRaw').textContent = `Raw average ${fmt(avg)} · ${state.rollCount} samples`;
+  $('currentSpread').textContent = fmt(sd);
+  $('spreadDetail').textContent = `±1σ · MA window ${state.window}`;
+  $('tareValue').textContent = fmt(state.tare);
+  $('latestValue').textContent = fmt(raw - state.tare);
+  $('latestRaw').textContent = `Raw ${raw.toLocaleString()} · tared ${fmt(raw-state.tare)}`;
+}
+
+function setLive(on) {
+  state.live = on;
+  if (on) fitLiveWindow();
+  updateViewLabel();
+}
+function trackLive() {
+  setLive(true);
+  state.selection = null;
+  $('selectionSummary').textContent = 'No interval selected.';
+  scheduleRender();
+}
+function zoomBy(factor, anchorRatio = 0.5) {
+  const oldSpan = Math.max(PERIOD_MS, state.viewMax-state.viewMin);
+  const maxSpan = Math.max(500, state.capacity * PERIOD_MS);
+  const newSpan = clamp(state.liveWindowSpan * factor, 250, maxSpan);
+  state.liveWindowSpan = newSpan;
+  if (state.live) {
+    fitLiveWindow();
+  } else {
+    const anchor = state.viewMin + clamp(anchorRatio,0,1)*oldSpan;
+    const first = oldestTime(), last = newestTime();
+    const minPossible = first;
+    const maxPossible = Math.max(first, last-newSpan);
+    state.viewMin = clamp(anchor-anchorRatio*newSpan, minPossible, maxPossible);
+    state.viewMax = Math.min(last, state.viewMin+newSpan);
+  }
+  scheduleRender();
+}
+function wheelZoom(e) {
+  e.preventDefault();
+  const rect = state.mainPlot.over.getBoundingClientRect();
+  const x = clamp(e.clientX-rect.left, 0, rect.width);
+  zoomBy(e.deltaY < 0 ? 0.8 : 1.25, rect.width ? x/rect.width : 0.5);
+}
+
+function wireMainInteractions() {
+  const over = state.mainPlot.over;
+  let drag = null;
+  over.addEventListener('wheel', wheelZoom, { passive: false });
+  over.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    const rect = over.getBoundingClientRect();
+    const x = clamp(e.clientX-rect.left,0,rect.width);
+    const isSelect = e.shiftKey || state.selectMode;
+    drag = { id:e.pointerId, startX:x, currentX:x, rect, mode:isSelect?'select':'pan',
+      startMin:state.viewMin, startMax:state.viewMax, moved:false };
+    try { over.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
+  over.addEventListener('pointermove', e => {
+    if (!drag || drag.id !== e.pointerId) return;
+    const x = clamp(e.clientX-drag.rect.left,0,drag.rect.width);
+    drag.currentX=x;
+    if (Math.abs(x-drag.startX)>3) drag.moved=true;
+    if (drag.mode === 'select') {
+      const left=Math.min(x,drag.startX), width=Math.abs(x-drag.startX);
+      state.mainPlot.setSelect({left,top:0,width,height:state.mainPlot.height});
+    } else if (drag.moved) {
+      state.live=false;
+      const shift=-(x-drag.startX)*(drag.startMax-drag.startMin)/Math.max(1,drag.rect.width);
+      const span=drag.startMax-drag.startMin;
+      const min=clamp(drag.startMin+shift,oldestTime(),Math.max(oldestTime(),newestTime()-span));
+      state.viewMin=min; state.viewMax=Math.min(newestTime(),min+span);
+      state.liveWindowSpan=span;
+      scheduleRender();
+    }
+    e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
+  const finish = e => {
+    if (!drag || drag.id !== e.pointerId) return;
+    if (drag.mode === 'select' && drag.moved) {
+      const x0=state.mainPlot.posToVal(Math.min(drag.startX,drag.currentX),'x')*1000;
+      const x1=state.mainPlot.posToVal(Math.max(drag.startX,drag.currentX),'x')*1000;
+      selectInterval(Math.min(x0,x1),Math.max(x0,x1));
+      state.mainPlot.setSelect({left:0,top:0,width:0,height:0});
+    }
+    drag=null;
+    if (state.selectMode) setSelectMode(false);
+    e.preventDefault(); e.stopImmediatePropagation();
+  };
+  over.addEventListener('pointerup',finish,true);
+  over.addEventListener('pointercancel',finish,true);
+  // Touch gestures: one-finger drag pans/selects; two fingers pinch-zoom.
+  let touchDrag = null, pinch = null;
+  over.addEventListener('touchstart', e => {
+    const rect = over.getBoundingClientRect();
+    if (e.touches.length === 2) {
+      touchDrag = null;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const center = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      pinch = { distance: Math.abs(dx), ratio: clamp(center / Math.max(1,rect.width),0,1) };
+    } else if (e.touches.length === 1) {
+      const x = clamp(e.touches[0].clientX - rect.left,0,rect.width);
+      touchDrag = { startX:x, currentX:x, rect, mode:state.selectMode?'select':'pan', startMin:state.viewMin, startMax:state.viewMax, moved:false };
+      pinch = null;
+    }
+  }, {passive:true});
+  over.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && pinch) {
+      const dist = Math.abs(e.touches[0].clientX-e.touches[1].clientX);
+      zoomBy(pinch.distance/Math.max(20,dist),pinch.ratio);
+      pinch.distance = dist;
+    } else if (e.touches.length === 1 && touchDrag) {
+      const x = clamp(e.touches[0].clientX-touchDrag.rect.left,0,touchDrag.rect.width);
+      touchDrag.currentX = x;
+      if (Math.abs(x-touchDrag.startX)>3) touchDrag.moved=true;
+      if (touchDrag.mode === 'select') {
+        state.mainPlot.setSelect({left:Math.min(x,touchDrag.startX),top:0,width:Math.abs(x-touchDrag.startX),height:state.mainPlot.height});
+      } else if (touchDrag.moved) {
+        state.live=false;
+        const shift=-(x-touchDrag.startX)*(touchDrag.startMax-touchDrag.startMin)/Math.max(1,touchDrag.rect.width);
+        const span=touchDrag.startMax-touchDrag.startMin;
+        const min=clamp(touchDrag.startMin+shift,oldestTime(),Math.max(oldestTime(),newestTime()-span));
+        state.viewMin=min;state.viewMax=Math.min(newestTime(),min+span);state.liveWindowSpan=span;
+        scheduleRender();
+      }
+    }
+  }, {passive:true});
+  over.addEventListener('touchend', () => {
+    if (touchDrag && touchDrag.mode === 'select' && touchDrag.moved) {
+      const x0=state.mainPlot.posToVal(Math.min(touchDrag.startX,touchDrag.currentX),'x')*1000;
+      const x1=state.mainPlot.posToVal(Math.max(touchDrag.startX,touchDrag.currentX),'x')*1000;
+      selectInterval(Math.min(x0,x1),Math.max(x0,x1));
+      state.mainPlot.setSelect({left:0,top:0,width:0,height:0});
+    }
+    touchDrag=null;pinch=null;
+    if(state.selectMode)setSelectMode(false);
+  }, {passive:true});
+}
+
+function wireMiniInteractions() {
+  const over=state.miniPlot.over;
+  let drag=null;
+  over.addEventListener('pointerdown',e=>{
+    if(e.pointerType === 'touch' || e.button!==0)return;
+    const rect=over.getBoundingClientRect();
+    const x=clamp(e.clientX-rect.left,0,rect.width);
+    drag={id:e.pointerId,startX:x,currentX:x,rect};
+    try{over.setPointerCapture(e.pointerId);}catch(_){}
+    e.preventDefault();e.stopImmediatePropagation();
+  },true);
+  over.addEventListener('pointermove',e=>{
+    if(!drag||drag.id!==e.pointerId)return;
+    drag.currentX=clamp(e.clientX-drag.rect.left,0,drag.rect.width);
+    const a=state.miniPlot.posToVal(Math.min(drag.startX,drag.currentX),'x');
+    const b=state.miniPlot.posToVal(Math.max(drag.startX,drag.currentX),'x');
+    const left=state.miniPlot.valToPos(a,'x');
+    const right=state.miniPlot.valToPos(b,'x');
+    state.miniPlot.setSelect({left,top:0,width:Math.max(1,right-left),height:state.miniPlot.height});
+    e.preventDefault();e.stopImmediatePropagation();
+  },true);
+  const finish=e=>{
+    if(!drag||drag.id!==e.pointerId)return;
+    const a=state.miniPlot.posToVal(Math.min(drag.startX,drag.currentX),'x')*1000;
+    const b=state.miniPlot.posToVal(Math.max(drag.startX,drag.currentX),'x')*1000;
+    if(Math.abs(drag.currentX-drag.startX)>3){
+      state.live=false;state.viewMin=Math.max(oldestTime(),a);state.viewMax=Math.min(newestTime(),Math.max(a+PERIOD_MS,b));
+      state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);
+      scheduleRender();
+    }
+    drag=null;e.preventDefault();e.stopImmediatePropagation();
+  };
+  over.addEventListener('pointerup',finish,true);
+  over.addEventListener('pointercancel',finish,true);
+  let touchDrag=null;
+  over.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1)return;
+    const rect=over.getBoundingClientRect();
+    const x=clamp(e.touches[0].clientX-rect.left,0,rect.width);
+    touchDrag={startX:x,currentX:x,rect};
+  },{passive:true});
+  over.addEventListener('touchmove',e=>{
+    if(!touchDrag||e.touches.length!==1)return;
+    touchDrag.currentX=clamp(e.touches[0].clientX-touchDrag.rect.left,0,touchDrag.rect.width);
+    const a=state.miniPlot.posToVal(Math.min(touchDrag.startX,touchDrag.currentX),'x');
+    const b=state.miniPlot.posToVal(Math.max(touchDrag.startX,touchDrag.currentX),'x');
+    state.miniPlot.setSelect({left:state.miniPlot.valToPos(a,'x'),top:0,
+      width:Math.max(1,state.miniPlot.valToPos(b,'x')-state.miniPlot.valToPos(a,'x')),height:state.miniPlot.height});
+  },{passive:true});
+  over.addEventListener('touchend',()=>{
+    if(touchDrag&&Math.abs(touchDrag.currentX-touchDrag.startX)>3){
+      const a=state.miniPlot.posToVal(Math.min(touchDrag.startX,touchDrag.currentX),'x')*1000;
+      const b=state.miniPlot.posToVal(Math.max(touchDrag.startX,touchDrag.currentX),'x')*1000;
+      state.live=false;state.viewMin=Math.max(oldestTime(),a);
+      state.viewMax=Math.min(newestTime(),Math.max(a+PERIOD_MS,b));
+      state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);scheduleRender();
+    }
+    touchDrag=null;
+  },{passive:true});
+}
+
+function selectInterval(t0,t1) {
+  const first=lowerBoundTime(t0);
+  const end=lowerBoundTime(t1+0.0001);
+  if(first>=end || first>=state.count)return;
+  let sum=0,sumSq=0,rawSum=0,min=Infinity,max=-Infinity;
+  for(let i=first;i<end;i++){
+    const raw=getRaw(i), val=raw-state.tare;
+    sum+=val;sumSq+=val*val;rawSum+=raw;min=Math.min(min,val);max=Math.max(max,val);
+  }
+  const count=end-first,avg=sum/count,sd=Math.sqrt(Math.max(0,sumSq/count-avg*avg));
+  state.selection={t0:getTime(first),t1:getTime(end-1),first,last:end-1,count,avg,sd,rawAvg:rawSum/count,min,max};
+  state.live=false;state.viewMin=state.selection.t0;state.viewMax=Math.max(state.selection.t1,state.selection.t0+PERIOD_MS);
+  state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);
+  updateSelectionReadout();appendLog(state.selection);scheduleRender();
+}
+function updateSelectionReadout(){
+  const s=state.selection;
+  if(!s){$('selectionSummary').textContent='No interval selected.';return;}
+  $('selectionSummary').innerHTML=`<strong>${s.count.toLocaleString()} samples</strong><br>`+
+    `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
+    `Average (tared): <strong>${fmt(s.avg)}</strong><br>Average (raw): <strong>${fmt(s.rawAvg)}</strong><br>`+
+    `Spread (σ): <strong>${fmt(s.sd)}</strong><br>Min / max (tared): <strong>${fmt(s.min)} / ${fmt(s.max)}</strong>`;
+}
+function appendLog(s){state.logs.unshift({...s,created:new Date().toLocaleTimeString()});renderLog();}
+function renderLog(){
+  $('logCount').textContent=`(${state.logs.length} entries)`;
+  $('logList').innerHTML=state.logs.length?state.logs.map(s=>
+    `<div class="log-row"><time>${s.created}</time><div><strong>${s.count.toLocaleString()} samples</strong> · ${((s.t1-s.t0)/1000).toFixed(2)} s<br>`+
+    `Tared avg ${fmt(s.avg)} · Raw avg ${fmt(s.rawAvg)} · σ ${fmt(s.sd)} · min ${fmt(s.min)} · max ${fmt(s.max)}</div></div>`
+  ).join(''):'<div class="small" style="padding:10px 0">No selection events yet.</div>';
+}
+function setSelectMode(on){
+  state.selectMode=on;
+  $('selectModeBtn').setAttribute('aria-pressed',String(on));
+  $('selectModeBtn').classList.toggle('primary',on);
+  $('selectModeBtn').textContent=on?'Selecting… tap-drag':'Select interval';
+}
+function togglePause(){
+  state.paused=!state.paused;
+  $('pauseBtn').textContent=state.paused?'▶ Resume':'Ⅱ Pause';
+  $('statusText').textContent=state.paused?'Paused':'Streaming';
+  $('statusDot').classList.toggle('paused',state.paused);
+}
+function autoTare(){
+  if(!state.count)return;
+  state.tare=state.maRaw[physicalIndex(state.count-1)];
+  $('tareInput').value=state.tare.toFixed(3);
+  scheduleRender();
+}
+function exportCSV(){
+  if(!state.count)return;
+  const rows=['runtime_ms,raw_sensor,tared_raw,moving_average,spread_1sigma,upper_1sigma,lower_1sigma,tare_offset'];
+  for(let i=0;i<state.count;i++){
+    const raw=getRaw(i),ma=getMA(i),sd=getSpread(i);
+    rows.push([getTime(i),raw,raw-state.tare,ma-state.tare,sd,ma+sd-state.tare,ma-sd-state.tare,state.tare].join(','));
+  }
+  const blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=`telemetry-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+  document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+}
+function applySettings(){
+  const requestedWindow=clamp(Math.floor(Number($('windowInput').value)||80),2,10000);
+  const capacity=clamp(Math.floor(Number($('bufferInput').value)||100000),1000,2000000);
+  state.tare=Number($('tareInput').value)||0;
+  $('bufferInput').value=capacity;
+  if(capacity!==state.capacity) resizeBuffers(capacity);
+  state.window=Math.min(requestedWindow,state.capacity);
+  $('windowInput').value=state.window;
+  rebuildDerived();scheduleRender();
+}
+function applySeriesVisibility(){
+  if(!state.mainPlot)return;
+  state.mainPlot.setSeries(1,{show:$('rawToggle').checked});
+  state.mainPlot.setSeries(2,{show:$('maToggle').checked});
+  state.mainPlot.setSeries(3,{show:$('spreadToggle').checked});
+  state.mainPlot.setSeries(4,{show:$('spreadToggle').checked});
+  state.mainPlot.setSeries(5,{show:$('zeroFillToggle').checked});
+  state.mainPlot.redraw();
+}
+function initializeManualYAxis(){
+  if(!state.count)return;
+  const i=state.count-1;
+  const center=getMA(i)-state.tare;
+  const pad=Math.max(getSpread(i)*5,Math.abs(center)*0.02,5);
+  const low=Math.floor(center-pad*3);
+  const high=Math.ceil(center+pad*3);
+  const step=Math.max(0.01,(high-low)/2000);
+  state.yMin=center-pad;state.yMax=center+pad;
+  $('yMinRange').min=low;$('yMinRange').max=high;$('yMinRange').step=step;$('yMinRange').value=state.yMin;
+  $('yMaxRange').min=low;$('yMaxRange').max=high;$('yMaxRange').step=step;$('yMaxRange').value=state.yMax;
+  $('yMinText').textContent=fmt(state.yMin,1);$('yMaxText').textContent=fmt(state.yMax,1);
+}
+function resizeCharts(){
+  if(!state.mainPlot||!state.miniPlot)return;
+  state.mainPlot.setSize({width:$('mainChart').clientWidth,height:Math.max(300,Math.min(560,window.innerHeight*.47))});
+  state.miniPlot.setSize({width:$('miniChart').clientWidth,height:105});
+  scheduleRender();
+}
+function initEvents(){
+  $('pauseBtn').addEventListener('click',togglePause);
+  $('trackBtn').addEventListener('click',trackLive);
+  $('selectModeBtn').addEventListener('click',()=>setSelectMode(!state.selectMode));
+  $('tareBtn').addEventListener('click',autoTare);
+  $('exportBtn').addEventListener('click',exportCSV);
+  $('applySettingsBtn').addEventListener('click',applySettings);
+  ['spreadToggle','zeroFillToggle','rawToggle','maToggle'].forEach(id=>$(id).addEventListener('change',applySeriesVisibility));
+  $('yControlsToggle').addEventListener('change',e=>{
+    $('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;
+    if(state.manualY)initializeManualYAxis();
+    scheduleRender();
+  });
+  $('yMinRange').addEventListener('input',e=>{state.yMin=Number(e.target.value);$('yMinText').textContent=fmt(state.yMin,1);if(state.manualY)scheduleRender();});
+  $('yMaxRange').addEventListener('input',e=>{state.yMax=Number(e.target.value);$('yMaxText').textContent=fmt(state.yMax,1);if(state.manualY)scheduleRender();});
+  $('autoYBtn').addEventListener('click',()=>{$('yControlsToggle').checked=false;$('yControls').hidden=true;state.manualY=false;scheduleRender();});
+  $('zoomInBtn').addEventListener('click',()=>zoomBy(.75));
+  $('zoomOutBtn').addEventListener('click',()=>zoomBy(1.33));
+  $('backBtn').addEventListener('click',()=>{
+    state.live=false;const span=state.viewMax-state.viewMin;
+    const min=Math.max(oldestTime(),state.viewMin-span*.8);state.viewMin=min;state.viewMax=Math.min(newestTime(),min+span);scheduleRender();
+  });
+  $('forwardBtn').addEventListener('click',()=>{
+    const span=state.viewMax-state.viewMin;const min=Math.min(newestTime()-span,state.viewMin+span*.8);
+    state.viewMin=Math.max(oldestTime(),min);state.viewMax=Math.min(newestTime(),state.viewMin+span);
+    if(state.viewMax>=newestTime()-PERIOD_MS)state.live=true;scheduleRender();
+  });
+  $('clearSelectionBtn').addEventListener('click',()=>{state.selection=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();});
+  $('clearLogBtn').addEventListener('click',()=>{state.logs=[];renderLog();});
+  $('themeBtn').addEventListener('click',()=>{
+    const light=document.documentElement.classList.toggle('light');
+    $('themeBtn').textContent=light?'☾ Dark mode':'☼ Light mode';
+    if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();scheduleRender();}
+  });
+  window.addEventListener('resize',resizeCharts);
+}
+
+function tick(){
+  if(state.paused)return;
+  appendSample(nextSensorValue());
+  scheduleRender();
+}
+function boot(){
+  initEvents();
+  rebuildDerived();
+  createCharts();
+  updateViewLabel();
+  state.timer=setInterval(tick,PERIOD_MS);
 }
 boot();
 </script>
