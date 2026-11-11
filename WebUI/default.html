@@ -29,9 +29,6 @@
 <meta name="color-scheme" content="dark light">
 <title>Mass Telemetry Workbench</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="preload" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" as="style">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css"></noscript>
 <style>
 :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2b;--panel2:#182338;--text:#e8eef8;--muted:#91a0b8;--line:#2a3851;--accent:#62d6c8;--accent2:#f6c85f;--raw:#8bb8ff;--ma:#f5bd55;--band:#e58bff;--zero:#f4f7ff;--danger:#ff7d86;--input:#0d1525}
 :root.light{color-scheme:light;--bg:#f2f5fa;--panel:#fff;--panel2:#edf2f8;--text:#182338;--muted:#60708a;--line:#d5deeb;--accent:#087f75;--accent2:#b47a08;--raw:#2866bd;--ma:#b77708;--band:#a23bbd;--zero:#17243b;--danger:#c43b49;--input:#f8faff}
@@ -39,6 +36,14 @@
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px clamp(12px,2vw,26px);border-bottom:1px solid var(--line);background:var(--panel);position:relative;z-index:5}.brand{display:flex;align-items:center;gap:10px}.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#5685ff);display:grid;place-items:center;color:#071629;font-weight:900}h1{font-size:17px;margin:0;letter-spacing:.2px}.sub{font-size:11px;color:var(--muted)}.header-actions,.toolbar,.inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}.dot.paused{background:var(--danger)}
 main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolbar{justify-content:space-between;margin-bottom:12px}.toolbar-left,.toolbar-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}.metric,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.metric{padding:12px 14px;min-width:0}.metric .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.metric .value{font-size:clamp(19px,2.4vw,27px);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.metric .detail{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}.metric .value[title]{cursor:help}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 275px;gap:12px;align-items:start}.panel{padding:13px;min-width:0}.panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.panel h2{font-size:13px;margin:0;font-weight:700}.panel-note{font-size:11px;color:var(--muted)}.chart-wrap{width:100%;min-height:280px;position:relative}#mainChart{height:clamp(300px,47vh,560px);width:100%}#miniChart{height:125px;width:100%;margin-top:3px}.uplot{max-width:100%}.u-legend{font-size:11px!important}.u-legend th,.u-legend td{padding:3px 7px!important}#mainChart .u-over,#miniChart .u-over{touch-action:none}.side{display:flex;flex-direction:column;gap:12px}.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.field{display:flex;flex-direction:column;gap:4px;min-width:0}.field.full{grid-column:1/-1}.field label{font-size:11px;color:var(--muted)}input[type=number],input[type=text],select{width:100%;min-width:0;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}input[type=range]{width:100%;accent-color:var(--accent)}.range-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:10px;align-items:center}.range-row input[type=number]{padding:6px 7px}input[type=checkbox]{accent-color:var(--accent)}.check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin:5px 0}.small{font-size:11px;color:var(--muted)}.button-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.button-row button{flex:1}.readout{font-size:12px;line-height:1.7;color:var(--muted)}.readout strong{color:var(--text);font-variant-numeric:tabular-nums}#selectionSummary{padding:9px;background:var(--panel2);border-radius:9px;margin-top:8px;min-height:46px}.navigator,.log-panel{margin-top:12px}details summary{cursor:pointer;font-weight:700;font-size:13px}.log-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:10px 0}.log-list{max-height:320px;overflow:auto;border-top:1px solid var(--line)}.log-row{display:grid;grid-template-columns:90px 1fr;gap:10px;padding:8px 5px;border-bottom:1px solid var(--line);font-size:11px;cursor:pointer;border-radius:6px}.log-row:hover{background:var(--panel2)}.log-row time{color:var(--muted);font-variant-numeric:tabular-nums}.log-row.event{border-left:3px solid var(--accent2)}.log-row.selection{border-left:3px solid var(--accent)}#selectionHint{font-size:11px;color:var(--muted)}footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}.settings-wrap{position:relative}.settings-menu{position:absolute;right:0;top:44px;width:min(360px,calc(100vw - 24px));max-height:78vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px;box-shadow:0 16px 42px rgba(0,0,0,.28);z-index:20}.settings-menu[hidden]{display:none}.settings-menu h3{margin:0 0 10px;font-size:13px}.settings-menu .field{margin-bottom:10px}.settings-divider{border:0;border-top:1px solid var(--line);margin:12px 0}.status-note{padding:8px;border-radius:8px;background:var(--panel2);font-size:11px;color:var(--muted)}.warning{color:var(--danger)}.success{color:var(--accent)}.event-marker{color:var(--accent2)}.tag{display:inline-block;padding:2px 6px;border-radius:6px;background:var(--panel2);font-size:10px;color:var(--muted)}
+[hidden]{display:none!important}
+.metrics{align-items:start}.mcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+.compact{padding:10px 12px}.compact .field{margin-bottom:0;gap:3px}.compact label{font-size:10px}.compact .control-grid{gap:8px}
+.compact input[type=number],.compact select{padding:4px 6px}.compact .button-row{margin-top:8px}
+.u-legend .u-value{display:inline-block;min-width:10.5ch;text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap}
+.u-legend .u-series:first-child .u-value{min-width:7ch}.u-legend .u-label{white-space:nowrap}
+.log-row.measurement{border-left:3px solid #9b7bd6}.log-row.calibration{border-left:3px solid #6f9bff}.log-row.note{border-left:3px solid var(--muted);cursor:default}
+progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.bufrow select{width:auto}
 @media(max-width:950px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.side .panel:last-child{grid-column:1/-1}}
 @media(max-width:600px){header{align-items:flex-start}.header-actions{justify-content:flex-end}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.side{grid-template-columns:1fr}.side .panel:last-child{grid-column:auto}.metric{padding:10px}.metric .value{font-size:21px}#mainChart{height:340px}.toolbar{align-items:flex-start}.toolbar-left,.toolbar-right{width:100%}.toolbar-right{justify-content:space-between}}
 </style>
@@ -52,17 +57,8 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
     <div class="settings-wrap">
       <button id="settingsBtn" aria-expanded="false" aria-controls="settingsMenu">⚙ Settings</button>
       <div id="settingsMenu" class="settings-menu" hidden>
-        <h3>Display and measurement settings</h3>
-        <div class="field"><label for="unitSelect">Measurement unit</label><select id="unitSelect"></select></div>
-        <div class="field"><label for="precisionSelect">Displayed decimal places</label><select id="precisionSelect"><option value="auto">Automatic (unit default)</option></select></div>
-        <div class="field"><label for="estimatorSelect">Current panel estimator</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
-        <div class="field"><label for="estimatorWindow">Estimator window (maximum 4,096 samples)</label><div class="range-row"><input id="estimatorWindowRange" type="range" min="2" max="4096" value="80"><input id="estimatorWindow" type="number" min="2" max="4096" value="80"></div></div>
-        <div class="field"><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
-        <div class="field"><label for="emaTau">EMA time constant (seconds)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
-        <div class="status-note">Unit changes affect presentation only. Calibration and statistics remain in canonical milligrams. Raw mode is a diagnostic view.</div>
-        <hr class="settings-divider">
-        <h3>Active calibration</h3>
-        <div id="calibrationInfo" class="small">Loading calibration…</div>
+        <h3>Settings</h3>
+        <div class="status-note">Placeholder for future application settings (for example data connection, language and export defaults). Display and estimator options are below “Current measured mass”; calibration is in the right-hand column.</div>
       </div>
     </div>
   </div>
@@ -73,8 +69,6 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
       <button id="pauseBtn">Ⅱ Pause</button>
       <button id="trackBtn" class="primary">Track Live</button>
       <button id="selectModeBtn" aria-pressed="false">Select interval</button>
-      <button id="tareBtn">Auto-Tare</button>
-      <button id="manualTareBtn">Set manual tare</button>
       <button id="exportBtn">Export CSV</button>
       <button id="testSamplesBtn">＋ Add 100k test samples</button>
     </div>
@@ -82,10 +76,42 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
   </div>
 
   <section class="metrics">
-    <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div></div>
-    <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Estimator window —</div></div>
-    <div class="metric"><div class="label">Current tare</div><div class="value" id="tareValue">None</div><div class="detail" id="tareDetail">No tare event recorded</div></div>
-    <div class="metric"><div class="label" id="latestLabel">Latest measured mass</div><div class="value" id="latestValue" title="Hover for raw sensor details">—</div><div class="detail" id="latestDetail">Calibration active</div></div>
+    <div class="mcol">
+      <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div><div class="detail warning" id="rangeStatus" hidden></div></div>
+      <section class="panel compact" aria-label="Display and estimator settings">
+        <div class="control-grid">
+          <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
+          <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
+          <div class="field full"><label for="estimatorSelect">Estimator</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
+          <div class="field full"><label for="windowRange">Window (samples): chart average, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div></div>
+          <div class="field full" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
+          <div class="field full" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
+        </div>
+        <div class="small" style="margin-top:7px">Unit changes affect presentation only; statistics stay in canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
+      </section>
+    </div>
+    <div class="mcol">
+      <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
+    </div>
+    <div class="mcol">
+      <div class="metric"><div class="label">Current tare</div><div class="value" id="tareValue">None</div><div class="detail" id="tareDetail">No tare event recorded</div></div>
+      <section class="panel compact" aria-label="Tare options">
+        <div class="button-row" style="margin-top:0"><button id="tareBtn">Auto-Tare</button></div>
+        <div class="field" style="margin-top:8px"><label for="manualTareInput">Manual tare mass (<span id="tareUnitLabel">g</span>)</label><div class="range-row"><input id="manualTareInput" type="number" step="any" placeholder="Calibrated mass"><button id="manualTareBtn">Set</button></div></div>
+      </section>
+    </div>
+    <div class="mcol">
+      <div class="metric"><div class="label">Measurement</div><div class="value" id="measValue">—</div><div class="detail" id="measDetail">No measurement yet</div><div class="detail" id="measNote"></div></div>
+      <section class="panel compact" aria-label="Measurement">
+        <div class="control-grid">
+          <div class="field"><label for="measDuration">Duration (s)</label><input id="measDuration" type="number" min="0.025" step="any" value="5"></div>
+          <div class="field"><label for="measSamples">Samples (80 Hz)</label><input id="measSamples" type="number" min="2" max="100000" step="1" value="400"></div>
+        </div>
+        <progress id="measBar" max="1" value="0" hidden></progress>
+        <div class="button-row"><button id="measureBtn" class="primary">Start measurement</button></div>
+        <div class="small" id="measProgress" style="margin-top:6px"></div>
+      </section>
+    </div>
   </section>
   <div class="small" id="uncertaintyStatus" style="margin:-3px 0 12px 2px">Measurement uncertainty: not characterized by the embedded demonstration calibration.</div>
 
@@ -95,6 +121,7 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
         <div class="panel-head"><h2 id="mainChartTitle">Measured mass</h2><span id="viewLabel" class="panel-note">Live viewport</span></div>
         <div id="mainChart" class="chart-wrap"></div>
         <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers.</div>
+        <div class="bufrow"><label for="bufferInput" class="small">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="unlimited">Unlimited (memory-limited)</option></select><span class="small">The raw history is never modified. Unlimited grows in 100,000-sample steps.</span></div>
       </section>
       <section class="panel navigator">
         <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history · drag to navigate · synchronized crosshair</span></div>
@@ -110,22 +137,18 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
     </div>
 
     <aside class="side">
-      <section class="panel">
-        <div class="panel-head"><h2>Signal processing</h2></div>
-        <div class="control-grid">
-          <div class="field full"><label for="windowRange">Moving average window (samples)</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Moving average window sample count"></div></div>
-          <div class="field full"><label for="bufferInput">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="2000000">2,000,000 samples</option><option value="unlimited">Unlimited (grow in 100k chunks)</option></select></div>
-          <div class="field full"><label for="manualTareInput">Manual tare mass (<span id="tareUnitLabel">g</span>)</label><input id="manualTareInput" type="number" step="any" placeholder="Enter calibrated mass"></div>
-        </div>
-        <div class="button-row"><button id="applySettingsBtn" class="primary">Apply buffer / MA settings</button></div>
-        <div class="small" style="margin-top:8px">The raw sensor history is never modified. Moving average values are calculated from individually calibrated samples. Unlimited mode grows by 100,000 samples per allocation step.</div>
+      <section class="panel compact">
+        <div class="panel-head"><h2>Calibration</h2></div>
+        <div id="calibrationInfo" class="small">Loading calibration…</div>
+        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button></div>
+        <input id="calFile" type="file" accept=".json,application/json" hidden>
+        <div id="calMessages" class="small" style="margin-top:6px"></div>
+        <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
       </section>
 
       <section class="panel">
         <div class="panel-head"><h2>Display options</h2></div>
         <label class="check"><input type="checkbox" id="rawModeToggle"> Raw diagnostic mode (sensor counts)</label>
-        <label class="check"><input type="checkbox" id="maToggle" checked> Show moving average</label>
-        <label class="check"><input type="checkbox" id="spreadToggle" checked> Show standard deviation band</label>
         <label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
         <label class="check"><input type="checkbox" id="zeroRawFillToggle"> Fill zero to instantaneous mass</label>
         <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
@@ -164,7 +187,7 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
   "units": [
     {"id":"ug","name":"Micrograms","symbol":"µg","factor":0.001,"decimals":0,"group":"Metric"},
     {"id":"mg","name":"Milligrams","symbol":"mg","factor":1,"decimals":1,"group":"Metric"},
-    {"id":"g","name":"Grams","symbol":"g","factor":1000,"decimals":4,"group":"Metric"},
+    {"id":"g","name":"Grams","symbol":"g","factor":1000,"decimals":3,"group":"Metric"},
     {"id":"kg","name":"Kilograms","symbol":"kg","factor":1000000,"decimals":3,"group":"Metric"},
     {"id":"oz_av","name":"Ounces (avoirdupois)","symbol":"oz","factor":28349.523125,"decimals":4,"group":"Imperial / US customary"},
     {"id":"lb_av","name":"Pounds (avoirdupois)","symbol":"lb","factor":453592.37,"decimals":5,"group":"Imperial / US customary"},
@@ -250,7 +273,8 @@ const RATE_HZ = 80;
 const PERIOD_MS = 1000 / RATE_HZ;
 const $ = id => document.getElementById(id);
 const UNIT_CONFIG = JSON.parse($('unitConfig').textContent);
-const CALIBRATION = JSON.parse($('calibrationConfig').textContent);
+const EMBEDDED_CALIBRATION = JSON.parse($('calibrationConfig').textContent);
+let CALIBRATION = EMBEDDED_CALIBRATION;   // the ACTIVE calibration (switchable since v8)
 const MAX_ROBUST_WINDOW = 4096;
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
@@ -304,7 +328,7 @@ function prepareCalibration(config) {
   }
   return {...config, anchors, slopeSign, calibrationUnit: config.calibrationUnit || 'g'};
 }
-const calibration = prepareCalibration(CALIBRATION);
+let calibration = prepareCalibration(CALIBRATION);   // prepared form of the active calibration
 
 // Absolute calibration is deliberately separate from tare correction. Out-of-range
 // readings are linearly extrapolated from the nearest segment and explicitly flagged.
@@ -328,14 +352,9 @@ function calibrateAbsolute(rawValue, config = calibration) {
   return {valueMg: a.massMg + fraction * (b.massMg - a.massMg), outOfRange: outside, segmentIndex: left, anchorIds: [a.anchorId, b.anchorId]};
 }
 
-// Method A accepts a raw sensor tare reference and calibrates it with the same curve.
-function calibrateNetFromRawTare(rawValue, tareRaw, config = calibration) {
-  return calibrateAbsolute(rawValue, config).valueMg - calibrateAbsolute(tareRaw, config).valueMg;
-}
-// Method B accepts an already-calibrated tare mass in canonical milligrams.
-function calibrateNetFromMassTare(rawValue, tareMassMg, config = calibration) {
-  return calibrateAbsolute(rawValue, config).valueMg - tareMassMg;
-}
+// Tare definition used everywhere: the tare is a calibrated mass in mg, computed as the mean of
+// f(raw_i) over the tare window (not f(mean raw)); the raw snapshot is stored so it can be
+// re-evaluated under a different calibration. (v8 removed the two unused "Method A/B" helpers.)
 
 const state = {
   capacity: 100000, unlimited: false, count: 0, head: 0,
@@ -343,6 +362,10 @@ const state = {
   rawMA: new Float64Array(100000), rawSD: new Float64Array(100000),
   massMA: new Float64Array(100000), massSD: new Float64Array(100000),
   nextTime: 0, timer: null, paused: false, live: true,
+  measurement: null, lastMeasurement: null, highlight: null,   // Measurement feature (v8)
+  calibrations: [], fullHash: null,                             // calibration history (v8)
+  simBase: null, simEmitted: 0, appended: 0,                    // simulator pacing / periodic sum refresh
+ 
   liveWindowSpan: 5000, viewMin: 0, viewMax: PERIOD_MS,
   window: 80, activeWindow: 80,
   rawSum: 0, rawSumSq: 0, rawCount: 0, rawRef: null,
@@ -355,7 +378,7 @@ const state = {
   maRebuildTimer: null, testBatchRunning: false, selectMode: false,
   plotBuffer: null,
   unitId: UNIT_CONFIG.defaultUnit, precision: 'auto',
-  estimator: 'mean', estimatorWindow: 80, trimPercent: 10, emaTau: 0.5,
+  estimator: 'mean', trimPercent: 10, emaTau: 0.5,
   seedValue: 5000, drift: 0, revisionId: 'embedded-demo-v1', hashType: 'embedded revision'
 };
 
@@ -501,6 +524,28 @@ function appendSample(rawValue) {
   else { const dt = Math.max(0, (sampleTime - state.massEmaTime) / 1000); const alpha = 1 - Math.exp(-dt / state.emaTau); state.massEma = alpha * netMass + (1 - alpha) * state.massEma; }
   state.rawEmaTime = sampleTime; state.massEmaTime = sampleTime;
   state.nextTime += PERIOD_MS;
+  if ((++state.appended & 8191) === 0) refreshRollingSums();
+  if (state.measurement) measurementSampleAdded(sampleTime);
+}
+// Every 8192 samples the shifted sums are recomputed exactly from the retained window and
+// re-centred on the current mean. This bounds the rounding error that add/subtract updates
+// accumulate over very long runs (cost: one pass over at most `window` samples).
+function refreshRollingSums() {
+  const end = state.count;
+  let n = state.rawCount;
+  if (n > 0) {
+    let s = 0; for (let j = end - n; j < end; j++) s += getRaw(j);
+    const ref = s / n; let d = 0, q = 0;
+    for (let j = end - n; j < end; j++) { const x = getRaw(j) - ref; d += x; q += x * x; }
+    state.rawRef = ref; state.rawSum = d; state.rawSumSq = q;
+  }
+  n = state.massCount;
+  if (n > 0) {
+    let s = 0; for (let j = end - n; j < end; j++) s += getNetMg(j);
+    const ref = s / n; let d = 0, q = 0;
+    for (let j = end - n; j < end; j++) { const x = getNetMg(j) - ref; d += x; q += x * x; }
+    state.massRef = ref; state.massSum = d; state.massSumSq = q;
+  }
 }
 
 // Rebuild both raw and calibrated derived series after an MA-window change.
@@ -681,16 +726,27 @@ function buildMiniData() {
   return [x.subarray(0,j),y.subarray(0,j)];
 }
 
+function calibrationMarkerPlugin(){
+  return {hooks:{drawAxes:[u=>{
+    if(state.calibrations.length<2||!u.data[0]?.length)return;
+    const ctx=u.ctx,dpr=window.devicePixelRatio||1;ctx.save();ctx.beginPath();ctx.rect(u.bbox.left,u.bbox.top,u.bbox.width,u.bbox.height);ctx.clip();
+    ctx.strokeStyle='rgba(120,160,255,.85)';ctx.fillStyle='rgba(120,160,255,.95)';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.font=`${11*dpr}px sans-serif`;
+    for(const c of state.calibrations.slice(1)){const x=u.valToPos(c.effectiveFromTime/1000,'x',true);ctx.beginPath();ctx.moveTo(x,u.bbox.top);ctx.lineTo(x,u.bbox.top+u.bbox.height);ctx.stroke();ctx.fillText('Cal',x+4,u.bbox.top+12*dpr);}
+    ctx.restore();
+  }]}};
+}
 function zeroFillPlugin() {
   return {hooks:{drawClear:[u=>{
     if (!u.data[0]?.length) return;
     const xs=u.data[0], raw=u.data[1], lower=u.data[4], ctx=u.ctx;
     const yZero=u.valToPos(0,'y',true);
     ctx.save(); ctx.beginPath(); ctx.rect(u.bbox.left,u.bbox.top,u.bbox.width,u.bbox.height); ctx.clip();
-    if(state.selection){
-      const x0=u.valToPos(state.selection.t0/1000,'x',true),x1=u.valToPos(state.selection.t1/1000,'x',true);
-      ctx.fillStyle='rgba(70,190,160,.12)';ctx.fillRect(Math.min(x0,x1),u.bbox.top,Math.abs(x1-x0),u.bbox.height);
-      ctx.strokeStyle='rgba(70,190,160,.65)';ctx.lineWidth=1;ctx.strokeRect(Math.min(x0,x1)+.5,u.bbox.top,Math.max(0,Math.abs(x1-x0)-1),u.bbox.height);
+    // Teal = selected interval, amber = measurement samples (in progress or finished).
+    for(const [range,fill,stroke] of [[state.selection,'rgba(70,190,160,.12)','rgba(70,190,160,.65)'],[state.highlight,'rgba(246,200,95,.14)','rgba(246,200,95,.8)']]){
+      if(!range)continue;
+      const x0=u.valToPos(range.t0/1000,'x',true),x1=u.valToPos(range.t1/1000,'x',true);
+      ctx.fillStyle=fill;ctx.fillRect(Math.min(x0,x1),u.bbox.top,Math.max(2,Math.abs(x1-x0)),u.bbox.height);
+      ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.strokeRect(Math.min(x0,x1)+.5,u.bbox.top,Math.max(1,Math.abs(x1-x0)-1),u.bbox.height);
     }
     if (state.unitId === 'raw') { ctx.restore(); return; }
     const drawFill=(values,fill)=>{
@@ -754,7 +810,7 @@ function makeMainOptions() {
         ctx.restore();
       }
     }]},
-    plugins:[zeroFillPlugin()]
+    plugins:[zeroFillPlugin(),calibrationMarkerPlugin()]
   };
 }
 function makeMiniOptions(){
@@ -775,7 +831,7 @@ function createCharts(){
   if(!window.uPlot){$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection to the approved CDN.</p>';return;}
   state.mainPlot=new uPlot(makeMainOptions(),[[],[],[],[],[]],$('mainChart'));
   state.miniPlot=new uPlot(makeMiniOptions(),[[],[]],$('miniChart'));
-  applySeriesVisibility();wireMainInteractions();wireMiniInteractions();wireCrosshairSync();
+  wireMainInteractions();wireMiniInteractions();wireCrosshairSync();
 }
 function displayDigits(){const unit=unitById(state.unitId);return state.precision==='auto'?unit.decimals:Number(state.precision);}
 
@@ -786,7 +842,7 @@ function scheduleRender(){if(state.renderPending)return;state.renderPending=true
 function renderFrame(){
   if(!state.count)return;
   if(state.live)fitLiveWindow();
-  updateMetrics();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
+  updateMetrics();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
   if(!state.mainPlot)return;
   const data=buildVisibleData(),minX=state.viewMin/1000,maxX=Math.max(minX+PERIOD_MS/1000,state.viewMax/1000);
   state.mainPlot.batch(()=>{state.mainPlot.setData(data,true);state.mainPlot.setScale('x',{min:minX,max:maxX});if(state.manualY)state.mainPlot.setScale('y',{min:state.yMin,max:state.yMax});});
@@ -832,8 +888,8 @@ function estimate(values,times,method,options={}){
   }
   return{value:values.reduce((sum,v)=>sum+v,0)/n,used:n,rejected:0};
 }
-function collectCurrentWindow(limit){
-  const n=Math.min(state.count,limit),start=state.count-n,values=new Array(n),times=new Array(n),raws=new Array(n);
+function collectCurrentWindow(n){ // newest n samples; the caller limits n to the current tare epoch
+  n=Math.min(state.count,n);const start=state.count-n,values=new Array(n),times=new Array(n),raws=new Array(n);
   for(let j=0;j<n;j++){const i=start+j;values[j]=getNetMg(i);times[j]=getTime(i);raws[j]=getRaw(i);}
   return{values,times,raws};
 }
@@ -844,27 +900,30 @@ function collectCurrentWindow(limit){
 function calculateStd(values){if(!values.length)return NaN;let n=0,mean=0,m2=0;for(const v of values){n++;const d=v-mean;mean+=d/n;m2+=d*(v-mean);}return Math.sqrt(m2/n);}
 function updateMetrics(){
   if(!state.count)return;
-  const window=collectCurrentWindow(Math.min(state.estimatorWindow,MAX_ROBUST_WINDOW));
-  const diagnostic=state.unitId==='raw';
-  const estimateValues=diagnostic?window.raws:window.values;
-  const emaValue=diagnostic?state.rawEma:(state.massEma==null?window.values[window.values.length-1]:state.massEma);
-  const result=state.estimator==='ema'?{value:emaValue,used:window.values.length,rejected:0}:estimate(estimateValues,window.times,state.estimator,{tau:state.emaTau,trimPercent:state.trimPercent});
-  const spread=calculateStd(estimateValues),last=state.count-1,raw=getRaw(last),abs=getMassMg(last),net=getNetMg(last),tare=currentTareEvent();
+  const diagnostic=state.unitId==='raw',last=state.count-1,raw=getRaw(last),tare=currentTareEvent();
+  // One window setting drives the chart average, the spread and the panel estimator. Net-mass
+  // statistics use only the current tare/calibration epoch (a tare resets the window), so the
+  // panel never mixes values that are relative to two different zero references.
+  const epochStart=(!diagnostic&&tare)?Math.min(lowerBoundTime(tare.effectiveFromTime),last):0;
+  const n=Math.max(1,Math.min(state.window,state.count-epochStart));
+  const method=state.estimator,robust=method==='median'||method==='trimmed'||method==='hampel';
+  let value,used=n,rejected=0;
+  if(method==='mean')value=diagnostic?getRawMA(last):getMassMA(last);
+  else if(method==='ema')value=diagnostic?state.rawEma:(state.massEma==null?getNetMg(last):state.massEma);
+  else{const w=collectCurrentWindow(Math.min(n,MAX_ROBUST_WINDOW));const r=estimate(diagnostic?w.raws:w.values,w.times,method,{tau:state.emaTau,trimPercent:state.trimPercent});value=r.value;used=w.values.length;rejected=r.rejected;}
+  const spread=diagnostic?getRawSD(last):getMassSD(last);
   $('currentValueLabel').textContent=diagnostic?'Raw sensor estimator':'Current measured mass';
-  $('currentValue').textContent=diagnostic?fmtNumber(result.value,0):formatMass(result.value);
-  $('currentValueDetail').textContent=state.estimator==='ema'?`EMA · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(state.estimator)} · ${window.values.length} samples${result.rejected?` · ${result.rejected} excluded`:''}${diagnostic?' · counts':''}`;
-  $('currentValue').title=`Raw latest: ${raw} counts\nRaw window average: ${fmtNumber(window.raws.reduce((a,b)=>a+b,0)/window.raws.length,2)} counts\nAbsolute calibrated mass: ${fmtNumber(abs,3)} mg\nNet calibrated mass: ${fmtNumber(net,3)} mg\nCalibration: ${state.revisionId}`;
+  $('currentValue').textContent=diagnostic?fmtNumber(value,0):formatMass(value);
+  $('currentValueDetail').textContent=method==='ema'?`EMA · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)} · ${used} samples${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
+  $('currentValue').title=`Raw latest: ${raw} counts\nAbsolute calibrated mass: ${fmtNumber(getMassMg(last),3)} mg\nNet calibrated mass: ${fmtNumber(getNetMg(last),3)} mg\nCalibration: ${state.revisionId}`;
+  const outside=calibrateAbsolute(raw).outOfRange&&!diagnostic;
+  $('rangeStatus').hidden=!outside;if(outside)$('rangeStatus').textContent='Latest sample is outside the calibrated range (extrapolated).';
   $('spreadLabel').textContent=diagnostic?'Raw sensor spread (σ)':'Sensor spread (σ)';
   $('currentSpread').textContent=diagnostic?`${fmtNumber(spread,2)} counts`:formatMass(spread);
-  $('spreadDetail').textContent=`Estimator window ${window.values.length} · display estimator ${estimatorLabel(state.estimator)}`;
+  $('spreadDetail').textContent=`${n} samples · repeatability only, not an uncertainty`;
   $('tareValue').textContent=diagnostic?(tare?(tare.tareRaw==null?'Manual mass tare':fmtNumber(tare.tareRaw,0)):'None'):(tare?formatMass(tare.tareMassMg):'None');
-  $('tareDetail').textContent=tare?`${tare.method} · ${new Date(tare.createdAt).toLocaleTimeString()}`:'No tare event recorded';
-  $('latestLabel').textContent=diagnostic?'Latest raw sensor reading':'Latest measured mass';
-  $('latestValue').textContent=diagnostic?fmtNumber(raw,0):formatMass(net);
-  $('latestValue').title=`Raw sensor: ${raw} counts\nAbsolute calibrated mass: ${fmtNumber(abs,3)} mg\nNet mass after historical tare: ${fmtNumber(net,3)} mg\nCalibration range: ${calibrateAbsolute(raw).outOfRange?'OUTSIDE':'within'} range`;
-  const extrapolated=calibrateAbsolute(raw).outOfRange;
-  $('latestDetail').textContent=extrapolated?'Calibration extrapolation · OUTSIDE range':`Raw ${raw.toLocaleString()} counts · ${tare?'tare active':'no tare'}`;
-  $('latestDetail').classList.toggle('warning',extrapolated);
+  $('tareDetail').textContent=tare?`${tare.method} · ${new Date(tare.createdAt).toLocaleTimeString()}${tare.outOfRangeCount?` · ${tare.outOfRangeCount} out-of-range samples`:''}`:'No tare event recorded';
+  $('tareDetail').classList.toggle('warning',!!(tare&&tare.outOfRangeCount));
   $('tareUnitLabel').textContent=displayUnitSymbol();
   $('manualTareBtn').disabled=diagnostic;
   $('manualTareInput').disabled=diagnostic;
@@ -904,14 +963,21 @@ function wireMainInteractions(){
   over.addEventListener('touchend',()=>{if(touch&&touch.mode==='select'&&touch.moved){const a=state.mainPlot.posToVal(Math.min(touch.startX,touch.currentX),'x')*1000,b=state.mainPlot.posToVal(Math.max(touch.startX,touch.currentX),'x')*1000;selectInterval(Math.min(a,b),Math.max(a,b));state.mainPlot.setSelect({left:0,top:0,width:0,height:0});}touch=null;pinch=null;if(state.selectMode)setSelectMode(false);},{passive:true});
 }
 function wireMiniInteractions(){
+  // Click = centre the main view on that time (span unchanged). Drag = the dragged range becomes
+  // the main view, updated live while dragging. Mouse and touch share the same helpers.
   const over=state.miniPlot.over;let drag=null;
-  over.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'||e.button!==0)return;const rect=over.getBoundingClientRect(),x=clamp(e.clientX-rect.left,0,rect.width);drag={id:e.pointerId,startX:x,currentX:x,rect};try{over.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();e.stopImmediatePropagation();},true);
-  over.addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId)return;drag.currentX=clamp(e.clientX-drag.rect.left,0,drag.rect.width);const a=state.miniPlot.posToVal(Math.min(drag.startX,drag.currentX),'x'),b=state.miniPlot.posToVal(Math.max(drag.startX,drag.currentX),'x');state.miniPlot.setSelect({left:state.miniPlot.valToPos(a,'x'),top:0,width:Math.max(1,state.miniPlot.valToPos(b,'x')-state.miniPlot.valToPos(a,'x')),height:state.miniPlot.height});e.preventDefault();e.stopImmediatePropagation();},true);
-  const finish=e=>{if(!drag||drag.id!==e.pointerId)return;const a=state.miniPlot.posToVal(Math.min(drag.startX,drag.currentX),'x')*1000,b=state.miniPlot.posToVal(Math.max(drag.startX,drag.currentX),'x')*1000;if(Math.abs(drag.currentX-drag.startX)>3){state.live=false;state.viewMin=Math.max(oldestTime(),a);state.viewMax=Math.min(newestTime(),Math.max(a+PERIOD_MS,b));state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);scheduleRender();}drag=null;e.preventDefault();e.stopImmediatePropagation();};
+  const toMs=x=>state.miniPlot.posToVal(x,'x')*1000;
+  const centreOn=ms=>{const span=Math.max(PERIOD_MS,state.viewMax-state.viewMin);state.live=false;state.viewMin=clamp(ms-span/2,oldestTime(),Math.max(oldestTime(),newestTime()-span));state.viewMax=Math.min(newestTime(),state.viewMin+span);scheduleRender();};
+  const showRange=(a,b)=>{state.live=false;state.viewMin=Math.max(oldestTime(),a);state.viewMax=Math.min(newestTime(),Math.max(state.viewMin+PERIOD_MS,b));state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);scheduleRender();};
+  const begin=(x,rect,id)=>{drag={id,startX:x,rect,moved:false};centreOn(toMs(x));};
+  const move=x=>{if(Math.abs(x-drag.startX)>3)drag.moved=true;if(drag.moved)showRange(toMs(Math.min(drag.startX,x)),toMs(Math.max(drag.startX,x)));};
+  over.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'||e.button!==0)return;const rect=over.getBoundingClientRect();begin(clamp(e.clientX-rect.left,0,rect.width),rect,e.pointerId);over.setPointerCapture?.(e.pointerId);e.preventDefault();e.stopImmediatePropagation();},true);
+  over.addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId)return;move(clamp(e.clientX-drag.rect.left,0,drag.rect.width));},true);
+  const finish=e=>{if(drag&&drag.id===e.pointerId)drag=null;};
   over.addEventListener('pointerup',finish,true);over.addEventListener('pointercancel',finish,true);
-  let touch=null;over.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;const rect=over.getBoundingClientRect(),x=clamp(e.touches[0].clientX-rect.left,0,rect.width);touch={startX:x,currentX:x,rect};},{passive:true});
-  over.addEventListener('touchmove',e=>{if(!touch||e.touches.length!==1)return;touch.currentX=clamp(e.touches[0].clientX-touch.rect.left,0,touch.rect.width);const a=state.miniPlot.posToVal(Math.min(touch.startX,touch.currentX),'x'),b=state.miniPlot.posToVal(Math.max(touch.startX,touch.currentX),'x');state.miniPlot.setSelect({left:state.miniPlot.valToPos(a,'x'),top:0,width:Math.max(1,state.miniPlot.valToPos(b,'x')-state.miniPlot.valToPos(a,'x')),height:state.miniPlot.height});},{passive:true});
-  over.addEventListener('touchend',()=>{if(touch&&Math.abs(touch.currentX-touch.startX)>3){const a=state.miniPlot.posToVal(Math.min(touch.startX,touch.currentX),'x')*1000,b=state.miniPlot.posToVal(Math.max(touch.startX,touch.currentX),'x')*1000;state.live=false;state.viewMin=Math.max(oldestTime(),a);state.viewMax=Math.min(newestTime(),Math.max(a+PERIOD_MS,b));state.liveWindowSpan=Math.max(250,state.viewMax-state.viewMin);scheduleRender();}touch=null;},{passive:true});
+  over.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;const rect=over.getBoundingClientRect();begin(clamp(e.touches[0].clientX-rect.left,0,rect.width),rect,'touch');e.preventDefault();},{passive:false});
+  over.addEventListener('touchmove',e=>{if(!drag||drag.id!=='touch'||e.touches.length!==1)return;move(clamp(e.touches[0].clientX-drag.rect.left,0,drag.rect.width));e.preventDefault();},{passive:false});
+  over.addEventListener('touchend',()=>{if(drag&&drag.id==='touch')drag=null;});
 }
 
 function sampleIndicesForEstimator(first,end,method,limit=MAX_ROBUST_WINDOW){
@@ -957,12 +1023,18 @@ function calculateSelection(first,end,settings={}){
     spreadMg=calculateStd(currentValues);rawMean=rawValues.reduce((a,b)=>a+b,0)/rawValues.length;rawSpread=calculateStd(rawValues);
     usedSamples=indices.length;rejectedSamples=recalculated.rejected;
   }
+  const calFirst=calibrationAt(getTime(first)),calLast=calibrationAt(getTime(end-1));
   return {
     originalValueMg,currentValueMg,rawEstimatorValue,spreadMg,rawSpread,usedSamples,totalSamples:total,rawMean,
     firstIndex:first,lastIndex:end-1,t0:getTime(first),t1:getTime(end-1),
-    estimator:method,estimatorWindow:state.estimatorWindow,trimPercent:selectedTrim,emaTau:selectedTau,rejectedSamples,outOfRangeCount,
-    calibrationRevisionId:state.revisionId,tareEventId:currentTareEvent()?.eventId||null,
-    contextChanged:(currentTareEvent()?.eventId||null)!==(tareEventAt(getTime(first))?.eventId||null)
+    estimator:method,estimatorWindow:state.window,trimPercent:selectedTrim,emaTau:selectedTau,rejectedSamples,outOfRangeCount,
+    // Provenance (v8): the revision stored here is the one the samples were RECORDED with.
+    calibrationRevisionId:calLast.revisionId,crossesCalibration:calFirst!==calLast,
+    calibrationChanged:calFirst.revisionId!==state.revisionId||calLast.revisionId!==state.revisionId,
+    tareEventId:currentTareEvent()?.eventId||null,
+    crossesTare:(tareEventAt(getTime(first))?.eventId||null)!==(tareEventAt(getTime(end-1))?.eventId||null),
+    contextChanged:(currentTareEvent()?.eventId||null)!==(tareEventAt(getTime(first))?.eventId||null),
+    analysis:analyzeInterval(first,end)
   };
 }
 function selectInterval(t0,t1,log=true){
@@ -977,7 +1049,7 @@ function selectInterval(t0,t1,log=true){
 function updateSelectionReadout(){
   const s=state.selection;if(!s){$('selectionSummary').textContent='No interval selected.';return;}
   const changed=s.contextChanged?'<br><span class="warning">Tare context differs from the current tare. Both original and current interpretations are shown.</span>':'';
-  const calibrationChanged=s.calibrationChanged?'<br><span class="warning">Calibration revision differs from the one recorded with this log entry.</span>':'';
+  const calibrationChanged=(s.calibrationChanged?'<br><span class="warning">Samples were recorded under a different calibration revision than the active one. “Original” uses the recorded calibration; “current” re-calibrates with the active one.</span>':'')+(s.crossesTare?'<br><span class="warning">The interval spans a tare event: the original result mixes values relative to different zero references.</span>':'')+(s.crossesCalibration?'<br><span class="warning">The interval spans a calibration change.</span>':'')+'<br><span class="small">Validity analysis: not implemented yet.</span>';
   const subsampled=s.usedSamples<s.totalSamples?` · bounded analysis used ${s.usedSamples.toLocaleString()} of ${s.totalSamples.toLocaleString()} samples`:'';
   $('selectionSummary').innerHTML=`<strong>${s.totalSamples.toLocaleString()} selected samples</strong><br>`+
     `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
@@ -994,11 +1066,12 @@ function updateSelectionReadout(){
 }
 function appendLogEntry(entry){state.logs.unshift(entry);renderLog();}
 function appendSelectionLog(s){const entry={type:'selection',entryId:`selection-${Date.now()}-${state.logs.length}`,createdAt:new Date().toISOString(),...s};appendLogEntry(entry);}
-function addTareEvent(tareMassMg,{method='manual',tareRaw=null,tareRawSamples=null,sourceCount=0}={}){
+function addTareEvent(tareMassMg,{method='manual',tareRaw=null,tareRawSamples=null,sourceCount=0,outOfRangeCount=0}={}){
   const previous=currentTareEvent();
-  const event={type:'tare',eventId:`tare-${String(state.tareEvents.length+1).padStart(4,'0')}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,tareMassMg,tareRaw,method,sourceCount,previousTareMassMg:previous?previous.tareMassMg:0,calibrationRevisionId:state.revisionId,tareRawSamples:tareRawSamples?Int32Array.from(tareRawSamples):null};
+  const event={type:'tare',eventId:`tare-${String(state.tareEvents.length+1).padStart(4,'0')}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,tareMassMg,tareRaw,method,sourceCount,outOfRangeCount,previousTareMassMg:previous?previous.tareMassMg:0,calibrationRevisionId:state.revisionId,tareRawSamples:tareRawSamples?Int32Array.from(tareRawSamples):null};
   // A new tare affects only future samples. Previously stored calibrated masses and
   // their tare-adjusted display values remain unchanged and can be reproduced from events.
+  cancelMeasurement('tare event');   // a tare changes the zero reference, so a running measurement would mix epochs
   state.tareEvents.push(event);
   // Reset the calibrated MA window so it does not mix values relative to two tare epochs.
   state.massSum=0;state.massSumSq=0;state.massCount=0;state.massRef=null;state.massEma=null;state.massEmaTime=null;state.rollingTareId=event.eventId;
@@ -1013,9 +1086,12 @@ function updateSelectionForNewContext(){
 }
 function autoTare(){
   if(!state.count)return;
-  const n=Math.min(state.window,state.count),start=state.count-n;let massSum=0,rawSum=0;const rawSamples=new Int32Array(n);
-  for(let j=0;j<n;j++){const i=start+j;massSum+=getMassMg(i);rawSum+=getRaw(i);rawSamples[j]=getRaw(i);}
-  const event=addTareEvent(massSum/n,{method:'Auto-Tare · mean of calibrated samples',tareRaw:rawSum/n,tareRawSamples:rawSamples,sourceCount:n});
+  // Average only samples recorded under the ACTIVE calibration (a calibration change starts a new epoch).
+  const calStart=Math.min(lowerBoundTime(state.calibrations[state.calibrations.length-1].effectiveFromTime),state.count-1);
+  const n=Math.max(1,Math.min(state.window,state.count-calStart)),start=state.count-n;
+  let massSum=0,rawSum=0,outOfRangeCount=0;const rawSamples=new Int32Array(n);
+  for(let j=0;j<n;j++){const i=start+j,r=getRaw(i);massSum+=getMassMg(i);rawSum+=r;rawSamples[j]=r;if(calibrateAbsolute(r).outOfRange)outOfRangeCount++;}
+  addTareEvent(massSum/n,{method:'Auto-Tare · mean of calibrated samples',tareRaw:rawSum/n,tareRawSamples:rawSamples,sourceCount:n,outOfRangeCount});
   updateSelectionForNewContext();scheduleRender();
 }
 function manualTare(){
@@ -1026,64 +1102,144 @@ function manualTare(){
 }
 function setSelectMode(on){state.selectMode=on;$('selectModeBtn').setAttribute('aria-pressed',String(on));$('selectModeBtn').classList.toggle('primary',on);$('selectModeBtn').textContent=on?'Selecting… tap-drag':'Select interval';}
 
+// ---------------------------------------------------------------------------------------------
+// Interval analysis hook, shared by Measurement, Selection analysis and (later) the calibration
+// wizard. v8 only reserves the interface. Planned checks: autocorrelation / effective sample size,
+// Allan deviation, step (moved weight) and vibration detection, and gap detection from the device
+// sample counter. Every caller stores the returned object with its result.
+function analyzeInterval(first,end){
+  return {status:'not-analyzed',checks:[],note:'Validity analysis is not implemented yet.'};
+}
+
+// ---- Measurement -------------------------------------------------------------------------------
+// A measurement collects the next N samples after the button press and reduces them with the
+// estimator chosen in the settings panel. It reuses calculateSelection(), so the result equals
+// selecting the same samples on the graph. It is cancelled by a tare, a calibration change, a
+// buffer shrink below its size, or a sampling gap, because any of these would make the interval
+// inconsistent.
+const MEASUREMENT_MAX_SAMPLES=100000;
+function startMeasurement(){
+  if(state.measurement){cancelMeasurement('cancelled by user');return;}
+  const target=clamp(Math.floor(Number($('measSamples').value)||0),2,MEASUREMENT_MAX_SAMPLES);
+  if(!state.unlimited&&target>state.capacity){$('measProgress').textContent=`The buffer limit (${state.capacity.toLocaleString()} samples) is smaller than the requested ${target.toLocaleString()} samples.`;return;}
+  // Captured now so later changes of the estimator settings cannot alter a running measurement.
+  state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau};
+  state.highlight={t0:state.nextTime,t1:state.nextTime};
+  $('measProgress').textContent='';updateMeasurementUI();scheduleRender();
+}
+function measurementSampleAdded(sampleTime){
+  const m=state.measurement;m.collected++;state.highlight={t0:m.t0,t1:sampleTime};
+  if(m.collected>=m.target)finishMeasurement();
+}
+function finishMeasurement(){
+  const m=state.measurement;state.measurement=null;
+  const first=lowerBoundTime(m.t0),end=state.count;
+  const result=calculateSelection(first,end,{estimator:m.estimator,trimPercent:m.trimPercent,emaTau:m.emaTau});
+  const entry={type:'measurement',entryId:m.id,createdAt:new Date().toISOString(),...result,targetSamples:m.target,nominalDurationS:m.target/RATE_HZ,analysis:analyzeInterval(first,end)};
+  state.lastMeasurement=entry;state.highlight={t0:result.t0,t1:result.t1};
+  appendLogEntry(entry);updateMeasurementUI();scheduleRender();
+}
+function cancelMeasurement(reason){
+  if(!state.measurement)return;
+  state.measurement=null;state.highlight=null;
+  appendLogEntry({type:'note',entryId:`note-${Date.now()}`,createdAt:new Date().toISOString(),text:`Measurement cancelled: ${reason}`});
+  updateMeasurementUI();scheduleRender();
+}
+function syncMeasurementInputs(source){
+  if(source==='duration')$('measSamples').value=Math.max(2,Math.round(Number($('measDuration').value)*RATE_HZ)||2);
+  $('measDuration').value=Number((Number($('measSamples').value)/RATE_HZ).toFixed(3));
+}
+function updateMeasurementUI(){
+  const m=state.measurement,last=state.lastMeasurement,raw=state.unitId==='raw';
+  $('measureBtn').textContent=m?'Cancel measurement':'Start measurement';$('measureBtn').classList.toggle('primary',!m);
+  $('measBar').hidden=!m;if(m)$('measBar').value=m.collected/m.target;
+  $('measDuration').disabled=!!m;$('measSamples').disabled=!!m;
+  if(m){$('measValue').textContent='…';$('measDetail').textContent=`Measuring: ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;$('measNote').textContent='';return;}
+  if(!last){$('measValue').textContent='—';$('measDetail').textContent='No measurement yet';$('measNote').textContent='';return;}
+  $('measValue').textContent=raw?`${fmtNumber(last.rawEstimatorValue,0)} counts`:formatMass(last.originalValueMg);
+  $('measDetail').textContent=`σ ${raw?fmtNumber(last.rawSpread,2)+' counts':formatMass(last.spreadMg)} · ${last.totalSamples.toLocaleString()} samples (${(last.totalSamples/RATE_HZ).toFixed(2)} s) · ${estimatorLabel(last.estimator)}`;
+  const notes=[];
+  if(last.outOfRangeCount)notes.push(`<span class="warning">${last.outOfRangeCount} samples outside the calibrated range</span>`);
+  // The EMA is seeded with the first sample, which keeps weight exp(-T/tau): see updateSelectionReadout().
+  if(last.estimator==='ema')notes.push(`EMA seed weight ${(100*Math.exp(-Math.max(0,last.t1-last.t0)/1000/Math.max(.025,last.emaTau))).toFixed(1)}%`);
+  if(last.usedSamples<last.totalSamples)notes.push('bounded analysis (subsampled)');
+  notes.push('Validity analysis: not implemented yet');
+  $('measNote').innerHTML=notes.join(' · ');
+}
+
+// ---- Log -----------------------------------------------------------------------------------------
 function renderLog(){
   $('logCount').textContent=`(${state.logs.length} entries)`;
   if(!state.logs.length){$('logList').innerHTML='<div class="small" style="padding:10px 0">No events yet.</div>';return;}
   $('logList').innerHTML=state.logs.map(entry=>{
-    const time=new Date(entry.createdAt).toLocaleTimeString();
-    if(entry.type==='tare')return `<div class="log-row event" data-log-id="${entry.entryId||entry.eventId}" data-log-type="tare"><time>${time}</time><div><strong>${entry.eventId} · ${entry.method}</strong><br>Tare: ${formatMass(entry.tareMassMg)} · Raw reference: ${entry.tareRaw==null?'not applicable':fmtNumber(entry.tareRaw,2)+' counts'}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s · Calibration ${entry.calibrationRevisionId}</span></div></div>`;
-    return `<div class="log-row selection" data-log-id="${entry.entryId}" data-log-type="selection"><time>${time}</time><div><strong>Selection · ${entry.totalSamples.toLocaleString()} samples</strong><br>${state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`}<br><span class="small">${estimatorLabel(entry.estimator)} · ${entry.estimator==='trimmed'?entry.trimPercent+'% trim · ':''}${entry.estimator==='ema'?'τ '+entry.emaTau+' s · ':''}${((entry.t1-entry.t0)/1000).toFixed(2)} s · Calibration ${entry.calibrationRevisionId}</span></div></div>`;
+    const time=new Date(entry.createdAt).toLocaleTimeString(),id=esc(entry.entryId||entry.eventId);
+    const row=(cls,type,body)=>`<div class="log-row ${cls}" data-log-id="${id}" data-log-type="${type}"><time>${time}</time><div>${body}</div></div>`;
+    const detail=e=>`${estimatorLabel(e.estimator)} · ${e.estimator==='trimmed'?e.trimPercent+'% trim · ':''}${e.estimator==='ema'?'τ '+e.emaTau+' s · ':''}${((e.t1-e.t0)/1000).toFixed(2)} s · Calibration ${esc(e.calibrationRevisionId)}`;
+    if(entry.type==='tare')return row('event','tare',`<strong>${esc(entry.eventId)} · ${esc(entry.method)}</strong><br>Tare: ${formatMass(entry.tareMassMg)} · Raw reference: ${entry.tareRaw==null?'not applicable':fmtNumber(entry.tareRaw,2)+' counts'}${entry.outOfRangeCount?`<br><span class="warning">${entry.outOfRangeCount} of ${entry.sourceCount} tare samples were outside the calibrated range.</span>`:''}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s · Calibration ${esc(entry.calibrationRevisionId)}</span>`);
+    if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
+    if(entry.type==='note')return row('note','note',esc(entry.text));
+    const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
+    const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal)`:`Selection · ${entry.totalSamples.toLocaleString()} samples`;
+    return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}<br><span class="small">${detail(entry)}</span>`);
   }).join('');
 }
 function jumpToLogEntry(id,type){
-  if(type==='tare'){
-    const event=state.tareEvents.find(item=>item.eventId===id);if(!event)return;
-    if(event.effectiveFromTime<oldestTime()||event.effectiveFromTime>newestTime()){$('selectionSummary').innerHTML='<span class="warning">The tare event is outside the retained sample buffer. Its log record is still available.</span>';return;}
-    const half=state.liveWindowSpan/2;state.live=false;state.viewMin=clamp(event.effectiveFromTime-half,oldestTime(),Math.max(oldestTime(),newestTime()-state.liveWindowSpan));state.viewMax=Math.min(newestTime(),state.viewMin+state.liveWindowSpan);state.selection=null;
-    $('selectionSummary').innerHTML=`<strong>${event.eventId}</strong><br>${event.method}<br>Tare mass: <strong>${formatMass(event.tareMassMg)}</strong><br>Raw reference: <strong>${event.tareRaw==null?'not applicable':fmtNumber(event.tareRaw,2)+' counts'}</strong>`;
+  if(type==='note')return;
+  if(type==='tare'||type==='calibration'){
+    const point=type==='tare'?state.tareEvents.find(item=>item.eventId===id):state.logs.find(item=>item.entryId===id);if(!point)return;
+    if(point.effectiveFromTime<oldestTime()||point.effectiveFromTime>newestTime()){$('selectionSummary').innerHTML='<span class="warning">This event is outside the retained sample buffer. Its log record is still available.</span>';return;}
+    const half=state.liveWindowSpan/2;state.live=false;state.viewMin=clamp(point.effectiveFromTime-half,oldestTime(),Math.max(oldestTime(),newestTime()-state.liveWindowSpan));state.viewMax=Math.min(newestTime(),state.viewMin+state.liveWindowSpan);state.selection=null;
+    $('selectionSummary').innerHTML=type==='tare'?`<strong>${esc(point.eventId)}</strong><br>${esc(point.method)}<br>Tare mass: <strong>${formatMass(point.tareMassMg)}</strong><br>Raw reference: <strong>${point.tareRaw==null?'not applicable':fmtNumber(point.tareRaw,2)+' counts'}</strong>`:`<strong>Calibration change</strong><br>${esc(point.profileName)} · revision ${esc(point.revisionId)}`;
     scheduleRender();return;
   }
+  // 'selection' and 'measurement' entries: recompute from the retained samples with the stored settings.
   const entry=state.logs.find(item=>item.entryId===id);if(!entry)return;
-  if(entry.t0<oldestTime()||entry.t1>newestTime()){$('selectionSummary').innerHTML='<span class="warning">Some or all of the selected samples are no longer retained in the ring buffer. The log result remains available.</span>';return;}
-  const first=lowerBoundTime(entry.t0),end=lowerBoundTime(entry.t1+0.0001);state.selection=calculateSelection(first,end,{estimator:entry.estimator,trimPercent:entry.trimPercent,emaTau:entry.emaTau});state.selection.calibrationChanged=entry.calibrationRevisionId!==state.revisionId;state.live=false;const selectionSpan=Math.max(PERIOD_MS,entry.t1-entry.t0),viewSpan=Math.max(selectionSpan*1.2,state.liveWindowSpan);state.liveWindowSpan=viewSpan;state.viewMin=Math.max(oldestTime(),entry.t0-(viewSpan-selectionSpan)/2);state.viewMax=Math.min(newestTime(),state.viewMin+viewSpan);updateSelectionReadout();scheduleRender();
+  if(entry.t0<oldestTime()||entry.t1>newestTime()){$('selectionSummary').innerHTML='<span class="warning">Some or all of the samples are no longer retained in the ring buffer. The log result remains available.</span>';return;}
+  const first=lowerBoundTime(entry.t0),end=lowerBoundTime(entry.t1+0.0001);
+  state.selection=calculateSelection(first,end,{estimator:entry.estimator,trimPercent:entry.trimPercent,emaTau:entry.emaTau});
+  state.live=false;const selectionSpan=Math.max(PERIOD_MS,entry.t1-entry.t0),viewSpan=Math.max(selectionSpan*1.2,state.liveWindowSpan);
+  state.liveWindowSpan=viewSpan;state.viewMin=Math.max(oldestTime(),entry.t0-(viewSpan-selectionSpan)/2);state.viewMax=Math.min(newestTime(),state.viewMin+viewSpan);
+  updateSelectionReadout();scheduleRender();
 }
 
+// ---- Export --------------------------------------------------------------------------------------
+function downloadBlob(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}
 function exportCSV(){
   if(!state.count)return;
-  const rows=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range'];
   const csvField=v=>/[",\n\r]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':v;
+  // Built in chunks of 20,000 rows so a multi-million-row export never needs one giant string array.
+  const parts=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range\n'];
+  let rows=[];
   for(let i=0;i<state.count;i++){
-    const event=tareEventAt(getTime(i)),abs=getMassMg(i),net=getNetMg(i),tare=event?event.tareMassMg:0;
-    rows.push([getTime(i),getRaw(i),abs,tare,net,getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(calibration.profileId),csvField(state.revisionId),calibrateAbsolute(getRaw(i)).outOfRange?1:0].join(','));
+    const time=getTime(i),event=tareEventAt(time),cal=calibrationAt(time),raw=getRaw(i);   // per-row: the calibration the sample was RECORDED with
+    rows.push([time,raw,getMassMg(i),event?event.tareMassMg:0,getNetMg(i),getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(cal.profileId),csvField(cal.revisionId),calibrateAbsolute(raw,cal.config).outOfRange?1:0].join(','));
+    if(rows.length>=20000){parts.push(rows.join('\n')+'\n');rows=[];}
   }
-  const blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
-  a.href=url;a.download=`mass-telemetry-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  if(rows.length)parts.push(rows.join('\n')+'\n');
+  downloadBlob(new Blob(parts,{type:'text/csv;charset=utf-8'}),`mass-telemetry-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`);
 }
 
 function setMovingAverageWindow(rawValue,immediate=false,preserveInput=false){
   if(rawValue===''||!Number.isFinite(Number(rawValue)))return;
   const value=clamp(Math.floor(Number(rawValue)),2,10000);state.window=Math.min(value,state.capacity);
   if(!preserveInput)$('windowInput').value=state.window;$('windowRange').value=state.window;
-  $('spreadDetail').textContent=`Main chart MA window ${state.window} samples`;
   if(state.maRebuildTimer)clearTimeout(state.maRebuildTimer);
   state.maRebuildTimer=setTimeout(()=>{state.maRebuildTimer=null;rebuildDerived();scheduleRender();},immediate?0:70);
 }
-function applySettings(){
+function updateEstimatorFields(){$('trimField').hidden=state.estimator!=='trimmed';$('emaField').hidden=state.estimator!=='ema';}
+function applyBufferSize(){
   const choice=$('bufferInput').value;state.unlimited=choice==='unlimited';
-  if(!state.unlimited){const cap=clamp(Math.floor(Number(choice)||100000),1000,2000000);if(cap!==state.capacity)resizeBuffers(cap);}
-  state.window=clamp(Math.floor(Number($('windowInput').value)||80),2,10000);$('windowInput').value=state.window;$('windowRange').value=state.window;
+  if(!state.unlimited){
+    const cap=clamp(Math.floor(Number(choice)||100000),1000,2000000);
+    if(cap!==state.capacity){if(state.measurement&&state.measurement.target>cap)cancelMeasurement('buffer limit reduced below the measurement size');resizeBuffers(cap);}
+  }
+  $('windowInput').value=state.window;$('windowRange').value=state.window;
   if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;}rebuildDerived();scheduleRender();
 }
 function addTestSamples(){
   if(state.testBatchRunning)return;state.testBatchRunning=true;const button=$('testSamplesBtn'),total=100000,chunk=10000;let added=0;button.disabled=true;
   const run=()=>{const end=Math.min(total,added+chunk);for(;added<end;added++)appendSample(nextSensorValue());button.textContent=`Adding test samples · ${Math.round(added/total*100)}%`;scheduleRender();if(added<total)requestAnimationFrame(run);else{state.testBatchRunning=false;button.disabled=false;button.textContent='＋ Add 100k test samples';scheduleRender();}};
   requestAnimationFrame(run);
-}
-function applySeriesVisibility(){
-  if(!state.mainPlot)return;
-  state.mainPlot.setSeries(1,{show:true});state.mainPlot.setSeries(2,{show:$('maToggle').checked});
-  state.mainPlot.setSeries(3,{show:$('spreadToggle').checked});state.mainPlot.setSeries(4,{show:$('spreadToggle').checked});
-  scheduleRender();
 }
 function initializeManualYAxis(){
   if(!state.count)return;const i=state.count-1,center=state.unitId==='raw'?getRawMA(i):mgToUnit(getMassMA(i),state.unitId),sd=state.unitId==='raw'?getRawSD(i):mgToUnit(getMassSD(i),state.unitId),pad=Math.max(sd*5,Math.abs(center)*.02,state.unitId==='raw'?5:.001),low=Math.floor(center-pad*3),high=Math.ceil(center+pad*3),step=Math.max(.0001,(high-low)/2000);
@@ -1097,7 +1253,6 @@ function populateSettings(){
   for(const group of groups){const optgroup=document.createElement('optgroup');optgroup.label=group;for(const unit of UNIT_CONFIG.units.filter(u=>u.group===group)){const option=document.createElement('option');option.value=unit.id;option.textContent=`${unit.name}${unit.id==='raw'?'':' ('+unit.symbol+')'}`;optgroup.appendChild(option);}select.appendChild(optgroup);}
   select.value=state.unitId;
   const precision=$('precisionSelect');for(let i=0;i<=10;i++){const opt=document.createElement('option');opt.value=String(i);opt.textContent=`${i} decimal places`;precision.appendChild(opt);}precision.value='auto';
-  $('estimatorWindow').value=state.estimatorWindow;$('estimatorWindowRange').value=state.estimatorWindow;
 }
 function openSettings(open){$('settingsMenu').hidden=!open;$('settingsBtn').setAttribute('aria-expanded',String(open));}
 // Canonical serialisation (sorted keys) so the revision fingerprint does not depend on the
@@ -1107,27 +1262,85 @@ function canonicalJson(v){if(Array.isArray(v))return'['+v.map(canonicalJson).joi
 // Escape anything that will be placed in innerHTML. Required before calibration import exists:
 // profile names and IDs will then be untrusted user input.
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
-async function calculateCalibrationRevision(){
-  const copy=JSON.parse(JSON.stringify(CALIBRATION));delete copy.contentHash;delete copy.revisionId;
+// ---- Calibration profiles ---------------------------------------------------------------------
+// Stored masses are never recomputed. Every calibration that was active for part of the session is
+// kept in state.calibrations with the time it became effective; calibrationAt(t) returns the one a
+// sample was recorded with. Loading a new calibration also resets the tare (old tares are masses
+// computed with the previous curve) and aborts a running measurement.
+async function fingerprintConfig(config){
+  const copy=JSON.parse(JSON.stringify(config));delete copy.contentHash;delete copy.revisionId;
   const text=canonicalJson(copy);
-  if(globalThis.crypto?.subtle){try{const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const hex=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');state.revisionId=hex.slice(0,12);state.hashType='SHA-256';return;}catch(_){}}
-  // file:// contexts may not expose SubtleCrypto. This visibly labeled fallback is
-  // only a local revision fingerprint; it must not be represented as a cryptographic hash.
-  let hash=2166136261;for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}state.revisionId=`fnv-${(hash>>>0).toString(16).padStart(8,'0')}`;state.hashType='FNV-1a fallback';
+  if(globalThis.crypto?.subtle){try{const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const hex=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');return{id:hex.slice(0,12),type:'SHA-256',full:hex};}catch(_){}}
+  // file:// contexts may not expose SubtleCrypto. This visibly labeled fallback is only a local
+  // revision fingerprint; it must not be represented as a cryptographic hash.
+  let hash=2166136261;for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  return{id:`fnv-${(hash>>>0).toString(16).padStart(8,'0')}`,type:'FNV-1a fallback',full:null};
+}
+async function calculateCalibrationRevision(){const fp=await fingerprintConfig(CALIBRATION);state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;return fp;}
+function calibrationAt(timeMs){for(let i=state.calibrations.length-1;i>=0;i--)if(state.calibrations[i].effectiveFromTime<=timeMs)return state.calibrations[i];return state.calibrations[0];}
+function validateCalibrationConfig(config){
+  const errors=[],warnings=[];let prepared=null;
+  if(!config||typeof config!=='object'||Array.isArray(config))return{errors:['The top level must be a JSON object.'],warnings,prepared};
+  if(config.schemaVersion!==1)errors.push('schemaVersion must be 1.');
+  for(const key of['profileId','profileName'])if(typeof config[key]!=='string'||!config[key].trim())errors.push(`"${key}" must be a non-empty text.`);
+  if(!UNIT_CONFIG.units.some(u=>u.id===config.calibrationUnit&&u.id!=='raw'))errors.push('"calibrationUnit" must be one of the supported mass units.');
+  if(config.calibrationMethod!=='piecewise-linear')errors.push('Only calibrationMethod "piecewise-linear" is supported.');
+  const list=v=>Array.isArray(v)?v:[];
+  const ids=(items,key,label)=>{const seen=new Set();for(const item of list(items)){const id=item&&item[key];if(seen.has(id))errors.push(`Duplicate ${label} "${id}".`);seen.add(id);}return seen;};
+  const weightIds=ids(config.referenceWeights,'weightId','weightId');ids(config.referenceLoads,'loadId','loadId');
+  const obsIds=ids(config.observations,'observationId','observationId');ids(config.calibrationAnchors,'anchorId','anchorId');
+  for(const load of list(config.referenceLoads))for(const part of list(load?.components))if(!weightIds.has(part?.weightId))errors.push(`Load "${load.loadId}" refers to unknown weight "${part?.weightId}".`);
+  if(obsIds.size)for(const anchor of list(config.calibrationAnchors))for(const o of list(anchor?.sourceObservationIds))if(!obsIds.has(o))errors.push(`Anchor "${anchor.anchorId}" refers to unknown observation "${o}".`);
+  try{prepared=prepareCalibration(config);}catch(error){errors.push(error.message);}
+  if(!errors.length&&config.validation?.status!=='validated')warnings.push('Not metrologically validated: no uncertainty is claimed.');
+  return{errors,warnings,prepared};
+}
+async function activateCalibration(config,source){
+  const checked=validateCalibrationConfig(config);
+  if(checked.errors.length)return checked;
+  const fp=await fingerprintConfig(config);
+  if(fp.id===state.revisionId){checked.warnings.push('This calibration is already active; nothing changed.');checked.unchanged=true;return checked;}
+  if(config.contentHash&&fp.full&&config.contentHash!==fp.full)checked.warnings.push('The file’s contentHash does not match its content (edited after export?). The recalculated fingerprint is used.');
+  CALIBRATION=config;calibration=checked.prepared;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
+  state.calibrations.push({effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,hashType:fp.type,config:calibration,source});
+  cancelMeasurement('calibration changed');
+  addTareEvent(0,{method:'Tare reset · calibration changed'});
+  appendLogEntry({type:'calibration',entryId:`calibration-${Date.now()}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,profileName:config.profileName,source});
+  state.autoYMin=null;state.autoYMax=null;updateCalibrationInfo();updateSelectionForNewContext();scheduleRender();
+  return checked;
+}
+function showCalibrationMessages(errors,warnings,okText){
+  $('calMessages').innerHTML=errors.map(e=>`<div class="warning">${esc(e)}</div>`).join('')+warnings.map(w=>`<div>${esc(w)}</div>`).join('')+(okText?`<div>${esc(okText)}</div>`:'');
+}
+async function importCalibrationFile(file){
+  try{
+    if(file.size>2e6)throw new Error('File is larger than 2 MB.');
+    const result=await activateCalibration(JSON.parse(await file.text()),`file: ${file.name}`);
+    showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Calibration imported and activated. Structure checked only; this is not a metrological validation.');
+  }catch(error){showCalibrationMessages([`Could not import the file: ${error.message}`],[],'');}
+}
+async function restoreDemoCalibration(){
+  const result=await activateCalibration(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)),'embedded demo');
+  showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Embedded illustrative demo calibration restored.');
+}
+function exportCalibration(){
+  const out={...CALIBRATION,revisionId:state.revisionId};if(state.fullHash)out.contentHash=state.fullHash;
+  downloadBlob(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),`calibration-${String(CALIBRATION.profileId).replace(/[^\w.-]+/g,'_')}-${state.revisionId}.json`);
 }
 function updateCalibrationInfo(){
-  const weights=CALIBRATION.referenceWeights||[],anchors=calibration.anchors;
-  $('calibrationInfo').innerHTML=`<strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong><br><span class="small">Fingerprint: ${esc(state.hashType)}</span><br>Calibration unit: ${esc(CALIBRATION.calibrationUnit)}<br>Anchors: ${anchors.length} · Physical references: ${weights.length}<br>Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}<br><span class="small">Reference-weight names and individual observations are retained in the embedded JSON. The creator UI is planned for a later phase.</span>`;
+  const weights=CALIBRATION.referenceWeights||[],count=state.calibrations.length;
+  $('calibrationInfo').innerHTML=`<strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
 }
 
 function initEvents(){
-  $('pauseBtn').addEventListener('click',()=>{state.paused=!state.paused;$('pauseBtn').textContent=state.paused?'▶ Resume':'Ⅱ Pause';$('statusText').textContent=state.paused?'Paused':'Streaming';$('statusDot').classList.toggle('paused',state.paused);});
+  $('pauseBtn').addEventListener('click',()=>{state.paused=!state.paused;state.simBase=null;$('pauseBtn').textContent=state.paused?'▶ Resume':'Ⅱ Pause';$('statusText').textContent=state.paused?'Paused':'Streaming';$('statusDot').classList.toggle('paused',state.paused);});
   $('trackBtn').addEventListener('click',trackLive);$('selectModeBtn').addEventListener('click',()=>setSelectMode(!state.selectMode));
-  $('tareBtn').addEventListener('click',autoTare);$('manualTareBtn').addEventListener('click',manualTare);$('exportBtn').addEventListener('click',exportCSV);$('testSamplesBtn').addEventListener('click',addTestSamples);$('applySettingsBtn').addEventListener('click',applySettings);
+  $('tareBtn').addEventListener('click',autoTare);$('manualTareBtn').addEventListener('click',manualTare);$('exportBtn').addEventListener('click',exportCSV);$('testSamplesBtn').addEventListener('click',addTestSamples);$('bufferInput').addEventListener('change',applyBufferSize);
+  $('measureBtn').addEventListener('click',startMeasurement);$('measDuration').addEventListener('input',()=>syncMeasurementInputs('duration'));$('measSamples').addEventListener('input',()=>syncMeasurementInputs('samples'));
+  $('calImportBtn').addEventListener('click',()=>$('calFile').click());$('calFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)importCalibrationFile(f);});
+  $('calExportBtn').addEventListener('click',exportCalibration);$('calDemoBtn').addEventListener('click',restoreDemoCalibration);
   $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
-  $('estimatorWindowRange').addEventListener('input',e=>{$('estimatorWindow').value=e.target.value;state.estimatorWindow=Number(e.target.value);scheduleRender();});
-  $('estimatorWindow').addEventListener('change',e=>{state.estimatorWindow=clamp(Math.floor(Number(e.target.value)||80),2,MAX_ROBUST_WINDOW);e.target.value=state.estimatorWindow;$('estimatorWindowRange').value=state.estimatorWindow;scheduleRender();});
-  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;scheduleRender();});
+  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();scheduleRender();});
   $('trimPercent').addEventListener('input',e=>{state.trimPercent=Number(e.target.value);$('trimPercentText').textContent=`${state.trimPercent}%`;scheduleRender();});
   $('emaTau').addEventListener('change',e=>{state.emaTau=clamp(Number(e.target.value)||.5,.025,120);e.target.value=state.emaTau;rebuildEMA();scheduleRender();});
   $('unitSelect').addEventListener('change',e=>{state.unitId=e.target.value;state.autoYMin=null;state.autoYMax=null;const raw=state.unitId==='raw';$('rawModeToggle').checked=raw;$('mainChartTitle').textContent=raw?'Raw sensor diagnostics':'Measured mass';$('zeroFillToggle').disabled=raw;$('zeroRawFillToggle').disabled=raw;$('zeroLineToggle').disabled=raw;$('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();}scheduleRender();});
@@ -1136,25 +1349,54 @@ function initEvents(){
   $('settingsBtn').addEventListener('click',()=>openSettings($('settingsMenu').hidden));document.addEventListener('pointerdown',e=>{if(!$('settingsMenu').hidden&&!e.target.closest('.settings-wrap'))openSettings(false);});
   $('themeBtn').addEventListener('click',()=>{const light=document.documentElement.classList.toggle('light');$('themeBtn').textContent=light?'☾ Dark mode':'☼ Light mode';if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();scheduleRender();}});
   $('yResponseRange').addEventListener('input',e=>{$('yResponseText').textContent=`${e.target.value}%`;scheduleRender();});
-  ['maToggle','spreadToggle','zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
+  ['zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
   $('yControlsToggle').addEventListener('change',e=>{$('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;if(state.manualY)initializeManualYAxis();else{state.autoYMin=null;state.autoYMax=null;}scheduleRender();});
   $('yMinRange').addEventListener('input',e=>{state.yMin=Number(e.target.value);$('yMinText').textContent=fmtNumber(state.yMin,3);if(state.manualY)scheduleRender();});$('yMaxRange').addEventListener('input',e=>{state.yMax=Number(e.target.value);$('yMaxText').textContent=fmtNumber(state.yMax,3);if(state.manualY)scheduleRender();});
   $('autoYBtn').addEventListener('click',()=>{$('yControlsToggle').checked=false;$('yControls').hidden=true;state.manualY=false;state.autoYMin=null;state.autoYMax=null;scheduleRender();});
   $('zoomInBtn').addEventListener('click',()=>zoomBy(.75));$('zoomOutBtn').addEventListener('click',()=>zoomBy(1.33));
   $('backBtn').addEventListener('click',()=>{state.live=false;const span=state.viewMax-state.viewMin;const min=Math.max(oldestTime(),state.viewMin-span*.8);state.viewMin=min;state.viewMax=Math.min(newestTime(),min+span);scheduleRender();});
   $('forwardBtn').addEventListener('click',()=>{const span=state.viewMax-state.viewMin;const min=Math.min(newestTime()-span,state.viewMin+span*.8);state.viewMin=Math.max(oldestTime(),min);state.viewMax=Math.min(newestTime(),state.viewMin+span);if(state.viewMax>=newestTime()-PERIOD_MS)state.live=true;scheduleRender();});
-  $('clearSelectionBtn').addEventListener('click',()=>{state.selection=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();});$('clearLogBtn').addEventListener('click',()=>{state.logs=[];renderLog();});
+  $('clearSelectionBtn').addEventListener('click',()=>{state.selection=null;if(!state.measurement)state.highlight=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();});$('clearLogBtn').addEventListener('click',()=>{state.logs=[];renderLog();});
   $('logList').addEventListener('click',e=>{const row=e.target.closest('[data-log-id]');if(row)jumpToLogEntry(row.dataset.logId,row.dataset.logType);});
   window.addEventListener('resize',resizeCharts);
 }
 
-function tick(){if(state.paused)return;appendSample(nextSensorValue());scheduleRender();}
-function loadUPlotAsync(){return new Promise((resolve,reject)=>{if(window.uPlot){resolve();return;}const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js';script.async=true;script.onload=()=>resolve();script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));document.head.appendChild(script);});}
+// Simulator pacing (v8). Samples are generated from elapsed wall-clock time instead of one sample
+// per timer callback. Browsers throttle timers in background tabs (often to 1 Hz); counting elapsed
+// 12.5 ms periods keeps the simulated 80 Hz stream honest. After a long stall at most
+// MAX_CATCHUP_SAMPLES are produced and the skipped time becomes a visible timestamp gap.
+// A real device supplies its own timestamps and sample counter, which replaces this logic.
+const MAX_CATCHUP_SAMPLES=400;
+function tick(){
+  if(state.paused)return;
+  const now=performance.now();
+  if(state.simBase==null){state.simBase=now;state.simEmitted=0;}
+  let due=Math.floor((now-state.simBase)/PERIOD_MS)-state.simEmitted;
+  if(due<=0)return;
+  if(due>MAX_CATCHUP_SAMPLES){
+    const skipped=due-MAX_CATCHUP_SAMPLES;cancelMeasurement('sampling gap');
+    state.nextTime+=skipped*PERIOD_MS;state.simEmitted+=skipped;due=MAX_CATCHUP_SAMPLES;
+  }
+  for(let k=0;k<due;k++)appendSample(nextSensorValue());
+  state.simEmitted+=due;scheduleRender();
+}
+// uPlot is pinned to one exact version (reproducible builds; no surprise breaking changes). To
+// upgrade, change only this constant. 1.6.32 is the newest release verified at build time.
+const UPLOT_VERSION='1.6.32';
+function loadUPlotAsync(){return new Promise((resolve,reject)=>{
+  if(window.uPlot){resolve();return;}
+  const base=`https://cdn.jsdelivr.net/npm/uplot@${UPLOT_VERSION}/dist/`;
+  const css=document.createElement('link');css.rel='stylesheet';css.href=base+'uPlot.min.css';document.head.appendChild(css);
+  const script=document.createElement('script');script.src=base+'uPlot.iife.min.js';script.async=true;
+  script.onload=()=>resolve();script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));document.head.appendChild(script);
+});}
 async function boot(){
   populateSettings();initEvents();updateViewLabel();$('statusText').textContent='Streaming · loading chart';
   // v7: compute the revision id BEFORE acquisition starts, so no sample or tare event can be
   // stamped with the placeholder revision id.
-  await calculateCalibrationRevision();updateCalibrationInfo();
+  await calculateCalibrationRevision();
+  state.calibrations=[{effectiveFromTime:-Infinity,revisionId:state.revisionId,profileId:CALIBRATION.profileId,hashType:state.hashType,config:calibration,source:'embedded demo'}];
+  updateCalibrationInfo();updateEstimatorFields();syncMeasurementInputs('samples');updateMeasurementUI();
   state.timer=setInterval(tick,PERIOD_MS);
   // Display the shell and start acquisition before the chart library download completes.
   requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{createCharts();$('statusText').textContent=state.paused?'Paused':'Streaming';scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection and reload the file.</p>';console.error(error);})));
