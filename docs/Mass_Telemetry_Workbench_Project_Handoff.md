@@ -36,9 +36,9 @@ The HTML embeds:
 - CSS and JavaScript.
 - An inline `unitConfig` JSON block.
 - An inline `calibrationConfig` JSON block containing demonstration data.
-- The GNU AGPLv3 header and attribution `AI Collaborator / Gemini`.
+- The GNU AGPLv3 header and attribution `AI Collaborator` (add your own name).
 
-The only external runtime dependency is uPlot 1.6.30 from jsDelivr CDN (CSS and asynchronously loaded JS). The dashboard shell and simulated acquisition start before uPlot finishes loading. Internet access is required for the chart library. The telemetry and calculations otherwise run locally.
+The only external runtime dependency is uPlot from jsDelivr CDN (CSS and asynchronously loaded JS). The dashboard shell and simulated acquisition start before uPlot finishes loading. Internet access is required for the chart library. The telemetry and calculations otherwise run locally.
 
 **Next-session instruction:** Open and inspect the attached v6 file before editing. Do not rely only on this document for source-level behavior; use the current file as the source of truth.
 
@@ -251,7 +251,7 @@ The current v6 raw/derived ring storage contains six `Float64Array` buffers (`ti
 
 ## 10. Current project facts at a glance
 
-- **Baseline:** `telemetry_workbench_v6.html`, one AGPLv3 HTML file; uPlot 1.6.30 is the only CDN dependency.
+- **Baseline:** `telemetry_workbench_v6.html`, one AGPLv3 HTML file; uPlot is the only CDN dependency.
 - **Acquisition:** 80 Hz bounded marching-randomness simulation; future ESP32 integration is planned.
 - **Storage:** immutable raw `Int32Array`, relative-time and derived `Float64Array` ring buffers; 100k growth chunks in Unlimited mode.
 - **Measurement:** canonical mg, inline demo calibration JSON, piecewise-linear interpolation/extrapolation warning, timestamped tare events.
