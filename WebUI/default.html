@@ -55,7 +55,7 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
         <h3>Display and measurement settings</h3>
         <div class="field"><label for="unitSelect">Measurement unit</label><select id="unitSelect"></select></div>
         <div class="field"><label for="precisionSelect">Displayed decimal places</label><select id="precisionSelect"><option value="auto">Automatic (unit default)</option></select></div>
-        <div class="field"><label for="estimatorSelect">Current panel estimator</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Hampel filter + mean</option><option value="ema">Exponential moving average (EMA)</option></select></div>
+        <div class="field"><label for="estimatorSelect">Current panel estimator</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
         <div class="field"><label for="estimatorWindow">Estimator window (maximum 4,096 samples)</label><div class="range-row"><input id="estimatorWindowRange" type="range" min="2" max="4096" value="80"><input id="estimatorWindow" type="number" min="2" max="4096" value="80"></div></div>
         <div class="field"><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
         <div class="field"><label for="emaTau">EMA time constant (seconds)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
@@ -288,7 +288,21 @@ function prepareCalibration(config) {
   for (let i = 1; i < anchors.length; i++) {
     if (!(anchors[i].raw > anchors[i - 1].raw)) throw new Error('Calibration anchor raw values must be unique and strictly increasing.');
   }
-  return {...config, anchors, calibrationUnit: config.calibrationUnit || 'g'};
+  // v7: every value must be finite (Infinity passes the ordering test above), and the response
+  // must be strictly monotonic with ONE slope sign. A mass that rises then falls with raw counts
+  // means a mislabelled load, hysteresis or a faulty sensor; interpolating it would silently map
+  // two different masses to nearby counts. Either slope sign is accepted (inverted polarity),
+  // but a sign change or a flat segment is rejected.
+  let slopeSign = 0;
+  for (let i = 0; i < anchors.length; i++) {
+    if (!Number.isFinite(anchors[i].raw) || !Number.isFinite(anchors[i].massMg)) throw new Error('Calibration anchors must have finite raw and mass values.');
+    if (i === 0) continue;
+    const dm = anchors[i].massMg - anchors[i - 1].massMg;
+    if (!(dm !== 0)) throw new Error('Calibration response must be strictly monotonic: two adjacent anchors have the same mass.');
+    if (slopeSign && Math.sign(dm) !== slopeSign) throw new Error('Calibration response must be monotonic: mass direction changes between anchors.');
+    slopeSign = Math.sign(dm);
+  }
+  return {...config, anchors, slopeSign, calibrationUnit: config.calibrationUnit || 'g'};
 }
 const calibration = prepareCalibration(CALIBRATION);
 
@@ -331,8 +345,8 @@ const state = {
   nextTime: 0, timer: null, paused: false, live: true,
   liveWindowSpan: 5000, viewMin: 0, viewMax: PERIOD_MS,
   window: 80, activeWindow: 80,
-  rawSum: 0, rawSumSq: 0, rawCount: 0,
-  massSum: 0, massSumSq: 0, massCount: 0,
+  rawSum: 0, rawSumSq: 0, rawCount: 0, rawRef: null,
+  massSum: 0, massSumSq: 0, massCount: 0, massRef: null,
   rawEma: null, rawEmaTime: null, massEma: null, massEmaTime: null,
   rollingTareId: null,
   tareEvents: [], logs: [], selection: null, pendingSelection: null,
@@ -415,7 +429,7 @@ function appendSample(rawValue) {
 
   // Maintain the raw rolling statistics independently of calibration and tare.
   if (state.rawCount >= state.activeWindow) {
-    const oldRaw = getRaw(state.count - state.rawCount);
+    const oldRaw = getRaw(state.count - state.rawCount) - state.rawRef;
     state.rawSum -= oldRaw;
     state.rawSumSq -= oldRaw * oldRaw;
     state.rawCount--;
@@ -428,11 +442,12 @@ function appendSample(rawValue) {
     state.massSum = 0;
     state.massSumSq = 0;
     state.massCount = 0;
+    state.massRef = null;
     state.massEma = null; state.massEmaTime = null;
     state.rollingTareId = activeTareId;
   }
   if (state.massCount >= state.activeWindow) {
-    const oldMassNet = getNetMg(state.count - state.massCount);
+    const oldMassNet = getNetMg(state.count - state.massCount) - state.massRef;
     state.massSum -= oldMassNet;
     state.massSumSq -= oldMassNet * oldMassNet;
     state.massCount--;
@@ -454,19 +469,29 @@ function appendSample(rawValue) {
   state.raw[writeIndex] = rawValue;
   state.massMg[writeIndex] = calibrated.valueMg;
 
-  state.rawSum += rawValue;
-  state.rawSumSq += rawValue * rawValue;
+  // Shifted sliding sums (v7). Var = E[d^2] - E[d]^2 with d = x - ref. The unshifted form
+  // subtracts two nearly equal huge numbers when |mean| >> SD (e.g. 1e5 mg with sub-mg noise),
+  // which loses all significant digits and, through the max(0,...) clamp, silently reports
+  // SD = 0. Shifting by a reference inside the window (first value of the window/tare epoch)
+  // makes d small so the cancellation is harmless. The reference is constant while the window
+  // is non-empty; it is reset with the sums at a tare boundary and in rebuildDerived().
+  if (state.rawCount === 0 || state.rawRef == null) state.rawRef = rawValue;
+  const rawD = rawValue - state.rawRef;
+  state.rawSum += rawD;
+  state.rawSumSq += rawD * rawD;
   state.rawCount++;
-  const rawMean = state.rawSum / state.rawCount;
-  state.rawMA[writeIndex] = rawMean;
-  state.rawSD[writeIndex] = Math.sqrt(Math.max(0, state.rawSumSq / state.rawCount - rawMean * rawMean));
+  const rawMeanD = state.rawSum / state.rawCount;
+  state.rawMA[writeIndex] = state.rawRef + rawMeanD;
+  state.rawSD[writeIndex] = Math.sqrt(Math.max(0, state.rawSumSq / state.rawCount - rawMeanD * rawMeanD));
 
-  state.massSum += netMass;
-  state.massSumSq += netMass * netMass;
+  if (state.massCount === 0 || state.massRef == null) state.massRef = netMass;
+  const massD = netMass - state.massRef;
+  state.massSum += massD;
+  state.massSumSq += massD * massD;
   state.massCount++;
-  const massMean = state.massSum / state.massCount;
-  state.massMA[writeIndex] = massMean;
-  state.massSD[writeIndex] = Math.sqrt(Math.max(0, state.massSumSq / state.massCount - massMean * massMean));
+  const massMeanD = state.massSum / state.massCount;
+  state.massMA[writeIndex] = state.massRef + massMeanD;
+  state.massSD[writeIndex] = Math.sqrt(Math.max(0, state.massSumSq / state.massCount - massMeanD * massMeanD));
 
   // The panel EMA is a true stateful exponential filter, not a repeatedly restarted
   // finite-window approximation. Its time constant uses actual elapsed sample time.
@@ -482,8 +507,8 @@ function appendSample(rawValue) {
 // Calibration is applied to each raw sample before averaging: for a nonlinear
 // calibration curve, calibrate(mean(raw)) is generally not equal to mean(calibrate(raw)).
 function rebuildDerived() {
-  state.rawSum = state.rawSumSq = state.rawCount = 0;
-  state.massSum = state.massSumSq = state.massCount = 0;
+  state.rawSum = state.rawSumSq = state.rawCount = 0; state.rawRef = null;
+  state.massSum = state.massSumSq = state.massCount = 0; state.massRef = null;
   state.rollingTareId = null;
   let activeTareId = null;
   for (let i = 0; i < state.count; i++) {
@@ -492,31 +517,36 @@ function rebuildDerived() {
     const event = tareEventAt(time);
     const tareId = event ? event.eventId : null;
     if (tareId !== activeTareId) {
-      state.massSum = state.massSumSq = state.massCount = 0;
+      state.massSum = state.massSumSq = state.massCount = 0; state.massRef = null;
       activeTareId = tareId;
     }
     if (state.rawCount >= state.window) {
-      const old = getRaw(i - state.rawCount);
+      const old = getRaw(i - state.rawCount) - state.rawRef;
       state.rawSum -= old;
       state.rawSumSq -= old * old;
       state.rawCount--;
     }
     if (state.massCount >= state.window) {
-      const oldNet = getNetMg(i - state.massCount);
+      const oldNet = getNetMg(i - state.massCount) - state.massRef;
       state.massSum -= oldNet;
       state.massSumSq -= oldNet * oldNet;
       state.massCount--;
     }
-    state.rawSum += raw; state.rawSumSq += raw * raw; state.rawCount++;
-    const rawAvg = state.rawSum / state.rawCount;
-    const rawVar = Math.max(0, state.rawSumSq / state.rawCount - rawAvg * rawAvg);
+    // Same shifted-sum scheme as appendSample(); see the rationale there.
+    if (state.rawCount === 0 || state.rawRef == null) state.rawRef = raw;
+    const rawD = raw - state.rawRef;
+    state.rawSum += rawD; state.rawSumSq += rawD * rawD; state.rawCount++;
+    const rawAvgD = state.rawSum / state.rawCount;
+    const rawVar = Math.max(0, state.rawSumSq / state.rawCount - rawAvgD * rawAvgD);
     const ix = physicalIndex(i);
-    state.rawMA[ix] = rawAvg; state.rawSD[ix] = Math.sqrt(rawVar);
+    state.rawMA[ix] = state.rawRef + rawAvgD; state.rawSD[ix] = Math.sqrt(rawVar);
     const net = getNetMg(i);
-    state.massSum += net; state.massSumSq += net * net; state.massCount++;
-    const massAvg = state.massSum / state.massCount;
-    state.massMA[ix] = massAvg;
-    state.massSD[ix] = Math.sqrt(Math.max(0, state.massSumSq / state.massCount - massAvg * massAvg));
+    if (state.massCount === 0 || state.massRef == null) state.massRef = net;
+    const netD = net - state.massRef;
+    state.massSum += netD; state.massSumSq += netD * netD; state.massCount++;
+    const massAvgD = state.massSum / state.massCount;
+    state.massMA[ix] = state.massRef + massAvgD;
+    state.massSD[ix] = Math.sqrt(Math.max(0, state.massSumSq / state.massCount - massAvgD * massAvgD));
   }
   state.activeWindow = state.window;
   state.rollingTareId = state.count ? (tareEventAt(newestTime())?.eventId || null) : null;
@@ -789,7 +819,13 @@ function estimate(values,times,method,options={}){
   if(method==='hampel'){
     const deviations=arr.map(v=>Math.abs(v-median)).sort((a,b)=>a-b);
     const mad=deviations.length%2?deviations[(deviations.length-1)/2]:(deviations[deviations.length/2-1]+deviations[deviations.length/2])/2;
-    const threshold=Math.max(3*1.4826*mad,1e-9);let sum=0,used=0;
+    // MAD collapses to 0 when more than half of the samples are tied (common for quantized ADC
+    // counts). A zero scale would reject every sample that differs from the median. Fallback
+    // (v7): scale = 1.2533 * mean absolute deviation about the median (1.2533 = sqrt(pi/2) makes
+    // it consistent with sigma for normal data). If that is also 0 all samples are identical.
+    let scale=1.4826*mad;
+    if(!(scale>0)){let sad=0;for(const v of values)sad+=Math.abs(v-median);scale=1.2533*sad/n;}
+    const threshold=Math.max(3*scale,1e-9);let sum=0,used=0;
     for(const v of values)if(Math.abs(v-median)<=threshold){sum+=v;used++;}
     if(!used)return{value:median,used:1,rejected:n-1};
     return{value:sum/used,used,rejected:n-used};
@@ -804,7 +840,8 @@ function collectCurrentWindow(limit){
 // This standard deviation describes observed sample spread/repeatability only. It is NOT
 // the uncertainty of the mean. At 80 Hz adjacent readings may be autocorrelated, so
 // dividing by sqrt(n) without estimating effective independent sample count is unsafe.
-function calculateStd(values){if(!values.length)return NaN;let sum=0,sumSq=0;for(const v of values){sum+=v;sumSq+=v*v;}const mean=sum/values.length;return Math.sqrt(Math.max(0,sumSq/values.length-mean*mean));}
+// Welford's one-pass update (population SD, divisor n): numerically stable for any offset.
+function calculateStd(values){if(!values.length)return NaN;let n=0,mean=0,m2=0;for(const v of values){n++;const d=v-mean;mean+=d/n;m2+=d*(v-mean);}return Math.sqrt(m2/n);}
 function updateMetrics(){
   if(!state.count)return;
   const window=collectCurrentWindow(Math.min(state.estimatorWindow,MAX_ROBUST_WINDOW));
@@ -833,7 +870,7 @@ function updateMetrics(){
   $('manualTareInput').disabled=diagnostic;
   $('uncertaintyStatus').textContent=calibration.validation?.status==='validated'?'Measurement uncertainty: see calibration validation metadata.':'Measurement uncertainty: not characterized by the embedded demonstration calibration. Sensor spread is repeatability information, not a complete uncertainty statement.';
 }
-function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Hampel + mean',ema:'Exponential moving average (EMA)'})[method]||'Arithmetic mean';}
+function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Global MAD filter + mean',ema:'Exponential moving average (EMA)'})[method]||'Arithmetic mean';}
 
 function setLive(on){state.live=on;if(on)fitLiveWindow();updateViewLabel();}
 function trackLive(){setLive(true);state.selection=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();}
@@ -895,17 +932,17 @@ function calculateSelection(first,end,settings={}){
   if(method==='mean'||method==='ema'){
     // Simple mean and EMA are streamed in O(N) with constant extra memory. A large
     // graph selection therefore does not allocate several million-element JS arrays.
-    let sumOriginal=0,sumCurrent=0,sumRaw=0,sumCurrentSq=0,sumRawSq=0;
+    let sumOriginal=0,sumCurrent=0,sumRaw=0,wN=0,wMeanC=0,wM2C=0,wMeanR=0,wM2R=0; // Welford accumulators (stable SD)
     let emaOriginal=0,emaCurrent=0,emaRaw=0,previousTime=0;
     for(let i=first;i<end;i++){
       const raw=getRaw(i),time=getTime(i),original=getNetMg(i),absolute=calibrateAbsolute(raw),current=absolute.valueMg-currentTare;
       if(absolute.outOfRange)outOfRangeCount++;
-      sumOriginal+=original;sumCurrent+=current;sumRaw+=raw;sumCurrentSq+=current*current;sumRawSq+=raw*raw;
+      sumOriginal+=original;sumCurrent+=current;sumRaw+=raw;wN++;{const dC=current-wMeanC;wMeanC+=dC/wN;wM2C+=dC*(current-wMeanC);const dR=raw-wMeanR;wMeanR+=dR/wN;wM2R+=dR*(raw-wMeanR);}
       if(i===first){emaOriginal=original;emaCurrent=current;emaRaw=raw;}
       else{const dt=Math.max(0,(time-previousTime)/1000),alpha=1-Math.exp(-dt/Math.max(.025,selectedTau));emaOriginal=alpha*original+(1-alpha)*emaOriginal;emaCurrent=alpha*current+(1-alpha)*emaCurrent;emaRaw=alpha*raw+(1-alpha)*emaRaw;}
       previousTime=time;
     }
-    usedSamples=total;rawMean=sumRaw/total;spreadMg=Math.sqrt(Math.max(0,sumCurrentSq/total-(sumCurrent/total)**2));rawSpread=Math.sqrt(Math.max(0,sumRawSq/total-rawMean*rawMean));
+    usedSamples=total;rawMean=sumRaw/total;spreadMg=Math.sqrt(wM2C/total);rawSpread=Math.sqrt(wM2R/total);
     if(method==='mean'){originalValueMg=sumOriginal/total;currentValueMg=sumCurrent/total;rawEstimatorValue=rawMean;}
     else{originalValueMg=emaOriginal;currentValueMg=emaCurrent;rawEstimatorValue=emaRaw;}
   }else{
@@ -944,7 +981,11 @@ function updateSelectionReadout(){
   const subsampled=s.usedSamples<s.totalSamples?` · bounded analysis used ${s.usedSamples.toLocaleString()} of ${s.totalSamples.toLocaleString()} samples`:'';
   $('selectionSummary').innerHTML=`<strong>${s.totalSamples.toLocaleString()} selected samples</strong><br>`+
     `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
-    `Estimator: <strong>${estimatorLabel(s.estimator)}</strong><br>`+
+    `Estimator: <strong>${estimatorLabel(s.estimator)}</strong>`+
+    // The selection EMA is seeded with the first selected sample, which keeps weight exp(-T/tau)
+    // (product of the (1-alpha) factors). When T is not >> tau the result is mostly that seed,
+    // so it is an end-of-selection filtered value, not an interval statistic.
+    (s.estimator==='ema'?` · seed weight ${(100*Math.exp(-Math.max(0,s.t1-s.t0)/1000/Math.max(.025,s.emaTau))).toFixed(1)}%`:'')+`<br>`+
     (state.unitId==='raw'?`Raw estimator result: <strong>${fmtNumber(s.rawEstimatorValue,0)} counts</strong><br>`:`Original result: <strong>${formatMass(s.originalValueMg)}</strong><br>`+
     `Current calibration + latest tare: <strong>${formatMass(s.currentValueMg)}</strong><br>`)+
     `Current spread (σ): <strong>${state.unitId==='raw'?fmtNumber(s.rawSpread,2)+' counts':formatMass(s.spreadMg)}</strong><br>`+
@@ -960,7 +1001,7 @@ function addTareEvent(tareMassMg,{method='manual',tareRaw=null,tareRawSamples=nu
   // their tare-adjusted display values remain unchanged and can be reproduced from events.
   state.tareEvents.push(event);
   // Reset the calibrated MA window so it does not mix values relative to two tare epochs.
-  state.massSum=0;state.massSumSq=0;state.massCount=0;state.massEma=null;state.massEmaTime=null;state.rollingTareId=event.eventId;
+  state.massSum=0;state.massSumSq=0;state.massCount=0;state.massRef=null;state.massEma=null;state.massEmaTime=null;state.rollingTareId=event.eventId;
   appendLogEntry(event);
   return event;
 }
@@ -1009,10 +1050,11 @@ function jumpToLogEntry(id,type){
 
 function exportCSV(){
   if(!state.count)return;
-  const rows=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id'];
+  const rows=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range'];
+  const csvField=v=>/[",\n\r]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':v;
   for(let i=0;i<state.count;i++){
     const event=tareEventAt(getTime(i)),abs=getMassMg(i),net=getNetMg(i),tare=event?event.tareMassMg:0;
-    rows.push([getTime(i),getRaw(i),abs,tare,net,getMassMA(i),getMassSD(i),event?event.eventId:'',calibration.profileId,state.revisionId].join(','));
+    rows.push([getTime(i),getRaw(i),abs,tare,net,getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(calibration.profileId),csvField(state.revisionId),calibrateAbsolute(getRaw(i)).outOfRange?1:0].join(','));
   }
   const blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download=`mass-telemetry-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
@@ -1058,9 +1100,16 @@ function populateSettings(){
   $('estimatorWindow').value=state.estimatorWindow;$('estimatorWindowRange').value=state.estimatorWindow;
 }
 function openSettings(open){$('settingsMenu').hidden=!open;$('settingsBtn').setAttribute('aria-expanded',String(open));}
+// Canonical serialisation (sorted keys) so the revision fingerprint does not depend on the
+// key order of the JSON text. Numbers use JavaScript's shortest round-trip form, which is also
+// what RFC 8785 specifies, so the same content hashes identically across engines.
+function canonicalJson(v){if(Array.isArray(v))return'['+v.map(canonicalJson).join(',')+']';if(v&&typeof v==='object')return'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonicalJson(v[k])).join(',')+'}';return JSON.stringify(v);}
+// Escape anything that will be placed in innerHTML. Required before calibration import exists:
+// profile names and IDs will then be untrusted user input.
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
 async function calculateCalibrationRevision(){
   const copy=JSON.parse(JSON.stringify(CALIBRATION));delete copy.contentHash;delete copy.revisionId;
-  const text=JSON.stringify(copy);
+  const text=canonicalJson(copy);
   if(globalThis.crypto?.subtle){try{const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));const hex=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');state.revisionId=hex.slice(0,12);state.hashType='SHA-256';return;}catch(_){}}
   // file:// contexts may not expose SubtleCrypto. This visibly labeled fallback is
   // only a local revision fingerprint; it must not be represented as a cryptographic hash.
@@ -1068,7 +1117,7 @@ async function calculateCalibrationRevision(){
 }
 function updateCalibrationInfo(){
   const weights=CALIBRATION.referenceWeights||[],anchors=calibration.anchors;
-  $('calibrationInfo').innerHTML=`<strong>${CALIBRATION.profileName}</strong><br>Profile: ${CALIBRATION.profileId}<br>Revision: <strong>${state.revisionId}</strong><br><span class="small">Fingerprint: ${state.hashType}</span><br>Calibration unit: ${CALIBRATION.calibrationUnit}<br>Anchors: ${anchors.length} · Physical references: ${weights.length}<br>Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${CALIBRATION.validation?.status||'not characterized'}<br><span class="small">Reference-weight names and individual observations are retained in the embedded JSON. The creator UI is planned for a later phase.</span>`;
+  $('calibrationInfo').innerHTML=`<strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong><br><span class="small">Fingerprint: ${esc(state.hashType)}</span><br>Calibration unit: ${esc(CALIBRATION.calibrationUnit)}<br>Anchors: ${anchors.length} · Physical references: ${weights.length}<br>Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}<br><span class="small">Reference-weight names and individual observations are retained in the embedded JSON. The creator UI is planned for a later phase.</span>`;
 }
 
 function initEvents(){
@@ -1103,8 +1152,10 @@ function tick(){if(state.paused)return;appendSample(nextSensorValue());scheduleR
 function loadUPlotAsync(){return new Promise((resolve,reject)=>{if(window.uPlot){resolve();return;}const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js';script.async=true;script.onload=()=>resolve();script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));document.head.appendChild(script);});}
 async function boot(){
   populateSettings();initEvents();updateViewLabel();$('statusText').textContent='Streaming · loading chart';
-  state.timer=setInterval(tick,PERIOD_MS);
+  // v7: compute the revision id BEFORE acquisition starts, so no sample or tare event can be
+  // stamped with the placeholder revision id.
   await calculateCalibrationRevision();updateCalibrationInfo();
+  state.timer=setInterval(tick,PERIOD_MS);
   // Display the shell and start acquisition before the chart library download completes.
   requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{createCharts();$('statusText').textContent=state.paused?'Paused':'Streaming';scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection and reload the file.</p>';console.error(error);})));
 }
