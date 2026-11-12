@@ -46,6 +46,16 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
 progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.bufrow select{width:auto}
 @media(max-width:950px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.side .panel:last-child{grid-column:1/-1}}
 @media(max-width:600px){header{align-items:flex-start}.header-actions{justify-content:flex-end}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.side{grid-template-columns:1fr}.side .panel:last-child{grid-column:auto}.metric{padding:10px}.metric .value{font-size:21px}#mainChart{height:340px}.toolbar{align-items:flex-start}.toolbar-left,.toolbar-right{width:100%}.toolbar-right{justify-content:space-between}}
+/* v9 layout: charts use the full page width; the side panels form a row below them */
+[hidden]{display:none!important}
+.layout{grid-template-columns:minmax(0,1fr)!important}
+.side{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))!important;gap:12px;align-items:start}
+.side .panel:last-child{grid-column:auto!important}
+.span2{grid-column:span 2}.metric-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.span2 .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.control-grid .span2{grid-column:span 2}
+.controls-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-top:10px}
+.header-actions{flex-wrap:wrap}
+@media(max-width:600px){.span2{grid-column:1/-1}.span2 .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -53,45 +63,43 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
   <div class="brand"><div class="logo">MW</div><div><h1>Mass Telemetry Workbench</h1><div class="sub">80 Hz sensor stream · calibrated mass · local-only session</div></div></div>
   <div class="header-actions">
     <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
+    <button id="pauseBtn">Ⅱ Pause</button>
+    <button id="testSamplesBtn">＋ 100k test samples</button>
     <button id="themeBtn" aria-label="Toggle color theme">☼ Light mode</button>
     <div class="settings-wrap">
       <button id="settingsBtn" aria-expanded="false" aria-controls="settingsMenu">⚙ Settings</button>
       <div id="settingsMenu" class="settings-menu" hidden>
         <h3>Settings</h3>
-        <div class="status-note">Placeholder for future application settings (for example data connection, language and export defaults). Display and estimator options are below “Current measured mass”; calibration is in the right-hand column.</div>
+        <div class="status-note">More application settings (data connection, language, export defaults) will be added here.</div>
+        <hr class="settings-divider">
+        <h3>Calibration</h3>
+        <div id="calibrationInfo" class="small">Loading calibration…</div>
+        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button></div>
+        <input id="calFile" type="file" accept=".json,application/json" hidden>
+        <div id="calMessages" class="small" style="margin-top:6px"></div>
+        <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
       </div>
     </div>
   </div>
 </header>
 <main>
-  <div class="toolbar">
-    <div class="toolbar-left">
-      <button id="pauseBtn">Ⅱ Pause</button>
-      <button id="trackBtn" class="primary">Track Live</button>
-      <button id="selectModeBtn" aria-pressed="false">Select interval</button>
-      <button id="exportBtn">Export CSV</button>
-      <button id="testSamplesBtn">＋ Add 100k test samples</button>
-    </div>
-    <div class="toolbar-right"><span class="small">Test signal: bounded marching randomness</span><span class="small" id="sampleCount">0 samples</span></div>
-  </div>
-
   <section class="metrics">
-    <div class="mcol">
-      <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div><div class="detail warning" id="rangeStatus" hidden></div></div>
+    <div class="mcol span2">
+      <div class="metric-pair">
+        <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div><div class="detail warning" id="rangeStatus" hidden></div></div>
+        <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
+      </div>
       <section class="panel compact" aria-label="Display and estimator settings">
         <div class="control-grid">
           <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
           <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
-          <div class="field full"><label for="estimatorSelect">Estimator</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
-          <div class="field full"><label for="windowRange">Window (samples): chart average, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div></div>
-          <div class="field full" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
-          <div class="field full" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
+          <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
+          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div></div>
+          <div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
+          <div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
         </div>
-        <div class="small" style="margin-top:7px">Unit changes affect presentation only; statistics stay in canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
+        <div class="small" style="margin-top:7px">The centre line and the ±1σ band of the main chart use the selected estimator and its matching spread statistic. Unit changes affect presentation only; statistics stay in canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
       </section>
-    </div>
-    <div class="mcol">
-      <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
     </div>
     <div class="mcol">
       <div class="metric"><div class="label">Current tare</div><div class="value" id="tareValue">None</div><div class="detail" id="tareDetail">No tare event recorded</div></div>
@@ -103,6 +111,7 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
     <div class="mcol">
       <div class="metric"><div class="label">Measurement</div><div class="value" id="measValue">—</div><div class="detail" id="measDetail">No measurement yet</div><div class="detail" id="measNote"></div></div>
       <section class="panel compact" aria-label="Measurement">
+        <div class="field" style="margin-bottom:8px"><label for="measSlider">Length: <strong id="measSliderText">5 s · 400 samples</strong></label><input id="measSlider" type="range" min="0" max="1000" step="1" value="489"></div>
         <div class="control-grid">
           <div class="field"><label for="measDuration">Duration (s)</label><input id="measDuration" type="number" min="0.025" step="any" value="5"></div>
           <div class="field"><label for="measSamples">Samples (80 Hz)</label><input id="measSamples" type="number" min="2" max="100000" step="1" value="400"></div>
@@ -121,31 +130,19 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
         <div class="panel-head"><h2 id="mainChartTitle">Measured mass</h2><span id="viewLabel" class="panel-note">Live viewport</span></div>
         <div id="mainChart" class="chart-wrap"></div>
         <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers.</div>
-        <div class="bufrow"><label for="bufferInput" class="small">Buffer limit</label><select id="bufferInput"><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="unlimited">Unlimited (memory-limited)</option></select><span class="small">The raw history is never modified. Unlimited grows in 100,000-sample steps.</span></div>
       </section>
       <section class="panel navigator">
         <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history · drag to navigate · synchronized crosshair</span></div>
         <div id="miniChart"></div>
-      </section>
-      <section class="panel log-panel">
-        <details id="logDetails">
-          <summary>Measurement & event log <span id="logCount" class="small">(0 entries)</span></summary>
-          <div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or event.</span><button id="clearLogBtn">Clear log</button></div>
-          <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No events yet.</div></div>
-        </details>
+        <div class="controls-bar">
+          <div class="toolbar-left"><button id="trackBtn" class="primary">Track Live</button><button id="selectModeBtn" aria-pressed="false">Select interval</button><button id="exportBtn">Export CSV</button></div>
+          <div class="bufrow" style="margin:0"><label for="bufferInput" class="small">Buffer limit</label><select id="bufferInput" title="The raw history is never modified. Unlimited grows in 100,000-sample steps."><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="unlimited">Unlimited (memory-limited)</option></select></div>
+          <div class="toolbar-right"><span class="small">Test signal: bounded marching randomness</span><span class="small" id="sampleCount">0 samples</span></div>
+        </div>
       </section>
     </div>
 
     <aside class="side">
-      <section class="panel compact">
-        <div class="panel-head"><h2>Calibration</h2></div>
-        <div id="calibrationInfo" class="small">Loading calibration…</div>
-        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button></div>
-        <input id="calFile" type="file" accept=".json,application/json" hidden>
-        <div id="calMessages" class="small" style="margin-top:6px"></div>
-        <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
-      </section>
-
       <section class="panel">
         <div class="panel-head"><h2>Display options</h2></div>
         <label class="check"><input type="checkbox" id="rawModeToggle"> Raw diagnostic mode (sensor counts)</label>
@@ -175,6 +172,13 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
         <div class="button-row"><button id="backBtn">← Older</button><button id="forwardBtn">Newer →</button></div>
       </section>
     </aside>
+      <section class="panel log-panel">
+        <details id="logDetails">
+          <summary>Measurement & event log <span id="logCount" class="small">(0 entries)</span></summary>
+          <div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or event.</span><button id="clearLogBtn">Clear log</button></div>
+          <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No events yet.</div></div>
+        </details>
+      </section>
   </div>
   <footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is loaded asynchronously from jsDelivr CDN.</footer>
 </main>
@@ -363,7 +367,7 @@ const state = {
   massMA: new Float64Array(100000), massSD: new Float64Array(100000),
   nextTime: 0, timer: null, paused: false, live: true,
   measurement: null, lastMeasurement: null, highlight: null,   // Measurement feature (v8)
-  calibrations: [], fullHash: null,                             // calibration history (v8)
+  calibrations: [], fullHash: null, curveCache: {key:'', map:new Map()}, curveStride: 1,                             // calibration history (v8)
   simBase: null, simEmitted: 0, appended: 0,                    // simulator pacing / periodic sum refresh
  
   liveWindowSpan: 5000, viewMin: 0, viewMax: PERIOD_MS,
@@ -682,9 +686,10 @@ function buildVisibleData() {
   const outputCapacity = useDownsample ? Math.min(count, maxBuckets * 2) : count;
   ensurePlotBuffers(outputCapacity);
   const buf = state.plotBuffer;
+  const curve = buildEstimatorCurve(lo, hi, diagnostic); state.curveStride = curve.stride;
   let out = 0;
   const write = i => {
-    const value = chartValueAt(i, diagnostic), ma = chartMAAt(i, diagnostic), sd = chartSDAt(i, diagnostic);
+    const value = chartValueAt(i, diagnostic), ma = curve.center(i), sd = curve.sigma(i);
     buf.x[out] = getTime(i) / 1000;
     buf.value[out] = diagnostic ? value : mgToUnit(value, state.unitId);
     buf.ma[out] = diagnostic ? ma : mgToUnit(ma, state.unitId);
@@ -791,9 +796,9 @@ function makeMainOptions() {
     series:[
       {label:'Time',value:(u,v)=>v==null?'—':`${v.toFixed(2)} s`},
       {label:state.unitId==='raw'?'Raw sensor counts':'Measured mass',stroke:c.raw,width:1.25,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
-      {label:state.unitId==='raw'?'Raw moving average':'Moving average',stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
-      {label:'Upper +1σ',stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
-      {label:'Lower −1σ',stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
+      {label:centerLabel(),stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
+      {label:`Upper +1σ (${spreadShort(state.estimator)})`,stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
+      {label:`Lower −1σ (${spreadShort(state.estimator)})`,stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
     ],
     bands:[{series:[3,4],fill:'rgba(190,112,220,.16)'}],
     hooks:{drawAxes:[u=>{
@@ -837,7 +842,7 @@ function displayDigits(){const unit=unitById(state.unitId);return state.precisio
 
 function fitLiveWindow(){if(!state.count){state.viewMin=0;state.viewMax=PERIOD_MS;return;}const first=oldestTime(),last=newestTime();state.viewMax=Math.max(last,first+PERIOD_MS);state.viewMin=Math.max(first,state.viewMax-state.liveWindowSpan);}
 function clampHistoricalView(){const span=Math.max(PERIOD_MS,state.viewMax-state.viewMin),first=oldestTime(),last=newestTime();state.viewMin=clamp(state.viewMin,first,Math.max(first,last-span));state.viewMax=Math.min(last,state.viewMin+span);}
-function updateViewLabel(){const s=Math.max(0,state.viewMax-state.viewMin)/1000;$('viewLabel').textContent=state.live?`Live · ${(state.liveWindowSpan/1000).toFixed(2)} s window`:`Historical · ${s.toFixed(2)} s span`;}
+function updateViewLabel(){const s=Math.max(0,state.viewMax-state.viewMin)/1000;$('viewLabel').textContent=(state.curveStride>1?`Curve every ${state.curveStride}th sample · `:'')+(state.live?`Live · ${(state.liveWindowSpan/1000).toFixed(2)} s window`:`Historical · ${s.toFixed(2)} s span`);}
 function scheduleRender(){if(state.renderPending)return;state.renderPending=true;requestAnimationFrame(()=>{state.renderPending=false;renderFrame();});}
 function renderFrame(){
   if(!state.count)return;
@@ -855,38 +860,94 @@ function updateMini(){
   state.miniPlot.batch(()=>{state.miniPlot.setData(data,true);state.miniPlot.setScale('x',{min:first,max:maxX});});updateMiniSelection();
 }
 
+// Location estimators and the spread statistic that belongs to each of them. The spread is chosen
+// to match the estimator, so the centre line and its +-1 sigma band describe the same statistic:
+//   mean    -> population SD (divisor n)
+//   median  -> robust sigma = 1.4826 x MAD (consistent with sigma for normal data). If MAD = 0
+//              (more than half of the samples tied, typical for quantized counts) the scale falls
+//              back to 1.2533 x mean absolute deviation about the median.
+//   trimmed -> SD of the RETAINED samples. This is biased LOW (the tails were removed on purpose);
+//              it describes the scatter of the data that entered the estimate.
+//   hampel  -> SD of the samples kept by the 3-scale gate; biased low for the same reason.
+//   ema     -> exponentially weighted SD with the same time constant (West 1979 recursion,
+//              v <- a (v + (1-a) d^2), d = x - m, a = exp(-dt/tau)); seeded with v = 0, so like the
+//              EMA itself it is only trustworthy after several time constants.
+// These numbers describe observed scatter only; they are not measurement uncertainties, and
+// values from different estimators are different statistics and must not be compared directly.
+function medianOfSorted(a){const n=a.length;return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2;}
 function estimate(values,times,method,options={}){
-  const n=values.length;if(!n)return{value:NaN,used:0,rejected:0};
-  let arr=values;
+  const n=values.length;if(!n)return{value:NaN,used:0,rejected:0,sigma:NaN};
   if(method==='ema'){
-    const tau=Math.max(.025,Number(options.tau)||.5);let ema=values[0];
-    for(let i=1;i<n;i++){const dt=Math.max(0,(times[i]-times[i-1])/1000);const alpha=1-Math.exp(-dt/tau);ema=alpha*values[i]+(1-alpha)*ema;}
-    return{value:ema,used:n,rejected:0};
+    const tau=Math.max(.025,Number(options.tau)||.5);let m=values[0],v=0;
+    for(let i=1;i<n;i++){const a=Math.exp(-Math.max(0,(times[i]-times[i-1])/1000)/tau),d=values[i]-m;m+=(1-a)*d;v=a*(v+(1-a)*d*d);}
+    return{value:m,used:n,rejected:0,sigma:Math.sqrt(v)};
   }
-  if(method==='mean')return{value:values.reduce((sum,v)=>sum+v,0)/n,used:n,rejected:0};
-  arr=values.slice().sort((a,b)=>a-b);
-  const median=arr.length%2?arr[(arr.length-1)/2]:(arr[arr.length/2-1]+arr[arr.length/2])/2;
-  if(method==='median')return{value:median,used:n,rejected:0};
+  if(method==='mean'||(method!=='median'&&method!=='trimmed'&&method!=='hampel'))return{value:values.reduce((sum,v)=>sum+v,0)/n,used:n,rejected:0,sigma:calculateStd(values)};
+  const arr=values.slice().sort((a,b)=>a-b),median=medianOfSorted(arr);
+  const robustSigma=()=>{
+    const mad=medianOfSorted(arr.map(v=>Math.abs(v-median)).sort((a,b)=>a-b));let scale=1.4826*mad;
+    if(!(scale>0)){let sad=0;for(const v of arr)sad+=Math.abs(v-median);scale=1.2533*sad/n;}
+    return scale;
+  };
+  if(method==='median')return{value:median,used:n,rejected:0,sigma:robustSigma()};
   if(method==='trimmed'){
-    const trim=Math.floor(n*clamp(Number(options.trimPercent)||10,1,30)/100);
-    const from=trim,to=Math.max(trim+1,n-trim);let sum=0;for(let i=from;i<to;i++)sum+=arr[i];
-    return{value:sum/(to-from),used:to-from,rejected:n-(to-from)};
+    const trim=Math.floor(n*clamp(Number(options.trimPercent)||10,1,30)/100),from=trim,to=Math.max(trim+1,n-trim),kept=arr.slice(from,to);
+    return{value:kept.reduce((a,b)=>a+b,0)/kept.length,used:kept.length,rejected:n-kept.length,sigma:calculateStd(kept)};
   }
-  if(method==='hampel'){
-    const deviations=arr.map(v=>Math.abs(v-median)).sort((a,b)=>a-b);
-    const mad=deviations.length%2?deviations[(deviations.length-1)/2]:(deviations[deviations.length/2-1]+deviations[deviations.length/2])/2;
-    // MAD collapses to 0 when more than half of the samples are tied (common for quantized ADC
-    // counts). A zero scale would reject every sample that differs from the median. Fallback
-    // (v7): scale = 1.2533 * mean absolute deviation about the median (1.2533 = sqrt(pi/2) makes
-    // it consistent with sigma for normal data). If that is also 0 all samples are identical.
-    let scale=1.4826*mad;
-    if(!(scale>0)){let sad=0;for(const v of values)sad+=Math.abs(v-median);scale=1.2533*sad/n;}
-    const threshold=Math.max(3*scale,1e-9);let sum=0,used=0;
-    for(const v of values)if(Math.abs(v-median)<=threshold){sum+=v;used++;}
-    if(!used)return{value:median,used:1,rejected:n-1};
-    return{value:sum/used,used,rejected:n-used};
+  // hampel: global MAD gate (3 x robust scale), then the mean and SD of the kept samples
+  const threshold=Math.max(3*robustSigma(),1e-9),kept=arr.filter(v=>Math.abs(v-median)<=threshold);
+  if(!kept.length)return{value:median,used:1,rejected:n-1,sigma:0};
+  return{value:kept.reduce((a,b)=>a+b,0)/kept.length,used:kept.length,rejected:n-kept.length,sigma:calculateStd(kept)};
+}
+function spreadShort(method){return({mean:'SD',median:'MAD',trimmed:'retained SD',hampel:'retained SD',ema:'EW SD'})[method]||'SD';}
+function spreadDescription(method){return({mean:'population SD',median:'robust σ = 1.4826 × MAD',trimmed:'SD of retained samples (biased low)',hampel:'SD of retained samples (biased low)',ema:'exponentially weighted SD'})[method]||'SD';}
+function centerLabel(){const raw=state.unitId==='raw',m=state.estimator;return m==='mean'?(raw?'Raw moving average':'Moving average'):`${raw?'Raw ':''}${estimatorLabel(m)}`;}
+// ---- Estimator curve for the main chart ------------------------------------------------------------
+// Centre line and band follow the selected estimator. Mean uses the exact O(1) rolling values stored
+// at ingest. EMA is evaluated in one pass over the visible range plus a warm-up. Median / trimmed /
+// Hampel are evaluated per sample from the window (never across a tare epoch). When many samples are
+// visible they are evaluated on a sparse grid (aligned to absolute sample numbers, so panning reuses
+// the cache) and linearly interpolated in between; the stride is shown next to the view label.
+const CURVE_BUDGET=150000;   // about this many window samples may be sorted per frame
+const CURVE_EMA_WARMUP=7;    // EMA warm-up in time constants (seed weight e^-7 = 0.09 %)
+function absIndex(i){return state.appended-state.count+i;}
+function epochBounds(diagnostic){const b=[0];if(!diagnostic)for(const e of state.tareEvents)b.push(lowerBoundTime(e.effectiveFromTime));return b;}
+function epochStartFor(i,bounds){for(let k=bounds.length-1;k>=0;k--)if(bounds[k]<=i)return bounds[k];return 0;}
+function buildEstimatorCurve(lo,hi,diagnostic){
+  const method=state.estimator;
+  if(method==='mean')return{stride:1,center:i=>chartMAAt(i,diagnostic),sigma:i=>chartSDAt(i,diagnostic)};
+  const get=i=>diagnostic?getRaw(i):getNetMg(i),bounds=epochBounds(diagnostic);
+  if(method==='ema'){
+    const tau=Math.max(.025,state.emaTau),s0=Math.max(0,lo-Math.ceil(CURVE_EMA_WARMUP*tau*RATE_HZ)),starts=new Set(bounds);
+    const C=new Float64Array(hi-lo+1),S=new Float64Array(hi-lo+1);let m=0,v=0,prevT=getTime(s0);
+    for(let i=s0;i<=hi;i++){
+      const x=get(i),t=getTime(i);
+      if(i===s0||starts.has(i)){m=x;v=0;}
+      else{const a=Math.exp(-Math.max(0,(t-prevT)/1000)/tau),d=x-m;m+=(1-a)*d;v=a*(v+(1-a)*d*d);}
+      prevT=t;if(i>=lo){C[i-lo]=m;S[i-lo]=Math.sqrt(v);}
+    }
+    return{stride:1,center:i=>C[i-lo],sigma:i=>S[i-lo]};
   }
-  return{value:values.reduce((sum,v)=>sum+v,0)/n,used:n,rejected:0};
+  const w=Math.max(2,Math.min(state.window,MAX_ROBUST_WINDOW)),count=hi-lo+1;
+  const stride=Math.max(1,Math.ceil(count/Math.max(64,Math.floor(CURVE_BUDGET/Math.max(16,w)))));
+  const nodes=[];
+  if(stride===1){for(let i=lo;i<=hi;i++)nodes.push(i);}
+  else{nodes.push(lo);const a0=absIndex(lo);for(let i=lo+((stride-(a0%stride))%stride);i<hi;i+=stride)if(i>lo)nodes.push(i);if(nodes[nodes.length-1]!==hi)nodes.push(hi);}
+  const key=`${diagnostic?'r':'m'}|${method}|${w}|${state.trimPercent}`;
+  if(state.curveCache.key!==key||state.curveCache.map.size>60000)state.curveCache={key,map:new Map()};
+  const cache=state.curveCache.map,NC=new Float64Array(nodes.length),NS=new Float64Array(nodes.length);
+  for(let k=0;k<nodes.length;k++){
+    const i=nodes[k],id=absIndex(i);let hit=cache.get(id);
+    if(!hit){const a=Math.max(i-w+1,epochStartFor(i,bounds)),vals=new Array(i-a+1);for(let j=a;j<=i;j++)vals[j-a]=get(j);const r=estimate(vals,[],method,{trimPercent:state.trimPercent});hit=[r.value,r.sigma];cache.set(id,hit);}
+    NC[k]=hit[0];NS[k]=hit[1];
+  }
+  const at=(i,arr)=>{
+    if(stride===1)return arr[i-lo];
+    let l=0,r=nodes.length-1;while(l<r){const mid=(l+r+1)>>1;if(nodes[mid]<=i)l=mid;else r=mid-1;}
+    if(nodes[l]>=i||l===nodes.length-1)return arr[l];
+    return arr[l]+(i-nodes[l])/(nodes[l+1]-nodes[l])*(arr[l+1]-arr[l]);
+  };
+  return{stride,center:i=>at(i,NC),sigma:i=>at(i,NS)};
 }
 function collectCurrentWindow(n){ // newest n samples; the caller limits n to the current tare epoch
   n=Math.min(state.count,n);const start=state.count-n,values=new Array(n),times=new Array(n),raws=new Array(n);
@@ -907,11 +968,11 @@ function updateMetrics(){
   const epochStart=(!diagnostic&&tare)?Math.min(lowerBoundTime(tare.effectiveFromTime),last):0;
   const n=Math.max(1,Math.min(state.window,state.count-epochStart));
   const method=state.estimator,robust=method==='median'||method==='trimmed'||method==='hampel';
-  let value,used=n,rejected=0;
+  let value,used=n,rejected=0,sig=NaN;
   if(method==='mean')value=diagnostic?getRawMA(last):getMassMA(last);
-  else if(method==='ema')value=diagnostic?state.rawEma:(state.massEma==null?getNetMg(last):state.massEma);
-  else{const w=collectCurrentWindow(Math.min(n,MAX_ROBUST_WINDOW));const r=estimate(diagnostic?w.raws:w.values,w.times,method,{tau:state.emaTau,trimPercent:state.trimPercent});value=r.value;used=w.values.length;rejected=r.rejected;}
-  const spread=diagnostic?getRawSD(last):getMassSD(last);
+  else if(method==='ema'){const c=buildEstimatorCurve(last,last,diagnostic);value=c.center(last);sig=c.sigma(last);}
+  else{const w=collectCurrentWindow(Math.min(n,MAX_ROBUST_WINDOW));const r=estimate(diagnostic?w.raws:w.values,w.times,method,{tau:state.emaTau,trimPercent:state.trimPercent});value=r.value;used=w.values.length;rejected=r.rejected;sig=r.sigma;}
+  const spread=method==='mean'?(diagnostic?getRawSD(last):getMassSD(last)):sig;
   $('currentValueLabel').textContent=diagnostic?'Raw sensor estimator':'Current measured mass';
   $('currentValue').textContent=diagnostic?fmtNumber(value,0):formatMass(value);
   $('currentValueDetail').textContent=method==='ema'?`EMA · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)} · ${used} samples${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
@@ -920,7 +981,7 @@ function updateMetrics(){
   $('rangeStatus').hidden=!outside;if(outside)$('rangeStatus').textContent='Latest sample is outside the calibrated range (extrapolated).';
   $('spreadLabel').textContent=diagnostic?'Raw sensor spread (σ)':'Sensor spread (σ)';
   $('currentSpread').textContent=diagnostic?`${fmtNumber(spread,2)} counts`:formatMass(spread);
-  $('spreadDetail').textContent=`${n} samples · repeatability only, not an uncertainty`;
+  $('spreadDetail').textContent=`${spreadDescription(method)} · repeatability only, not an uncertainty`;
   $('tareValue').textContent=diagnostic?(tare?(tare.tareRaw==null?'Manual mass tare':fmtNumber(tare.tareRaw,0)):'None'):(tare?formatMass(tare.tareMassMg):'None');
   $('tareDetail').textContent=tare?`${tare.method} · ${new Date(tare.createdAt).toLocaleTimeString()}${tare.outOfRangeCount?` · ${tare.outOfRangeCount} out-of-range samples`:''}`:'No tare event recorded';
   $('tareDetail').classList.toggle('warning',!!(tare&&tare.outOfRangeCount));
@@ -999,18 +1060,18 @@ function calculateSelection(first,end,settings={}){
     // Simple mean and EMA are streamed in O(N) with constant extra memory. A large
     // graph selection therefore does not allocate several million-element JS arrays.
     let sumOriginal=0,sumCurrent=0,sumRaw=0,wN=0,wMeanC=0,wM2C=0,wMeanR=0,wM2R=0; // Welford accumulators (stable SD)
-    let emaOriginal=0,emaCurrent=0,emaRaw=0,previousTime=0;
+    let emaOriginal=0,emaCurrent=0,emaRaw=0,previousTime=0,vC=0,vR=0;   // vC/vR: exponentially weighted variances
     for(let i=first;i<end;i++){
       const raw=getRaw(i),time=getTime(i),original=getNetMg(i),absolute=calibrateAbsolute(raw),current=absolute.valueMg-currentTare;
       if(absolute.outOfRange)outOfRangeCount++;
       sumOriginal+=original;sumCurrent+=current;sumRaw+=raw;wN++;{const dC=current-wMeanC;wMeanC+=dC/wN;wM2C+=dC*(current-wMeanC);const dR=raw-wMeanR;wMeanR+=dR/wN;wM2R+=dR*(raw-wMeanR);}
       if(i===first){emaOriginal=original;emaCurrent=current;emaRaw=raw;}
-      else{const dt=Math.max(0,(time-previousTime)/1000),alpha=1-Math.exp(-dt/Math.max(.025,selectedTau));emaOriginal=alpha*original+(1-alpha)*emaOriginal;emaCurrent=alpha*current+(1-alpha)*emaCurrent;emaRaw=alpha*raw+(1-alpha)*emaRaw;}
+      else{const dt=Math.max(0,(time-previousTime)/1000),alpha=1-Math.exp(-dt/Math.max(.025,selectedTau));const dC=current-emaCurrent,dR=raw-emaRaw;vC=(1-alpha)*(vC+alpha*dC*dC);vR=(1-alpha)*(vR+alpha*dR*dR);emaOriginal=alpha*original+(1-alpha)*emaOriginal;emaCurrent=alpha*current+(1-alpha)*emaCurrent;emaRaw=alpha*raw+(1-alpha)*emaRaw;}
       previousTime=time;
     }
     usedSamples=total;rawMean=sumRaw/total;spreadMg=Math.sqrt(wM2C/total);rawSpread=Math.sqrt(wM2R/total);
     if(method==='mean'){originalValueMg=sumOriginal/total;currentValueMg=sumCurrent/total;rawEstimatorValue=rawMean;}
-    else{originalValueMg=emaOriginal;currentValueMg=emaCurrent;rawEstimatorValue=emaRaw;}
+    else{originalValueMg=emaOriginal;currentValueMg=emaCurrent;rawEstimatorValue=emaRaw;spreadMg=Math.sqrt(vC);rawSpread=Math.sqrt(vR);}
   }else{
     const indices=sampleIndicesForEstimator(first,end,method),origValues=[],currentValues=[],times=[],rawValues=[];
     for(const i of indices){
@@ -1020,7 +1081,7 @@ function calculateSelection(first,end,settings={}){
     }
     const original=estimate(origValues,times,method,options),recalculated=estimate(currentValues,times,method,options),rawResult=estimate(rawValues,times,method,options);
     originalValueMg=original.value;currentValueMg=recalculated.value;rawEstimatorValue=rawResult.value;
-    spreadMg=calculateStd(currentValues);rawMean=rawValues.reduce((a,b)=>a+b,0)/rawValues.length;rawSpread=calculateStd(rawValues);
+    spreadMg=recalculated.sigma;rawMean=rawValues.reduce((a,b)=>a+b,0)/rawValues.length;rawSpread=rawResult.sigma;
     usedSamples=indices.length;rejectedSamples=recalculated.rejected;
   }
   const calFirst=calibrationAt(getTime(first)),calLast=calibrationAt(getTime(end-1));
@@ -1060,7 +1121,7 @@ function updateSelectionReadout(){
     (s.estimator==='ema'?` · seed weight ${(100*Math.exp(-Math.max(0,s.t1-s.t0)/1000/Math.max(.025,s.emaTau))).toFixed(1)}%`:'')+`<br>`+
     (state.unitId==='raw'?`Raw estimator result: <strong>${fmtNumber(s.rawEstimatorValue,0)} counts</strong><br>`:`Original result: <strong>${formatMass(s.originalValueMg)}</strong><br>`+
     `Current calibration + latest tare: <strong>${formatMass(s.currentValueMg)}</strong><br>`)+
-    `Current spread (σ): <strong>${state.unitId==='raw'?fmtNumber(s.rawSpread,2)+' counts':formatMass(s.spreadMg)}</strong><br>`+
+    `Current spread (σ, ${spreadDescription(s.estimator)}): <strong>${state.unitId==='raw'?fmtNumber(s.rawSpread,2)+' counts':formatMass(s.spreadMg)}</strong><br>`+
     `Raw average: <strong>${fmtNumber(s.rawMean,2)} counts</strong><br>`+
     `Out-of-range samples in analysis: <strong>${s.outOfRangeCount}</strong>${subsampled}${changed}${calibrationChanged}`;
 }
@@ -1121,6 +1182,7 @@ const MEASUREMENT_MAX_SAMPLES=100000;
 function startMeasurement(){
   if(state.measurement){cancelMeasurement('cancelled by user');return;}
   const target=clamp(Math.floor(Number($('measSamples').value)||0),2,MEASUREMENT_MAX_SAMPLES);
+  $('measSamples').value=target;syncMeasurementInputs('samples');   // show the clamped value
   if(!state.unlimited&&target>state.capacity){$('measProgress').textContent=`The buffer limit (${state.capacity.toLocaleString()} samples) is smaller than the requested ${target.toLocaleString()} samples.`;return;}
   // Captured now so later changes of the estimator settings cannot alter a running measurement.
   state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau};
@@ -1145,15 +1207,25 @@ function cancelMeasurement(reason){
   appendLogEntry({type:'note',entryId:`note-${Date.now()}`,createdAt:new Date().toISOString(),text:`Measurement cancelled: ${reason}`});
   updateMeasurementUI();scheduleRender();
 }
+// The slider is logarithmic (0.1 s ... 300 s) because useful lengths span several decades. It snaps
+// to 0.1 s above 1 s and to single samples below. The two text fields stay authoritative: any
+// value from 2 up to MEASUREMENT_MAX_SAMPLES can be typed and is clamped when the measurement starts.
+const MEAS_SLIDER_MIN_S=0.1,MEAS_SLIDER_MAX_S=300;
+function sliderToSamples(p){let d=MEAS_SLIDER_MIN_S*Math.pow(MEAS_SLIDER_MAX_S/MEAS_SLIDER_MIN_S,p/1000);d=d>=1?Math.round(d*10)/10:Math.round(d*RATE_HZ)/RATE_HZ;return Math.max(2,Math.round(d*RATE_HZ));}
+function samplesToSlider(n){return clamp(Math.round(1000*Math.log((n/RATE_HZ)/MEAS_SLIDER_MIN_S)/Math.log(MEAS_SLIDER_MAX_S/MEAS_SLIDER_MIN_S)),0,1000);}
 function syncMeasurementInputs(source){
-  if(source==='duration')$('measSamples').value=Math.max(2,Math.round(Number($('measDuration').value)*RATE_HZ)||2);
-  $('measDuration').value=Number((Number($('measSamples').value)/RATE_HZ).toFixed(3));
+  if(source==='slider')$('measSamples').value=sliderToSamples(Number($('measSlider').value));
+  else if(source==='duration')$('measSamples').value=Math.max(2,Math.round(Number($('measDuration').value)*RATE_HZ)||2);
+  const n=Math.max(2,Math.floor(Number($('measSamples').value))||2),d=n/RATE_HZ;
+  if(source!=='duration')$('measDuration').value=Number(d.toFixed(3));
+  if(source!=='slider')$('measSlider').value=samplesToSlider(n);
+  $('measSliderText').textContent=`${d>=60?(d/60).toFixed(1)+' min':Number(d.toFixed(3))+' s'} · ${n.toLocaleString()} samples`;
 }
 function updateMeasurementUI(){
   const m=state.measurement,last=state.lastMeasurement,raw=state.unitId==='raw';
   $('measureBtn').textContent=m?'Cancel measurement':'Start measurement';$('measureBtn').classList.toggle('primary',!m);
   $('measBar').hidden=!m;if(m)$('measBar').value=m.collected/m.target;
-  $('measDuration').disabled=!!m;$('measSamples').disabled=!!m;
+  $('measDuration').disabled=!!m;$('measSamples').disabled=!!m;$('measSlider').disabled=!!m;
   if(m){$('measValue').textContent='…';$('measDetail').textContent=`Measuring: ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;$('measNote').textContent='';return;}
   if(!last){$('measValue').textContent='—';$('measDetail').textContent='No measurement yet';$('measNote').textContent='';return;}
   $('measValue').textContent=raw?`${fmtNumber(last.rawEstimatorValue,0)} counts`:formatMass(last.originalValueMg);
@@ -1238,7 +1310,7 @@ function applyBufferSize(){
 }
 function addTestSamples(){
   if(state.testBatchRunning)return;state.testBatchRunning=true;const button=$('testSamplesBtn'),total=100000,chunk=10000;let added=0;button.disabled=true;
-  const run=()=>{const end=Math.min(total,added+chunk);for(;added<end;added++)appendSample(nextSensorValue());button.textContent=`Adding test samples · ${Math.round(added/total*100)}%`;scheduleRender();if(added<total)requestAnimationFrame(run);else{state.testBatchRunning=false;button.disabled=false;button.textContent='＋ Add 100k test samples';scheduleRender();}};
+  const run=()=>{const end=Math.min(total,added+chunk);for(;added<end;added++)appendSample(nextSensorValue());button.textContent=`Adding test samples · ${Math.round(added/total*100)}%`;scheduleRender();if(added<total)requestAnimationFrame(run);else{state.testBatchRunning=false;button.disabled=false;button.textContent='＋ 100k test samples';scheduleRender();}};
   requestAnimationFrame(run);
 }
 function initializeManualYAxis(){
@@ -1336,11 +1408,11 @@ function initEvents(){
   $('pauseBtn').addEventListener('click',()=>{state.paused=!state.paused;state.simBase=null;$('pauseBtn').textContent=state.paused?'▶ Resume':'Ⅱ Pause';$('statusText').textContent=state.paused?'Paused':'Streaming';$('statusDot').classList.toggle('paused',state.paused);});
   $('trackBtn').addEventListener('click',trackLive);$('selectModeBtn').addEventListener('click',()=>setSelectMode(!state.selectMode));
   $('tareBtn').addEventListener('click',autoTare);$('manualTareBtn').addEventListener('click',manualTare);$('exportBtn').addEventListener('click',exportCSV);$('testSamplesBtn').addEventListener('click',addTestSamples);$('bufferInput').addEventListener('change',applyBufferSize);
-  $('measureBtn').addEventListener('click',startMeasurement);$('measDuration').addEventListener('input',()=>syncMeasurementInputs('duration'));$('measSamples').addEventListener('input',()=>syncMeasurementInputs('samples'));
+  $('measureBtn').addEventListener('click',startMeasurement);$('measSlider').addEventListener('input',()=>syncMeasurementInputs('slider'));$('measDuration').addEventListener('input',()=>syncMeasurementInputs('duration'));$('measSamples').addEventListener('input',()=>syncMeasurementInputs('samples'));
   $('calImportBtn').addEventListener('click',()=>$('calFile').click());$('calFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)importCalibrationFile(f);});
   $('calExportBtn').addEventListener('click',exportCalibration);$('calDemoBtn').addEventListener('click',restoreDemoCalibration);
   $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
-  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();scheduleRender();});
+  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();}scheduleRender();});
   $('trimPercent').addEventListener('input',e=>{state.trimPercent=Number(e.target.value);$('trimPercentText').textContent=`${state.trimPercent}%`;scheduleRender();});
   $('emaTau').addEventListener('change',e=>{state.emaTau=clamp(Number(e.target.value)||.5,.025,120);e.target.value=state.emaTau;rebuildEMA();scheduleRender();});
   $('unitSelect').addEventListener('change',e=>{state.unitId=e.target.value;state.autoYMin=null;state.autoYMax=null;const raw=state.unitId==='raw';$('rawModeToggle').checked=raw;$('mainChartTitle').textContent=raw?'Raw sensor diagnostics':'Measured mass';$('zeroFillToggle').disabled=raw;$('zeroRawFillToggle').disabled=raw;$('zeroLineToggle').disabled=raw;$('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();}scheduleRender();});

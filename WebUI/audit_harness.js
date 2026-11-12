@@ -168,6 +168,63 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   ok('T20 removed controls are really gone from the markup', !/id="(maToggle|spreadToggle|applySettingsBtn|estimatorWindow|latestValue)"/.test(html));
   ok('T20 grams default to 3 decimals', R(`unitById('g').decimals`)===3);
   ok('T20 uPlot pinned to one version constant, no stale URLs', /const UPLOT_VERSION='1\.6\.32'/.test(html) && !/uplot@1\.6\.30/.test(html));
+
+  // ---- v9 tests -------------------------------------------------------------------------------
+  const E = (R,vals,m,o={})=>JSON.parse(R(`JSON.stringify(estimate(${JSON.stringify(vals)},${JSON.stringify(o.times||[])},'${m}',${JSON.stringify(o)}))`));
+  R = await load();
+  const d5=[1,2,3,4,100];
+  ok('T21 median -> sigma = 1.4826 x MAD', near(E(R,d5,'median').sigma,1.4826,1e-12));
+  ok('T21 trimmed -> SD of retained samples', near(E(R,d5,'trimmed',{trimPercent:20}).sigma,Math.sqrt(2/3),1e-12) && E(R,d5,'trimmed',{trimPercent:20}).value===3);
+  ok('T21 hampel -> SD of kept samples (outlier rejected)', near(E(R,d5,'hampel').sigma,Math.sqrt(1.25),1e-12) && E(R,d5,'hampel').rejected===1);
+  ok('T21 mean -> population SD', near(E(R,d5,'mean').sigma,R(`calculateStd([1,2,3,4,100])`),1e-12));
+  const t=[0,12.5,25,37.5,50]; const em=E(R,[0,10,10,10,10],'ema',{tau:.05,times:t});
+  ok('T21 ema -> value unchanged vs v8 recursion; exponentially weighted SD is finite and > 0', em.sigma>0 && Number.isFinite(em.sigma) && em.value>0 && em.value<10, JSON.stringify(em));
+  ok('T21 median sigma falls back when MAD = 0 (tied data)', E(R,[5,5,5,5,5,5,5.4,5,5,9],'median').sigma>0);
+  // T22 chart curve = per-sample estimator values, never across a tare epoch
+  R = await load();
+  R(`state.window=state.activeWindow=40; for(let i=0;i<300;i++) appendSample(nextSensorValue()); autoTare(); for(let i=0;i<200;i++) appendSample(nextSensorValue());
+     state.estimator='median'; state.live=false; state.viewMin=getTime(250); state.viewMax=newestTime();`);
+  const cv = JSON.parse(R(`(()=>{const [lo,hi]=visibleIndices(),d=buildVisibleData(),res=[];
+     for(const i of [lo+3,lo+20,305,hi-30,hi]){const a=Math.max(i-39,i>=300?300:0),v=[];for(let j=a;j<=i;j++)v.push(getNetMg(j));const r=estimate(v,[],'median',{});
+       const k=i-lo;res.push({c:d[2][k]-mgToUnit(r.value,state.unitId),u:d[3][k]-mgToUnit(r.value+r.sigma,state.unitId),l:d[4][k]-mgToUnit(r.value-r.sigma,state.unitId),i});}
+     return JSON.stringify({res,len:d[0].length,n:hi-lo+1,stride:state.curveStride})})()`));
+  ok('T22 median centre and +-sigma band equal the direct estimator (incl. truncated window after a tare)', cv.res.every(x=>near(x.c,0,1e-12,1e-9)&&near(x.u,0,1e-12,1e-9)&&near(x.l,0,1e-12,1e-9)) && cv.len===cv.n && cv.stride===1, JSON.stringify(cv.res.slice(0,2)));
+  // T22b sparse evaluation + interpolation
+  const sp = JSON.parse(R(`(()=>{state.window=state.activeWindow=1000; const lo=0,hi=state.count-1;const c=buildEstimatorCurve(lo,hi,false);
+     const stride=c.stride;let aligned=-1;for(let i=1;i<hi;i++)if(absIndex(i)%stride===0){aligned=i;break;}
+     const direct=i=>{const a=Math.max(i-999,i>=300?300:0),v=[];for(let j=a;j<=i;j++)v.push(getNetMg(j));return estimate(v,[],'median',{}).value;};
+     const nodeErr=c.center(aligned)-direct(aligned);
+     const n1=aligned,n2=aligned+stride,mid=n1+Math.floor(stride/2);const lin=direct(n1)+(mid-n1)/(n2-n1)*(direct(n2)-direct(n1));
+     return JSON.stringify({stride,nodeErr,interpErr:c.center(mid)-lin,endErr:c.center(hi)-direct(hi)})})()`));
+  ok('T22b sparse grid: stride>1 when many samples are visible', sp.stride>1, 'stride='+sp.stride);
+  ok('T22b grid nodes are exact, in-between points are linear interpolations, endpoints exact', near(sp.nodeErr,0,1e-12,1e-9)&&near(sp.interpErr,0,1e-12,1e-9)&&near(sp.endErr,0,1e-12,1e-9), JSON.stringify(sp));
+  // T23 EMA curve = estimator EMA over the tare epoch
+  R(`state.window=state.activeWindow=40; state.estimator='ema'; state.emaTau=0.5;`);
+  const ec = JSON.parse(R(`(()=>{const hi=state.count-1,c=buildEstimatorCurve(hi,hi,false),v=[],t=[];for(let j=300;j<=hi;j++){v.push(getNetMg(j));t.push(getTime(j));}
+     const r=estimate(v,t,'ema',{tau:.5});return JSON.stringify({dc:c.center(hi)-r.value,ds:c.sigma(hi)-r.sigma,s:r.sigma})})()`));
+  ok('T23 EMA curve value and EW sigma equal the estimator over the tare epoch', near(ec.dc,0,1e-12,1e-9)&&near(ec.ds,0,1e-12,1e-9)&&ec.s>0, JSON.stringify(ec));
+  // T24 selection / measurement spread follows the estimator
+  const sm = JSON.parse(R(`(()=>{const out={};for(const m of ['median','trimmed','hampel','ema','mean']){const s=calculateSelection(300,500,{estimator:m,trimPercent:10,emaTau:.5});
+     const v=[],t=[];for(let j=300;j<500;j++){v.push(getNetMg(j));t.push(getTime(j));}const r=estimate(v,t,m,{trimPercent:10,tau:.5});out[m]=s.spreadMg-r.sigma;}return JSON.stringify(out)})()`));
+  ok('T24 selection spread = estimator sigma for every estimator', Object.values(sm).every(x=>near(x,0,1e-9,1e-6)), JSON.stringify(sm));
+  // T25 measurement slider + text fields
+  R = await load();
+  ok('T25 slider: default position is 5 s = 400 samples', R(`sliderToSamples(489)`)===400 && R(`samplesToSlider(400)`)===489);
+  ok('T25 slider range: 0.1 s .. 300 s', R(`sliderToSamples(0)`)===8 && R(`sliderToSamples(1000)`)===24000);
+  R(`$('measSamples').value='1234'; syncMeasurementInputs('samples');`);
+  ok('T25 typing samples updates duration and slider', R(`$('measDuration').value`)===15.425 && R(`$('measSlider').value`)===R(`samplesToSlider(1234)`));
+  R(`$('measDuration').value='60'; syncMeasurementInputs('duration');`);
+  ok('T25 typing duration updates samples (60 s = 4800)', R(`$('measSamples').value`)===4800);
+  R(`$('measSamples').value='5000000'; startMeasurement();`);
+  ok('T25 an absurd value is clamped to the maximum when starting', R(`state.measurement.target`)===100000 && R(`$('measSamples').value`)===100000);
+  // T26 layout contract
+  const head = html.split('</header>')[0], main = html.split('</header>')[1];
+  ok('T26 Pause and +100k are in the header; Calibration is in the Settings menu', /id="pauseBtn"/.test(head)&&/id="testSamplesBtn"/.test(head)&&/id="calibrationInfo"/.test(head)&&/id="calImportBtn"/.test(head));
+  ok('T26 old toolbar is gone', !/class="toolbar"/.test(main));
+  const afterMini = main.slice(main.indexOf('id="miniChart"'));
+  ok('T26 Track/Select/Export/Buffer are below the navigator graph', ['trackBtn','selectModeBtn','exportBtn','bufferInput'].every(id=>afterMini.indexOf('id="'+id+'"')>0 && afterMini.indexOf('id="'+id+'"')<afterMini.indexOf('</section>')));
+  ok('T26 spread card sits beside the mass card; settings panel follows in the same spanning column', /class="mcol span2">\s*<div class="metric-pair">[\s\S]*?id="currentValue"[\s\S]*?id="currentSpread"[\s\S]*?<\/div>\s*<section class="panel compact" aria-label="Display and estimator settings">/.test(main));
+  ok('T26 charts are full width: layout is a single column and the log follows the side panels', /\.layout\{grid-template-columns:minmax\(0,1fr\)!important\}/.test(html) && main.indexOf('</aside>')>0 && main.indexOf('log-panel')>main.indexOf('</aside>'));
   // T9 revision fingerprint must not depend on JSON key order
   R = await load();
   const id1 = R(`state.revisionId`);
