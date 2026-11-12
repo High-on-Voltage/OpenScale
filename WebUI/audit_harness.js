@@ -225,6 +225,109 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   ok('T26 Track/Select/Export/Buffer are below the navigator graph', ['trackBtn','selectModeBtn','exportBtn','bufferInput'].every(id=>afterMini.indexOf('id="'+id+'"')>0 && afterMini.indexOf('id="'+id+'"')<afterMini.indexOf('</section>')));
   ok('T26 spread card sits beside the mass card; settings panel follows in the same spanning column', /class="mcol span2">\s*<div class="metric-pair">[\s\S]*?id="currentValue"[\s\S]*?id="currentSpread"[\s\S]*?<\/div>\s*<section class="panel compact" aria-label="Display and estimator settings">/.test(main));
   ok('T26 charts are full width: layout is a single column and the log follows the side panels', /\.layout\{grid-template-columns:minmax\(0,1fr\)!important\}/.test(html) && main.indexOf('</aside>')>0 && main.indexOf('log-panel')>main.indexOf('</aside>'));
+  // ===================== v10 tests =====================
+  R = await load();
+  const RNG = `let __s=987654321;const rnd=()=>{__s=(__s*1103515245+12345)%2147483648;return __s/2147483648;};const gauss=()=>{const u=rnd()||1e-9,v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);};`;
+  const AN = (gen, times='T', opts='{}') => JSON.parse(R(`(()=>{${RNG}const N=2000,T=Array.from({length:N},(_,i)=>i*12.5);const x=Array.from({length:N},(_,i)=>${gen});const t=${times};const r=analyzeSeries(x,t,${opts});return JSON.stringify({status:r.status,seg:r.segments,v:Object.fromEntries(r.checks.map(c=>[c.id,c.verdict])),c:Object.fromEntries(r.checks.map(c=>[c.id,c]))})})()`));
+  { const a = AN('5000+gauss()'); ok('V1 white noise: no problem detected', a.status==='ok', JSON.stringify(a.v)); }
+  { const a = AN('5000+gauss()+i*0.01'); ok('V1 drift: invalid (autocorrelation / n_eff collapses)', a.status==='invalid' && a.v.autocorrelation==='invalid', JSON.stringify(a.v)); }
+  { const a = AN('5000+gauss()+(i>1000?8:0)'); ok('V1 step of 8 sigma: step check invalid and classified as a step', a.v.step==='invalid' && a.c.step.stepLike===true && Math.abs(a.c.step.changeIndex-1000)<25, JSON.stringify(a.v)+' k='+a.c.step.changeIndex); }
+  { const a = AN('5000+gauss()+2*Math.sin(2*Math.PI*50*i/80)'); ok('V1 50 Hz tone: vibration invalid, apparent frequency 30 Hz (alias)', a.v.vibration==='invalid' && Math.abs(a.c.vibration.frequencyHz-30)<0.5, a.c.vibration.valueText); }
+  { const a = AN('5000+gauss()+0.6*Math.sin(2*Math.PI*10*i/80)'); ok('V1 weak 10 Hz tone is at least suspect, at 10 Hz', a.v.vibration!=='ok' && Math.abs(a.c.vibration.frequencyHz-10)<0.5, a.c.vibration.valueText); }
+  { const a = AN('5000+gauss()','T.map((v,i)=>i>=1000?v+500:v)'); ok('V1 gap: flagged suspect/invalid, split in 2 segments', a.v.gaps!=='ok' && a.seg===2, JSON.stringify(a.v)); }
+  { const a = AN('5000+gauss()','T.map((v,i)=>i===500?T[499]:v)'); ok('V1 duplicate timestamp: invalid', a.v.gaps==='invalid', JSON.stringify(a.v)); }
+  { const a = JSON.parse(R(`JSON.stringify(analyzeSeries([1,2,3,4,5],[0,12.5,25,37.5,50]))`)); ok('V1 too-short interval: checks n/a, status suspect (cannot demonstrate validity)', a.status==='suspect' && a.checks.filter(c=>c.verdict==='n/a').length===4, a.note); }
+  { const a = AN('5000'); ok('V1 constant series does not crash and is not invalid', a.status!=='invalid', JSON.stringify(a.v)); }
+  { const r = JSON.parse(R(`(()=>{${RNG}let a=0;const x=Array.from({length:20000},()=>a=0.8*a+gauss());const k=analysisAutocorr(x,100);return JSON.stringify({ratio:k.ratio,rho1:k.rho1})})()`)); ok('V2 AR(1) rho=0.8: rho1 ~ 0.8, n_eff/n ~ (1-rho)/(1+rho) = 0.11', near(r.rho1,0.8,0.03) && r.ratio>0.07 && r.ratio<0.17, JSON.stringify(r)); }
+  { const r = JSON.parse(R(`(()=>{${RNG}const x=Array.from({length:20000},()=>gauss());const p=analysisAllan(x,1/80);return JSON.stringify(p.map(q=>q.adev))})()`)); ok('V3 Allan deviation of white noise falls ~ tau^-1/2 (m=1 -> m=16 : factor 4)', near(r[0]/r[4],4,0.12), 'ratio '+(r[0]/r[4]).toFixed(2)); }
+  { const e = R(`(()=>{const n=16,re=new Float64Array(n),im=new Float64Array(n),x=[];for(let i=0;i<n;i++){x.push(Math.sin(i)+i*0.1);re[i]=x[i];}analysisFFT(re,im);let m=0;for(let k=0;k<n;k++){let sr=0,si=0;for(let i=0;i<n;i++){sr+=x[i]*Math.cos(2*Math.PI*k*i/n);si-=x[i]*Math.sin(2*Math.PI*k*i/n);}m=Math.max(m,Math.abs(sr-re[k]),Math.abs(si-im[k]));}return m})()`); ok('V4 FFT equals the naive DFT', e<1e-9, 'err '+e); }
+  { const g = JSON.parse(R(`JSON.stringify(analysisGaps(Array.from({length:10},(_,i)=>i*12.5),12.5,[1,2,3,5,6,7,7,8,9,10]))`)); ok('V5 device counter: jump and repeat detected independently of timestamps', g.verdict==='invalid' && /1 jump/.test(g.detail) && /1 repeated/.test(g.detail), g.detail); }
+
+  // V6 real Hampel filter
+  { const r = JSON.parse(R(`(()=>{${RNG}const n=400,x=Array.from({length:n},(_,i)=>5000+i*0.5+gauss());const spikes=[100,250];x[100]+=40;x[250]-=40;
+      const f=hampelFlags(x,5,3);const idx=[];f.forEach((v,i)=>{if(v)idx.push(i)});
+      const loc=estimate(x,[],'hampelLocal',{hampelHalf:5,hampelSigma:3}),glob=estimate(x,[],'hampel',{}),mean=estimate(x,[],'mean',{});
+      return JSON.stringify({idx,locRej:loc.rejected,globRej:glob.rejected,locV:loc.value,meanV:mean.value})})()`));
+    ok('V6 local Hampel flags both spikes on a ramp (and only a few ordinary samples)', r.idx.includes(100)&&r.idx.includes(250)&&r.locRej<=12, JSON.stringify(r));
+    ok('V6 on a ramp the old global gate misses both spikes (its scale is inflated by the drift) while the local filter catches them', r.globRej===0 && r.locRej>=2, `global ${r.globRej} vs local ${r.locRej}`); }
+  { const r = JSON.parse(R(`(()=>{const x=[];for(let i=0;i<300;i++)x.push(5000+(i%7===0?1:0)+(i%11===0?-1:0));const f=hampelFlags(x,5,3);return JSON.stringify({n:f.reduce((a,b)=>a+b,0)})})()`)); ok('V6 tied quantised data (local MAD = 0) is not wholesale flagged (scale floor)', r.n<=3, 'flagged '+r.n); }
+  { const r = JSON.parse(R(`(()=>{const x=[1,2,3];return JSON.stringify({n:hampelFlags(x,5,3).length,e:estimate(x,[],'hampelLocal',{}).value})})()`)); ok('V6 tiny series: no crash, mean returned', r.n===3 && r.e===2); }
+
+  // V7 seed-normalised EMA
+  { const r = JSON.parse(R(`(()=>{${RNG}const n=300,t=Array.from({length:n},(_,i)=>i*12.5),x=Array.from({length:n},()=>10+gauss()),tau=0.4;
+      const e=emaNormalised(x,t,tau);
+      // brute-force weights: w_i=(1-a_i)*prod_{j>i}a_j, a_j=exp(-dt_j/tau), first sample counts as one nominal period
+      const a=t.map((_,i)=>Math.exp(-(i>0?(t[i]-t[i-1]):12.5)/1000/tau));let sw=0,sx=0,sw2=0;const w=new Array(n);
+      for(let i=0;i<n;i++){let p=1-a[i];for(let j=i+1;j<n;j++)p*=a[j];w[i]=p;sw+=p;sx+=p*x[i];}const m=sx/sw;let sv=0;for(let i=0;i<n;i++){sv+=w[i]*(x[i]-m)**2;sw2+=w[i]*w[i];}
+      const big=emaNormalised(x,t,1e6),mean=x.reduce((s,v)=>s+v,0)/n;
+      return JSON.stringify({dm:e.value-m,ds:e.sigma-Math.sqrt(sv/sw),dn:e.neff-sw*sw/sw2,bigErr:big.value-mean})})()`));
+    ok('V7 EMA-normalised value, weighted SD and Kish n_eff equal the brute-force weight formula', Math.abs(r.dm)<1e-9&&Math.abs(r.ds)<1e-9&&Math.abs(r.dn)<1e-7, JSON.stringify(r));
+    ok('V7 tau >> T tends to the arithmetic mean', Math.abs(r.bigErr)<1e-3, JSON.stringify(r.bigErr)); }
+  { const r = JSON.parse(R(`(()=>{const x=[0,0,0,0,0,10],t=x.map((_,i)=>i*12.5);return JSON.stringify({plain:estimate(x,t,'ema',{tau:0.5}).value,norm:estimate(x,t,'emaNorm',{tau:0.5}).value})})()`)); ok('V7 short interval: normalised EMA weights the last sample more (no weight left on a seed)', r.norm>r.plain, JSON.stringify(r)); }
+  R = await load();
+  R(`resizeBuffers(5000);state.window=state.activeWindow=80;for(let i=0;i<300;i++)appendSample(nextSensorValue());autoTare();for(let i=0;i<600;i++)appendSample(nextSensorValue());state.estimator='emaNorm';state.emaTau=0.3;`);
+  { const r = JSON.parse(R(`(()=>{const L=state.count-1,lo=L-300,c=buildEstimatorCurve(lo,L,false),w=[],tm=[];const e=tareEventAt(getTime(L));let k=0;while(k<state.count&&tareEventAt(getTime(L-k))===e)k++;const s0=L-k+1;for(let i=s0;i<=L;i++){w.push(getNetMg(i));tm.push(getTime(i));}
+      const d=emaNormalised(w,tm,0.3);return JSON.stringify({dc:c.center(L)-d.value,ds:c.sigma(L)-d.sigma})})()`)); ok('V7 EMA-normalised curve equals the estimator over the tare epoch', Math.abs(r.dc)<1e-3&&Math.abs(r.ds)<1e-3, JSON.stringify(r)+' (curve starts its recursion 7 tau before the view: tail weight < 0.1 %)'); }
+  { const r = JSON.parse(R(`(()=>{const L=state.count-1,first=L-399,end=L+1;const s=calculateSelection(first,end,{estimator:'emaNorm',emaTau:0.3});const w=[],tm=[];for(let i=first;i<end;i++){w.push(getNetMg(i));tm.push(getTime(i));}const d=emaNormalised(w,tm,0.3);return JSON.stringify({dv:s.currentValueMg-s.currentValueMg,dsp:s.spreadMg-d.sigma,hasN:s.emaNeff>1,hasA:!!s.analysis&&Array.isArray(s.analysis.checks)})})()`)); ok('V7 selection with emaNorm: sigma = estimator sigma, n_eff reported, analysis attached', Math.abs(r.dsp)<1e-6&&r.hasN&&r.hasA, JSON.stringify(r)); }
+  { const r = JSON.parse(R(`(()=>{const L=state.count-1,s=calculateSelection(L-499,L+1,{estimator:'hampelLocal',hampelHalf:5,hampelSigma:3});const x=[];for(let i=L-499;i<=L;i++)x.push(getNetMg(i));const e=estimate(x,[],'hampelLocal',{hampelHalf:5,hampelSigma:3});return JSON.stringify({d:s.currentValueMg-e.value,rej:s.rejectedSamples-e.rejected})})()`)); ok('V6 selection with hampelLocal equals the estimator on the same samples', Math.abs(r.d)<1e-6&&r.rej===0, JSON.stringify(r)); }
+
+  // V8 analyzeInterval on the real buffer (simulator modes)
+  { R = await load();
+    const run = (mode,n=1200,extra='') => JSON.parse(R(`(()=>{resizeBuffers(20000);state.simMode='${mode}';state.simOffset=0;state.simN=0;for(let i=0;i<${n};i++){${extra}appendSample(nextSensorValue());}const a=analyzeInterval(100,state.count);return JSON.stringify({s:a.status,v:Object.fromEntries(a.checks.map(c=>[c.id,c.verdict])),n:a.n})})()`));
+    const q = run('quiet'); ok('V8 simulated quiet signal passes (or at worst one suspect)', q.s==='ok'||q.s==='suspect', JSON.stringify(q));
+    R = await load(); const h = run('hum'); ok('V8 simulated 50 Hz hum is detected by analyzeInterval', h.v.vibration==='invalid'||h.v.vibration==='suspect', JSON.stringify(h));
+    R = await load(); const g = run('quiet',1200,'if(i===600)state.nextTime+=2000;'); ok('V8 a timestamp gap in the buffer is detected', g.v.gaps!=='ok', JSON.stringify(g));
+    R = await load(); const sm = JSON.parse(R(`(()=>{resizeBuffers(20000);state.simMode='quiet';for(let i=0;i<500;i++)appendSample(nextSensorValue());state.simMode='quiet';state.simOffset=60;for(let i=0;i<500;i++)appendSample(nextSensorValue());const a=analyzeInterval(0,state.count);return JSON.stringify(Object.fromEntries(a.checks.map(c=>[c.id,c.verdict])))})()`)); ok('V8 a moved weight (+60 counts) in the buffer is detected as invalid', sm.step==='invalid', JSON.stringify(sm));
+    R = await load(); R(`for(let i=0;i<100;i++) appendSample(nextSensorValue()); $('measSamples').value=400; startMeasurement(); for(let i=0;i<400;i++) appendSample(nextSensorValue());`);
+    ok('V8 a finished measurement carries the analysis result and a validity badge in its log entry', R(`(()=>{const e=state.logs.find(l=>l.type==='measurement');return !!e&&!!e.analysis&&e.analysis.checks.length>=5&&/Validity/.test(analysisBadgeHTML(e.analysis))})()`)); }
+
+  // V9 navigator data: aligned buckets, stable under growth, bounded size
+  { R = await load();
+    R(`resizeBuffers(60000);for(let i=0;i<30000;i++)appendSample(nextSensorValue());`);
+    const r = JSON.parse(R(`(()=>{const a=buildMiniData();const ax=Array.from(a[0]),ay=Array.from(a[1]);for(let i=0;i<7;i++)appendSample(nextSensorValue());const b=buildMiniData();const bm=new Map();for(let i=0;i<b[0].length;i++)bm.set(b[0][i],b[1][i]);
+      const lo=ax[0]+5,hi=ax[ax.length-1]-5;let same=0,tot=0;for(let i=0;i<ax.length;i++)if(ax[i]>=lo&&ax[i]<=hi){tot++;if(bm.get(ax[i])===ay[i])same++;}
+      return JSON.stringify({pts:ax.length,tot,same})})()`));
+    ok('V9 navigator: adding samples leaves the interior of the curve bit-identical (no flicker)', r.same===r.tot && r.tot>1000, JSON.stringify(r));
+    ok('V9 navigator: point count bounded (~4 per pixel) and far above the old 1,600', r.pts<=4096+4 && r.pts>1600, 'points '+r.pts);
+    R(`resizeBuffers(1000);`); ok('V9 navigator after a buffer shrink: same data, no crash', R(`buildMiniData()[0].length>0`));
+    const w = JSON.parse(R(`(()=>{resizeBuffers(60000);const a=buildMiniData();state.unitId='kg';const b=buildMiniData();return JSON.stringify({k:b[1][5]/a[1][5]})})()`)); ok('V9 navigator: unit change only rescales cached values', near(w.k,1e-3,1e-9), JSON.stringify(w)); }
+
+  // V10 Y-axis dead-band
+  { const r = JSON.parse(R(`(()=>{const latch=[false,false];let cur={min:0,max:100};const pad=4;let moved=0;
+      for(let i=0;i<2000;i++){const j=Math.sin(i)*0.8;const t={min:j-0.5,max:100+j+0.5};const n=autoYStep(cur,t,pad,0.05,latch,false);if(n.min!==cur.min||n.max!==cur.max)moved++;cur=n;}
+      const edge={min:cur.min,max:cur.max};let steps=0;const latch2=[false,false];let c2=cur;for(let i=0;i<400;i++){c2=autoYStep(c2,{min:-40,max:140},pad,0.1,latch2,false);steps++;if(Math.abs(c2.min+40)<2.1&&Math.abs(c2.max-140)<2.8)break;}
+      const sn=autoYStep(cur,{min:5,max:50},pad,0.05,[false,false],true);
+      const loose=autoYStep({min:0,max:100},{min:30,max:70},pad,1,[false,false],false);
+      const tight=autoYStep({min:0,max:100},{min:0,max:70},pad,1,[false,false],false);
+      return JSON.stringify({moved,edge,steps,end:c2,sn,loose,tight})})()`));
+    ok('V10 Y dead-band: +-1.3 % wobble of the data extent (inside half the padding) never moves the view', r.moved===0, JSON.stringify(r.edge)+' moved '+r.moved);
+    ok('V10 Y dead-band: data crossing the threshold makes the view follow (damped) and then settle', r.steps>1 && r.steps<400 && Math.abs(r.end.min+40)<3, JSON.stringify({steps:r.steps,end:r.end}));
+    ok('V10 Y snap: undamped, exactly on the target', r.sn.min===5&&r.sn.max===50);
+    ok('V10 Y: too much empty space shrinks that side only; a tight side does not move without a crossing', r.loose.min===30 && r.loose.max===70 && r.tight.min===0 && r.tight.max===70, JSON.stringify({loose:r.loose,tight:r.tight})); }
+
+  // V11 event hit-testing, ranges and descriptions
+  { R = await load();
+    R(`for(let i=0;i<800;i++)appendSample(nextSensorValue());autoTare();for(let i=0;i<400;i++)appendSample(nextSensorValue());state.logs=[];`);
+    R(`$('measSamples').value=200;startMeasurement();for(let i=0;i<200;i++)appendSample(nextSensorValue());selectInterval&&0;`);
+    const r = JSON.parse(R(`(()=>{const u={posToVal:(x)=>x*0.1};   // 1 px = 100 ms
+      const tareT=state.tareEvents[state.tareEvents.length-1].effectiveFromTime;const m=state.logs.find(l=>l.type==='measurement');
+      const hTare=hitTestEvents(u,tareT/100+2,100),hLane=hitTestEvents(u,(m.t0+m.t1)/2/100,5),hBody=hitTestEvents(u,(m.t0+m.t1)/2/100,100),hNone=hitTestEvents(u,(m.t1+60000)/100,5);
+      const row=logEntryRange(m),tr=logEntryRange({type:'tare',effectiveFromTime:5});
+      return JSON.stringify({tare:hTare.length&&hTare[0].prio===0,lane:hLane.some(h=>h.entry===m),body:hBody.some(h=>h.entry===m),none:hNone.length,row:row.t0===m.t0&&row.t1===m.t1,marker:!!(tr&&tr.marker),desc:describeEventHTML(m),tdesc:describeEventHTML(state.tareEvents[state.tareEvents.length-1])})})()`));
+    ok('V11 hovering a tare marker (within 6 px) hits it first', r.tare);
+    ok('V11 the top lane hits a logged measurement; far away hits nothing', r.lane && r.none===0);
+    ok('V11 the last measurement is still hoverable over the full height while it is highlighted', r.body);
+    ok('V11 log row ranges: measurement span and tare marker', r.row && r.marker);
+    ok('V11 event descriptions carry the result, sigma and the validity badge', /Measurement/.test(r.desc)&&/σ/.test(r.desc)&&/Validity/.test(r.desc)&&/Tare/.test(r.tdesc), r.desc.slice(0,120)); }
+
+  // V12 static cross-checks: every $('id') exists, estimator options wired, charts independent
+  { const used = new Set([...code.matchAll(/\$\('([A-Za-z0-9_]+)'\)/g)].map(m=>m[1])), have = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map(m=>m[1]));
+    const missing = [...used].filter(i=>!have.has(i));
+    ok('V12 every $(\'id\') in the script exists in the HTML', missing.length===0, missing.join(','));
+    ok('V12 estimator select offers the new options', /value="hampelLocal"/.test(html)&&/value="emaNorm"/.test(html)&&/value="hampel"/.test(html)&&/value="ema"/.test(html));
+    const h = code.match(/\$\('estimatorSelect'\)\.addEventListener\('change'[^\n]*\n?/)[0];
+    ok('V12 changing the estimator rebuilds only the main chart', /recreateMainChart\(\)/.test(h) && !/miniPlot/.test(h) && !/createMiniChart/.test(h), h.slice(0,160)); }
+
   // T9 revision fingerprint must not depend on JSON key order
   R = await load();
   const id1 = R(`state.revisionId`);

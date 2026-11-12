@@ -56,6 +56,11 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
 .controls-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-top:10px}
 .header-actions{flex-wrap:wrap}
 @media(max-width:600px){.span2{grid-column:1/-1}.span2 .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* v10: validity badges, event tooltip, log hover */
+.vbadge{font-size:11px;font-weight:700;white-space:nowrap}.vbadge.ok{color:var(--accent)}.vbadge.suspect{color:var(--accent2)}.vbadge.invalid{color:var(--danger)}.vbadge.na{color:var(--muted)}
+details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-row{margin:5px 0;padding-left:8px;border-left:3px solid var(--line)}.an-row.ok{border-left-color:var(--accent)}.an-row.suspect{border-left-color:var(--accent2)}.an-row.invalid{border-left-color:var(--danger)}
+.event-tip{position:fixed;z-index:50;max-width:360px;pointer-events:none;background:var(--panel);color:var(--text);border:1px solid var(--accent);border-radius:9px;padding:8px 10px;font-size:11px;box-shadow:0 6px 22px rgba(0,0,0,.35)}.event-tip hr{border:0;border-top:1px solid var(--line);margin:6px 0}
+.log-row:hover{background:var(--panel2)}
 </style>
 </head>
 <body>
@@ -71,6 +76,10 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
       <div id="settingsMenu" class="settings-menu" hidden>
         <h3>Settings</h3>
         <div class="status-note">More application settings (data connection, language, export defaults) will be added here.</div>
+        <hr class="settings-divider">
+        <h3>Simulator signal</h3>
+        <select id="simModeSelect" aria-label="Simulated test signal"><option value="wander">Wandering (default test signal)</option><option value="quiet">Quiet (white noise)</option><option value="hum">Quiet + 50 Hz hum (aliases to 30 Hz)</option><option value="steps">Quiet + occasional weight steps</option></select>
+        <div class="small" style="margin-top:4px">Only for exercising the validity checks. A real device replaces the simulator.</div>
         <hr class="settings-divider">
         <h3>Calibration</h3>
         <div id="calibrationInfo" class="small">Loading calibration…</div>
@@ -93,9 +102,10 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
         <div class="control-grid">
           <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
           <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
-          <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampel">Global MAD filter + mean (Hampel-style)</option><option value="ema">Exponential moving average (EMA)</option></select></div>
+          <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampelLocal">Hampel filter (sliding local median/MAD) + mean</option><option value="hampel">Global MAD filter + mean (old Hampel-style)</option><option value="ema">Exponential moving average (EMA, seeded; old)</option><option value="emaNorm">EMA, seed-normalised weights</option></select></div>
           <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div></div>
           <div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
+          <div class="field" id="hampelField" hidden><label for="hampelHalf">Hampel half-width k (window 2k+1)</label><input id="hampelHalf" type="number" min="2" max="50" step="1" value="5"></div><div class="field" id="hampelSigmaField" hidden><label for="hampelSigma">Hampel threshold (× robust σ)</label><input id="hampelSigma" type="number" min="1" max="10" step="0.5" value="3"></div>
           <div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
         </div>
         <div class="small" style="margin-top:7px">The centre line and the ±1σ band of the main chart use the selected estimator and its matching spread statistic. Unit changes affect presentation only; statistics stay in canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
@@ -129,7 +139,7 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
       <section class="panel">
         <div class="panel-head"><h2 id="mainChartTitle">Measured mass</h2><span id="viewLabel" class="panel-note">Live viewport</span></div>
         <div id="mainChart" class="chart-wrap"></div>
-        <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers.</div>
+        <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers. Hover markers, highlighted spans or the thin event lane at the top edge for details.</div>
       </section>
       <section class="panel navigator">
         <div class="panel-head"><h2>Timeline navigator</h2><span class="panel-note">Full retained history · drag to navigate · synchronized crosshair</span></div>
@@ -180,6 +190,7 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
         </details>
       </section>
   </div>
+  <div id="eventTip" class="event-tip" hidden></div>
   <footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is loaded asynchronously from jsDelivr CDN.</footer>
 </main>
 
@@ -383,7 +394,13 @@ const state = {
   plotBuffer: null,
   unitId: UNIT_CONFIG.defaultUnit, precision: 'auto',
   estimator: 'mean', trimPercent: 10, emaTau: 0.5,
-  seedValue: 5000, drift: 0, revisionId: 'embedded-demo-v1', hashType: 'embedded revision'
+  seedValue: 5000, drift: 0, revisionId: 'embedded-demo-v1', hashType: 'embedded revision',
+  // v10
+  hampelHalf: 5, hampelSigma: 3,                       // sliding Hampel filter parameters
+  miniCache: {key:'', map:new Map()},                  // navigator min/max buckets aligned to absolute sample numbers
+  snapY: false, wasHidden: false, lastFrameTs: 0, autoYLatch: [false,false],   // Y-axis dead-band / snap
+  hoverRange: null, logPinned: null,                   // log / graph hover highlight, clicked log entry
+  simMode: 'wander', simOffset: 0, simN: 0
 };
 
 function physicalIndex(i) { return (state.head + i) % state.capacity; }
@@ -444,6 +461,14 @@ function selectedMassToMg(value) { return massToMg(value, state.unitId); }
 // The simulator produces a slowly wandering signal with direction changes and
 // small measurement noise. It is a software test signal, not a real calibration.
 function nextSensorValue() {
+  const mode = state.simMode;
+  if (mode !== 'wander') {
+    // Quiet test signals for exercising the validity checks (v10): white-ish noise around 5000 counts.
+    state.simN++;
+    if (mode === 'steps' && Math.random() < 1 / 1200) state.simOffset += (Math.random() < 0.5 ? -1 : 1) * (20 + Math.random() * 40);
+    const hum = mode === 'hum' ? 1.5 * Math.sin(2 * Math.PI * 50 * state.simN / RATE_HZ) : 0;   // 50 Hz at 80 Hz sampling -> 30 Hz alias
+    return Math.round(Math.max(4600, Math.min(5400, 5000 + state.simOffset + hum + (Math.random() - 0.5) * 3)));
+  }
   if (Math.random() < 0.018) state.drift = (Math.random() - 0.5) * 0.7;
   const pull = (5000 - state.seedValue) * 0.0015;
   state.seedValue = Math.max(4600, Math.min(5400, state.seedValue + state.drift + pull + (Math.random() - 0.5) * 1.8));
@@ -717,18 +742,41 @@ function buildVisibleData() {
   }
   return [buf.x.subarray(0,out),buf.value.subarray(0,out),buf.ma.subarray(0,out),buf.upper.subarray(0,out),buf.lower.subarray(0,out)];
 }
+// Navigator data (v10). The old stride sampling (every k-th sample, k = ceil(n / 1600)) changed k and the
+// sampling phase as the buffer grew or wrapped, so the curve flickered. Now the history is cut into
+// buckets of B = 2^L samples ALIGNED TO ABSOLUTE SAMPLE NUMBERS and each bucket contributes its minimum
+// and maximum (two points, in time order). A complete bucket never changes, so it is cached; only the
+// partial first and last buckets are recomputed. B only changes when the sample count crosses a power of
+// two times the bucket target (about 2 buckets per pixel), which is rare. Values are cached in canonical
+// units (counts or mg); the unit conversion happens on output.
 function buildMiniData() {
-  const n = state.count, maxPoints = 1600;
-  if (!n) return [new Float64Array(0),new Float64Array(0)];
-  const step = Math.max(1, Math.ceil(n / maxPoints));
-  const x = new Float64Array(Math.ceil(n / step)), y = new Float64Array(Math.ceil(n / step));
-  let j = 0;
-  for (let i = 0; i < n; i += step) {
-    x[j] = getTime(i) / 1000;
-    y[j] = state.unitId === 'raw' ? getRaw(i) : mgToUnit(getNetMg(i), state.unitId);
-    j++;
+  const n = state.count;
+  if (!n) return [new Float64Array(0), new Float64Array(0)];
+  const diagnostic = state.unitId === 'raw';
+  const width = Math.max(320, Math.floor(state.miniPlot?.bbox?.width || $('miniChart').clientWidth || 800));
+  let target = 512; while (target < width * 2) target *= 2;
+  let B = 1; while (Math.ceil(n / B) > target) B *= 2;
+  const key = (diagnostic ? 'r' : 'm') + '|' + B, cache = state.miniCache;
+  if (cache.key !== key) { cache.key = key; cache.map = new Map(); }
+  const base = state.appended - n, firstId = Math.floor(base / B), lastId = Math.floor((base + n - 1) / B);
+  if (cache.map.size > 3 * target) for (const id of cache.map.keys()) if (id < firstId) cache.map.delete(id);
+  const val = i => diagnostic ? getRaw(i) : getNetMg(i), nb = lastId - firstId + 1;
+  const x = new Float64Array(nb * 2), y = new Float64Array(nb * 2); let out = 0;
+  for (let id = firstId; id <= lastId; id++) {
+    let b = cache.map.get(id);
+    if (!b) {
+      const a = Math.max(id * B, base) - base, e = Math.min((id + 1) * B, base + n) - base;
+      let mnI = a, mxI = a, mn = val(a), mx = mn;
+      for (let i = a + 1; i < e; i++) { const v = val(i); if (v < mn) { mn = v; mnI = i; } if (v > mx) { mx = v; mxI = i; } }
+      b = { mn, mx, mnI: mnI + base, mxI: mxI + base };   // absolute sample numbers
+      if (id > firstId && id < lastId) cache.map.set(id, b);   // only complete buckets are stable
+    }
+    const put = (abs, v) => { x[out] = getTime(abs - base) / 1000; y[out] = diagnostic ? v : mgToUnit(v, state.unitId); out++; };
+    if (b.mnI === b.mxI) put(b.mnI, b.mn);
+    else if (b.mnI < b.mxI) { put(b.mnI, b.mn); put(b.mxI, b.mx); }
+    else { put(b.mxI, b.mx); put(b.mnI, b.mn); }
   }
-  return [x.subarray(0,j),y.subarray(0,j)];
+  return [x.subarray(0, out), y.subarray(0, out)];
 }
 
 function calibrationMarkerPlugin(){
@@ -740,19 +788,104 @@ function calibrationMarkerPlugin(){
     ctx.restore();
   }]}};
 }
+// ---- Highlight overlays shared by the main chart and the navigator (v10) --------------------------------
+// teal = selected interval, amber = measurement samples (running or finished), blue = clicked log entry,
+// white dashed = hovered log row / hovered event. Point events (tare, calibration) are drawn as lines.
+// A thin lane at the top edge shows every logged selection / measurement so that it can be hovered.
+function overlayRanges(){
+  return [
+    {r:state.selection,fill:'rgba(70,190,160,.12)',stroke:'rgba(70,190,160,.65)',w:1},
+    {r:state.highlight,fill:'rgba(246,200,95,.14)',stroke:'rgba(246,200,95,.8)',w:1},
+    {r:state.logPinned,fill:'rgba(120,200,255,.16)',stroke:'rgba(150,215,255,.95)',w:2},
+    {r:state.hoverRange,fill:'rgba(255,255,255,.13)',stroke:'rgba(255,255,255,.95)',w:2,dash:[5,3]}
+  ];
+}
+function drawSpans(u){
+  const ctx=u.ctx,dpr=window.devicePixelRatio||1,top=u.bbox.top,h=u.bbox.height;
+  for(const {r,fill,stroke,w,dash} of overlayRanges()){
+    if(!r)continue;
+    const x0=u.valToPos(r.t0/1000,'x',true),x1=u.valToPos(r.t1/1000,'x',true);
+    ctx.save();ctx.strokeStyle=stroke;ctx.lineWidth=w*dpr;ctx.setLineDash(dash?dash.map(d=>d*dpr):[]);
+    if(r.marker){ctx.beginPath();ctx.moveTo(Math.round(x0)+.5,top);ctx.lineTo(Math.round(x0)+.5,top+h);ctx.lineWidth=Math.max(2.5,w+1)*dpr;ctx.stroke();}
+    else{const l=Math.min(x0,x1),wd=Math.max(2*dpr,Math.abs(x1-x0));ctx.fillStyle=fill;ctx.fillRect(l,top,wd,h);ctx.strokeRect(l+.5,top,Math.max(1,wd-1),h);}
+    ctx.restore();
+  }
+  // event lane: logged selections (teal) and measurements (amber), 4 px high at the top edge
+  ctx.save();
+  for(const l of state.logs){
+    if((l.type!=='selection'&&l.type!=='measurement')||!Number.isFinite(l.t0))continue;
+    const x0=u.valToPos(l.t0/1000,'x',true),x1=u.valToPos(l.t1/1000,'x',true);
+    if(x1<u.bbox.left||x0>u.bbox.left+u.bbox.width)continue;
+    ctx.fillStyle=l.type==='measurement'?'rgba(246,200,95,.9)':'rgba(70,190,160,.9)';
+    ctx.fillRect(Math.min(x0,x1),top,Math.max(2*dpr,Math.abs(x1-x0)),4*dpr);
+  }
+  ctx.restore();
+}
+function miniOverlayPlugin(){
+  return {hooks:{drawClear:[u=>{
+    if(!u.data[0]?.length)return;
+    const ctx=u.ctx;ctx.save();ctx.beginPath();ctx.rect(u.bbox.left,u.bbox.top,u.bbox.width,u.bbox.height);ctx.clip();drawSpans(u);ctx.restore();
+  }]}};
+}
+function redrawOverlays(){state.mainPlot?.redraw(false,false);state.miniPlot?.redraw(false,false);}
+function rangeKey(r){return r?`${r.t0}|${r.t1}|${r.marker?1:0}`:'';}
+function setHoverRange(r){if(rangeKey(r)===rangeKey(state.hoverRange))return;state.hoverRange=r;redrawOverlays();}
+function logEntryOf(id){return state.logs.find(x=>(x.entryId||x.eventId)===id)||null;}
+function logEntryRange(e){
+  if(!e)return null;
+  if(e.type==='tare'||e.type==='calibration')return{t0:e.effectiveFromTime,t1:e.effectiveFromTime,marker:true};
+  if(e.type==='selection'||e.type==='measurement')return{t0:e.t0,t1:e.t1};
+  return null;
+}
+// ---- Event hit-testing and tooltip --------------------------------------------------------------------------
+// Priority: point markers (+-6 px) > logged spans in the top lane > spans that are drawn over the full
+// height (current selection, running / last measurement, clicked log entry).
+function describeEventHTML(e){
+  const tt=x=>(x/1000).toFixed(2)+' s',raw=state.unitId==='raw';
+  if(e.type==='tare')return `<strong>${esc(e.eventId)} · Tare</strong><br>${esc(e.method)}<br>Tare mass ${formatMass(e.tareMassMg)} · effective from ${tt(e.effectiveFromTime)}`+(e.tareRaw==null?'':`<br>Raw reference ${fmtNumber(e.tareRaw,2)} counts`);
+  if(e.type==='calibration')return `<strong>Calibration change</strong><br>${esc(e.profileName)} · revision ${esc(e.revisionId)}<br>Effective from ${tt(e.effectiveFromTime)}`;
+  if(e.type==='measuring')return `<strong>Measurement in progress</strong><br>${e.collected.toLocaleString()} / ${e.target.toLocaleString()} samples`;
+  const val=raw?`${fmtNumber(e.rawEstimatorValue,0)} counts`:formatMass(e.originalValueMg),sig=raw?`${fmtNumber(e.rawSpread,2)} counts`:formatMass(e.spreadMg);
+  return `<strong>${e.type==='measurement'?'Measurement':'Selection'} · ${e.totalSamples.toLocaleString()} samples</strong><br>${tt(e.t0)} – ${tt(e.t1)} (${((e.t1-e.t0)/1000).toFixed(2)} s)<br>Result ${val} · σ ${sig}<br>${esc(estimatorLabel(e.estimator))}`+analysisBadgeHTML(e.analysis,'<br>')+(e.crossesTare?'<br><span class="warning">spans a tare event</span>':'')+(e.crossesCalibration?'<br><span class="warning">spans a calibration change</span>':'');
+}
+function hitTestEvents(u,x,y){
+  const t=u.posToVal(x,'x')*1000,tol=6*Math.abs(u.posToVal(1,'x')-u.posToVal(0,'x'))*1000,lane=(u===state.miniPlot?10:14),hits=[],seen=new Set();
+  const add=(prio,entry,range)=>{if(seen.has(entry))return;seen.add(entry);hits.push({prio,entry,range});};
+  for(const e of state.tareEvents)if(Math.abs(e.effectiveFromTime-t)<=tol)add(0,e,logEntryRange({type:'tare',effectiveFromTime:e.effectiveFromTime}));
+  for(const l of state.logs)if(l.type==='calibration'&&Math.abs(l.effectiveFromTime-t)<=tol)add(0,l,logEntryRange(l));
+  if(y<=lane)for(const l of state.logs)if((l.type==='selection'||l.type==='measurement')&&t>=l.t0-tol&&t<=l.t1+tol)add(1+(l.t1-l.t0)/1e12,l,logEntryRange(l));
+  const inside=r=>r&&t>=r.t0&&t<=r.t1;
+  if(state.measurement&&inside(state.highlight))add(2,{type:'measuring',collected:state.measurement.collected,target:state.measurement.target},state.highlight);
+  else if(state.lastMeasurement&&inside(state.highlight))add(2,state.lastMeasurement,logEntryRange(state.lastMeasurement));
+  if(state.logPinned&&inside(state.logPinned)){const pe=logEntryOf(state.logPinned.id);if(pe)add(2,pe,logEntryRange(pe));}
+  if(state.selection&&inside(state.selection)){const same=state.logs.find(l=>l.type==='selection'&&l.t0===state.selection.t0&&l.t1===state.selection.t1);add(2,same||{type:'selection',...state.selection},{t0:state.selection.t0,t1:state.selection.t1});}
+  hits.sort((a,b)=>a.prio-b.prio);return hits;
+}
+function hideEventTip(){const tip=$('eventTip');if(tip)tip.hidden=true;}
+function showEventTip(hits,cx,cy){
+  const tip=$('eventTip');if(!hits.length){tip.hidden=true;return;}
+  tip.innerHTML=hits.slice(0,3).map(h=>describeEventHTML(h.entry)).join('<hr>');tip.hidden=false;
+  const w=tip.offsetWidth,h=tip.offsetHeight;let x=cx+14,y=cy+16;
+  if(x+w>window.innerWidth-8)x=cx-w-14;if(y+h>window.innerHeight-8)y=cy-h-14;
+  tip.style.left=Math.max(4,x)+'px';tip.style.top=Math.max(4,y)+'px';
+}
+function wireEventHover(u){
+  const over=u.over;
+  over.addEventListener('pointermove',e=>{
+    if(e.buttons){hideEventTip();return;}
+    const rect=over.getBoundingClientRect(),hits=hitTestEvents(u,e.clientX-rect.left,e.clientY-rect.top);
+    showEventTip(hits,e.clientX,e.clientY);
+    const f=hits.find(h=>h.prio<2);setHoverRange(f?f.range:null);   // lane / marker hover also lights up both graphs
+  });
+  over.addEventListener('pointerleave',()=>{hideEventTip();setHoverRange(null);});
+}
 function zeroFillPlugin() {
   return {hooks:{drawClear:[u=>{
     if (!u.data[0]?.length) return;
     const xs=u.data[0], raw=u.data[1], lower=u.data[4], ctx=u.ctx;
     const yZero=u.valToPos(0,'y',true);
     ctx.save(); ctx.beginPath(); ctx.rect(u.bbox.left,u.bbox.top,u.bbox.width,u.bbox.height); ctx.clip();
-    // Teal = selected interval, amber = measurement samples (in progress or finished).
-    for(const [range,fill,stroke] of [[state.selection,'rgba(70,190,160,.12)','rgba(70,190,160,.65)'],[state.highlight,'rgba(246,200,95,.14)','rgba(246,200,95,.8)']]){
-      if(!range)continue;
-      const x0=u.valToPos(range.t0/1000,'x',true),x1=u.valToPos(range.t1/1000,'x',true);
-      ctx.fillStyle=fill;ctx.fillRect(Math.min(x0,x1),u.bbox.top,Math.max(2,Math.abs(x1-x0)),u.bbox.height);
-      ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.strokeRect(Math.min(x0,x1)+.5,u.bbox.top,Math.max(1,Math.abs(x1-x0)-1),u.bbox.height);
-    }
+    drawSpans(u);
     if (state.unitId === 'raw') { ctx.restore(); return; }
     const drawFill=(values,fill)=>{
       ctx.fillStyle=fill; ctx.beginPath();
@@ -772,10 +905,33 @@ function zeroFillPlugin() {
   }]}};
 }
 
+// Auto Y-axis with a dead-band (v10). The old rule moved both edges a fixed fraction towards the data
+// extent on EVERY frame, so any wobble of the extent (the spread band is sampled, new samples enter and
+// leave the window) made the view swim. Now each edge has its own hysteresis:
+//   * it starts to move only when the data comes closer to that edge than half the padding (view too
+//     tight; threshold AUTOY_TIGHT x pad) or when more than AUTOY_LOOSE x span of empty space has
+//     opened up beyond the padding (view too loose);
+//   * once started it eases towards the padded target at the configured response and stops again within
+//     AUTOY_RELEASE x span of it.
+// snap = true (first frame, or the first frame after the tab was in the background) places both edges
+// exactly on the target and clears the latches; damping resumes with the next frame.
+const AUTOY_TIGHT=0.5,AUTOY_LOOSE=0.12,AUTOY_RELEASE=0.02;
+function autoYStep(cur,target,pad,response,latch,snap){
+  if(!cur||snap||!(cur.max>cur.min)){latch[0]=latch[1]=false;return{min:target.min,max:target.max};}
+  const S=cur.max-cur.min,out={min:cur.min,max:cur.max};
+  const eMin=target.min-cur.min,eMax=cur.max-target.max;   // >0: view looser than needed, <0: data inside the padding
+  const edges=[['min',eMin,target.min],['max',eMax,target.max]];
+  for(let k=0;k<2;k++){
+    const [name,e,t]=edges[k];
+    if(!latch[k]&&(e<-AUTOY_TIGHT*pad||e>AUTOY_LOOSE*S))latch[k]=true;
+    if(latch[k]){out[name]+=(t-out[name])*response;if(Math.abs(t-out[name])<=AUTOY_RELEASE*S)latch[k]=false;}
+  }
+  return out;
+}
 function makeMainOptions() {
   const c=colors();
   return {
-    width:$('mainChart').clientWidth||800,height:390,title:'',legend:{show:true},
+    width:$('mainChart').clientWidth||800,height:mainChartHeight(),title:'',legend:{show:true},
     cursor:{show:true,x:true,y:false,drag:{x:false,y:false},focus:{prox:30}},
     select:{show:true,left:0,top:0,width:0,height:0},
     scales:{x:{time:false,auto:false},y:{auto:!state.manualY,range:(u,min,max)=>{
@@ -785,9 +941,9 @@ function makeMainOptions() {
       if($('zeroLineToggle').checked&&state.unitId!=='raw'){targetMin=Math.min(0,targetMin);targetMax=Math.max(0,targetMax);}
       let span=targetMax-targetMin;if(!(span>0))span=Math.max(1,Math.abs(targetMax)*.02);
       const pad=span*.04;targetMin-=pad;targetMax+=pad;
-      if(state.autoYMin==null||state.autoYMax==null){state.autoYMin=targetMin;state.autoYMax=targetMax;}
-      else{const response=clamp(Number($('yResponseRange').value||5)/100,.01,1);state.autoYMin+=(targetMin-state.autoYMin)*response;state.autoYMax+=(targetMax-state.autoYMax)*response;}
-      return[state.autoYMin,state.autoYMax];
+      const response=clamp(Number($('yResponseRange').value||5)/100,.01,1);
+      const next=autoYStep(state.autoYMin==null?null:{min:state.autoYMin,max:state.autoYMax},{min:targetMin,max:targetMax},pad,response,state.autoYLatch,state.snapY);
+      state.autoYMin=next.min;state.autoYMax=next.max;return[next.min,next.max];
     }}},
     axes:[
       {stroke:c.muted,grid:{stroke:'rgba(130,150,180,.12)'},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>`${v.toFixed(1)}s`)},
@@ -829,15 +985,26 @@ function makeMiniOptions(){
       {show:true,stroke:c.muted,size:18,grid:{show:true,stroke:'rgba(130,150,180,.15)',width:1},ticks:{show:true,stroke:c.line},values:(u,vals)=>vals.map(v=>`${v.toFixed(0)}s`)},
       {show:true,stroke:c.muted,size:26,grid:{show:true,stroke:'rgba(130,150,180,.15)',width:1},ticks:{show:true,stroke:c.line},values:(u,vals)=>vals.map(v=>state.unitId==='raw'?fmtNumber(v,0):fmtNumber(v,displayDigits()))}
     ],
-    series:[{label:'Time'},{label:state.unitId==='raw'?'Raw history':'Mass history',stroke:c.raw,width:1.1,points:{show:false}}]
+    series:[{label:'Time'},{label:state.unitId==='raw'?'Raw history':'Mass history',stroke:c.raw,width:1.1,points:{show:false}}],
+    plugins:[miniOverlayPlugin()]
   };
+}
+// The main chart and the navigator are created and destroyed independently (v10): changing the
+// estimator only relabels the main chart's series, so only that chart is rebuilt.
+function createMainChart(){
+  state.mainPlot=new uPlot(makeMainOptions(),[[],[],[],[],[]],$('mainChart'));
+  wireMainInteractions();wireEventHover(state.mainPlot);wireCrosshairSync(state.mainPlot,'main');
+}
+function createMiniChart(){
+  state.miniPlot=new uPlot(makeMiniOptions(),[[],[]],$('miniChart'));
+  wireMiniInteractions();wireEventHover(state.miniPlot);wireCrosshairSync(state.miniPlot,'mini');
 }
 function createCharts(){
   if(!window.uPlot){$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection to the approved CDN.</p>';return;}
-  state.mainPlot=new uPlot(makeMainOptions(),[[],[],[],[],[]],$('mainChart'));
-  state.miniPlot=new uPlot(makeMiniOptions(),[[],[]],$('miniChart'));
-  wireMainInteractions();wireMiniInteractions();wireCrosshairSync();
+  createMainChart();createMiniChart();
 }
+function destroyCharts(){if(state.mainPlot)state.mainPlot.destroy();if(state.miniPlot)state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;}
+function recreateMainChart(){if(!state.mainPlot)return;state.mainPlot.destroy();state.mainPlot=null;createMainChart();}
 function displayDigits(){const unit=unitById(state.unitId);return state.precision==='auto'?unit.decimals:Number(state.precision);}
 
 function fitLiveWindow(){if(!state.count){state.viewMin=0;state.viewMax=PERIOD_MS;return;}const first=oldestTime(),last=newestTime();state.viewMax=Math.max(last,first+PERIOD_MS);state.viewMin=Math.max(first,state.viewMax-state.liveWindowSpan);}
@@ -848,9 +1015,13 @@ function renderFrame(){
   if(!state.count)return;
   if(state.live)fitLiveWindow();
   updateMetrics();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
+  const ts=performance.now();
+  if(state.lastFrameTs&&ts-state.lastFrameTs>2000)state.snapY=true;   // rendering was suspended (background tab): do not damp
+  state.lastFrameTs=ts;
   if(!state.mainPlot)return;
   const data=buildVisibleData(),minX=state.viewMin/1000,maxX=Math.max(minX+PERIOD_MS/1000,state.viewMax/1000);
   state.mainPlot.batch(()=>{state.mainPlot.setData(data,true);state.mainPlot.setScale('x',{min:minX,max:maxX});if(state.manualY)state.mainPlot.setScale('y',{min:state.yMin,max:state.yMax});});
+  state.snapY=false;   // damping resumes immediately after the one undamped frame
   const now=performance.now();if(now-state.miniLastRender>=250){updateMini();state.miniLastRender=now;}else updateMiniSelection();
   if(state.selection)updateSelectionReadout();
 }
@@ -875,12 +1046,75 @@ function updateMini(){
 // These numbers describe observed scatter only; they are not measurement uncertainties, and
 // values from different estimators are different statistics and must not be compared directly.
 function medianOfSorted(a){const n=a.length;return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2;}
+// ---- Sliding (local) Hampel identifier (v10) ------------------------------------------------------
+// Classical Hampel rule: sample i is an outlier if |x_i - med_i| > nSigma * 1.4826 * MAD_i, where med_i and
+// MAD_i come from the 2k+1 samples centred on i (truncated at the ends of the series). Because the
+// reference is LOCAL, a slow drift or a step does not make ordinary samples look like outliers, which
+// is the weakness of the old global gate. Two documented choices:
+//  * Scale floor. Quantized counts often give MAD = 0 inside 11 tied samples; the rule would then
+//    flag every sample that differs by one count. The local scale is therefore never smaller than
+//    (a) 1/3 of the series' noise level, estimated from FIRST DIFFERENCES (1.4826 MAD(diff) / sqrt 2, or the
+//    mean-absolute-deviation analogue if that is 0), which a slow drift cannot inflate, and
+//    (b) one quantisation step (the smallest gap between distinct values, ignoring gaps < 1e-9 of the range),
+//    so a one-step deviation is never an outlier; and never below 1e-12.
+//  * Flagged samples are EXCLUDED from the mean and SD (the classical filter replaces them with the
+//    local median; replacement would insert synthetic values and bias the SD low even further).
+//    The SD of the kept samples is still biased low and is not an uncertainty.
+const HAMPEL_DEFAULT_HALF=5,HAMPEL_DEFAULT_SIGMA=3,HAMPEL_SELECTION_MAX=200000;
+function hampelFlags(values,half,nSigma){
+  const n=values.length,flags=new Uint8Array(n);if(n<3)return flags;
+  const all=Float64Array.from(values).sort(),range=all[n-1]-all[0];let q=Infinity;
+  for(let i=1;i<n;i++){const g=all[i]-all[i-1];if(g>1e-9*range&&g<q)q=g;}
+  const df=new Float64Array(n-1);for(let i=1;i<n;i++)df[i-1]=values[i]-values[i-1];
+  const dsort=Float64Array.from(df).sort(),dmed=medianOfSorted(dsort),gd=new Float64Array(n-1);
+  for(let i=0;i<n-1;i++)gd[i]=Math.abs(df[i]-dmed);
+  gd.sort();let gscale=1.4826*medianOfSorted(gd)/Math.SQRT2;
+  if(!(gscale>0)){let sad=0;for(let i=0;i<n-1;i++)sad+=gd[i];gscale=1.2533*sad/(n-1)/Math.SQRT2;}
+  const floor=Math.max(gscale/3,Number.isFinite(q)?q:0,1e-12),win=new Float64Array(2*half+1),dev=new Float64Array(2*half+1);
+  for(let i=0;i<n;i++){
+    const a=Math.max(0,i-half),b=Math.min(n-1,i+half),m=b-a+1,w=win.subarray(0,m),d=dev.subarray(0,m);
+    for(let j=0;j<m;j++)w[j]=values[a+j];
+    w.sort();const med=medianOfSorted(w);
+    for(let j=0;j<m;j++)d[j]=Math.abs(w[j]-med);
+    d.sort();const scale=Math.max(1.4826*medianOfSorted(d),floor);
+    if(Math.abs(values[i]-med)>nSigma*scale)flags[i]=1;
+  }
+  return flags;
+}
+// ---- Seed-normalised EMA (v10) -----------------------------------------------------------------------
+// The plain EMA is seeded with the first sample, which keeps weight exp(-T/tau) after T seconds: for a
+// short interval the result is mostly that seed. Here the weights are those of the EMA kernel only,
+//   w_i = (1 - a_i) * prod_{j>i} a_j,   a_j = exp(-dt_j / tau)   (the first sample counts as one nominal period),
+// and are NORMALISED to sum to one, so no weight is left on a seed. Value = sum w x / sum w, spread = the
+// weighted SD about that weighted mean. (This differs in meaning from the recursive "EW SD" of the plain
+// EMA, which measures deviations from the moving mean and therefore includes drift.) With tau >> T the
+// result tends to the arithmetic mean. Exact incremental form (West 1979 with exponential decay):
+//   W' = a W + u,  m' = m + (u / W')(x - m),  S' = a S + u (x - m)(x - m'),  u = 1 - a,  sigma^2 = S / W.
+// Kish effective sample size = (sum w)^2 / sum w^2 is tracked as sw, sw2 (both decay with a, a^2).
+function emaNormStep(st,x,dtS,tau){
+  const a=Math.exp(-Math.max(0,dtS)/tau),u=1-a,W=a*st.W+u;
+  if(W>0){const d=x-st.m;st.m+=u/W*d;st.S=a*st.S+u*d*(x-st.m);}
+  st.W=W;st.sw=a*st.sw+u;st.sw2=a*a*st.sw2+u*u;
+}
+function emaNormalised(values,times,tau){
+  tau=Math.max(.025,Number(tau)||.5);const st={W:0,m:0,S:0,sw:0,sw2:0},n=values.length,hasT=!!times&&times.length>=n;
+  for(let i=0;i<n;i++)emaNormStep(st,values[i],(i>0&&hasT)?(times[i]-times[i-1])/1000:PERIOD_MS/1000,tau);
+  return{value:st.m,sigma:Math.sqrt(Math.max(0,st.S/st.W)),neff:st.sw2>0?st.sw*st.sw/st.sw2:0};
+}
 function estimate(values,times,method,options={}){
   const n=values.length;if(!n)return{value:NaN,used:0,rejected:0,sigma:NaN};
   if(method==='ema'){
     const tau=Math.max(.025,Number(options.tau)||.5);let m=values[0],v=0;
     for(let i=1;i<n;i++){const a=Math.exp(-Math.max(0,(times[i]-times[i-1])/1000)/tau),d=values[i]-m;m+=(1-a)*d;v=a*(v+(1-a)*d*d);}
     return{value:m,used:n,rejected:0,sigma:Math.sqrt(v)};
+  }
+  if(method==='emaNorm'){const r=emaNormalised(values,times,options.tau);return{value:r.value,used:n,rejected:0,sigma:r.sigma,neff:r.neff};}
+  if(method==='hampelLocal'){
+    const half=clamp(Math.round(Number(options.hampelHalf)||HAMPEL_DEFAULT_HALF),2,50),ns=clamp(Number(options.hampelSigma)||HAMPEL_DEFAULT_SIGMA,1,10);
+    const flags=hampelFlags(values,half,ns),kept=[];
+    for(let i=0;i<n;i++)if(!flags[i])kept.push(values[i]);
+    if(!kept.length)return{value:medianOfSorted(Float64Array.from(values).sort()),used:0,rejected:n,sigma:0};
+    return{value:kept.reduce((s,v)=>s+v,0)/kept.length,used:kept.length,rejected:n-kept.length,sigma:calculateStd(kept)};
   }
   if(method==='mean'||(method!=='median'&&method!=='trimmed'&&method!=='hampel'))return{value:values.reduce((sum,v)=>sum+v,0)/n,used:n,rejected:0,sigma:calculateStd(values)};
   const arr=values.slice().sort((a,b)=>a-b),median=medianOfSorted(arr);
@@ -894,14 +1128,16 @@ function estimate(values,times,method,options={}){
     const trim=Math.floor(n*clamp(Number(options.trimPercent)||10,1,30)/100),from=trim,to=Math.max(trim+1,n-trim),kept=arr.slice(from,to);
     return{value:kept.reduce((a,b)=>a+b,0)/kept.length,used:kept.length,rejected:n-kept.length,sigma:calculateStd(kept)};
   }
-  // hampel: global MAD gate (3 x robust scale), then the mean and SD of the kept samples
+  // hampel (old, global): one 3 x robust-scale gate around the window median, then mean and SD of the kept samples
   const threshold=Math.max(3*robustSigma(),1e-9),kept=arr.filter(v=>Math.abs(v-median)<=threshold);
   if(!kept.length)return{value:median,used:1,rejected:n-1,sigma:0};
   return{value:kept.reduce((a,b)=>a+b,0)/kept.length,used:kept.length,rejected:n-kept.length,sigma:calculateStd(kept)};
 }
-function spreadShort(method){return({mean:'SD',median:'MAD',trimmed:'retained SD',hampel:'retained SD',ema:'EW SD'})[method]||'SD';}
-function spreadDescription(method){return({mean:'population SD',median:'robust σ = 1.4826 × MAD',trimmed:'SD of retained samples (biased low)',hampel:'SD of retained samples (biased low)',ema:'exponentially weighted SD'})[method]||'SD';}
+function spreadShort(method){return({mean:'SD',median:'MAD',trimmed:'retained SD',hampel:'retained SD',hampelLocal:'retained SD',ema:'EW SD',emaNorm:'weighted SD'})[method]||'SD';}
+function spreadDescription(method){return({mean:'population SD',median:'robust σ = 1.4826 × MAD',trimmed:'SD of retained samples (biased low)',hampel:'SD of retained samples (biased low)',hampelLocal:'SD of samples kept by the sliding Hampel test (biased low)',ema:'exponentially weighted SD',emaNorm:'exponentially weighted SD about the seed-normalised mean'})[method]||'SD';}
 function centerLabel(){const raw=state.unitId==='raw',m=state.estimator;return m==='mean'?(raw?'Raw moving average':'Moving average'):`${raw?'Raw ':''}${estimatorLabel(m)}`;}
+function estimatorOptions(){return{tau:state.emaTau,trimPercent:state.trimPercent,hampelHalf:state.hampelHalf,hampelSigma:state.hampelSigma};}
+function isEmaMethod(m){return m==='ema'||m==='emaNorm';}
 // ---- Estimator curve for the main chart ------------------------------------------------------------
 // Centre line and band follow the selected estimator. Mean uses the exact O(1) rolling values stored
 // at ingest. EMA is evaluated in one pass over the visible range plus a warm-up. Median / trimmed /
@@ -917,28 +1153,34 @@ function buildEstimatorCurve(lo,hi,diagnostic){
   const method=state.estimator;
   if(method==='mean')return{stride:1,center:i=>chartMAAt(i,diagnostic),sigma:i=>chartSDAt(i,diagnostic)};
   const get=i=>diagnostic?getRaw(i):getNetMg(i),bounds=epochBounds(diagnostic);
-  if(method==='ema'){
-    const tau=Math.max(.025,state.emaTau),s0=Math.max(0,lo-Math.ceil(CURVE_EMA_WARMUP*tau*RATE_HZ)),starts=new Set(bounds);
+  if(isEmaMethod(method)){
+    const norm=method==='emaNorm',tau=Math.max(.025,state.emaTau),s0=Math.max(0,lo-Math.ceil(CURVE_EMA_WARMUP*tau*RATE_HZ)),starts=new Set(bounds);
     const C=new Float64Array(hi-lo+1),S=new Float64Array(hi-lo+1);let m=0,v=0,prevT=getTime(s0);
+    const st={W:0,m:0,S:0,sw:0,sw2:0};
     for(let i=s0;i<=hi;i++){
-      const x=get(i),t=getTime(i);
-      if(i===s0||starts.has(i)){m=x;v=0;}
+      const x=get(i),t=getTime(i),reset=(i===s0||starts.has(i));
+      if(norm){   // seed-normalised: exact weighted mean/SD of the samples since the epoch start (or warm-up start)
+        if(reset){st.W=0;st.m=0;st.S=0;st.sw=0;st.sw2=0;emaNormStep(st,x,PERIOD_MS/1000,tau);}
+        else emaNormStep(st,x,Math.max(0,(t-prevT)/1000),tau);
+        m=st.m;v=st.S/st.W;
+      }else if(reset){m=x;v=0;}
       else{const a=Math.exp(-Math.max(0,(t-prevT)/1000)/tau),d=x-m;m+=(1-a)*d;v=a*(v+(1-a)*d*d);}
-      prevT=t;if(i>=lo){C[i-lo]=m;S[i-lo]=Math.sqrt(v);}
+      prevT=t;if(i>=lo){C[i-lo]=m;S[i-lo]=Math.sqrt(Math.max(0,v));}
     }
     return{stride:1,center:i=>C[i-lo],sigma:i=>S[i-lo]};
   }
   const w=Math.max(2,Math.min(state.window,MAX_ROBUST_WINDOW)),count=hi-lo+1;
-  const stride=Math.max(1,Math.ceil(count/Math.max(64,Math.floor(CURVE_BUDGET/Math.max(16,w)))));
+  const costW=method==='hampelLocal'?w*(2*state.hampelHalf+2):w;   // the local Hampel test costs ~(2k+1) small sorts per sample
+  const stride=Math.max(1,Math.ceil(count/Math.max(64,Math.floor(CURVE_BUDGET/Math.max(16,costW)))));
   const nodes=[];
   if(stride===1){for(let i=lo;i<=hi;i++)nodes.push(i);}
   else{nodes.push(lo);const a0=absIndex(lo);for(let i=lo+((stride-(a0%stride))%stride);i<hi;i+=stride)if(i>lo)nodes.push(i);if(nodes[nodes.length-1]!==hi)nodes.push(hi);}
-  const key=`${diagnostic?'r':'m'}|${method}|${w}|${state.trimPercent}`;
+  const key=`${diagnostic?'r':'m'}|${method}|${w}|${state.trimPercent}|${state.hampelHalf}|${state.hampelSigma}`;
   if(state.curveCache.key!==key||state.curveCache.map.size>60000)state.curveCache={key,map:new Map()};
   const cache=state.curveCache.map,NC=new Float64Array(nodes.length),NS=new Float64Array(nodes.length);
   for(let k=0;k<nodes.length;k++){
     const i=nodes[k],id=absIndex(i);let hit=cache.get(id);
-    if(!hit){const a=Math.max(i-w+1,epochStartFor(i,bounds)),vals=new Array(i-a+1);for(let j=a;j<=i;j++)vals[j-a]=get(j);const r=estimate(vals,[],method,{trimPercent:state.trimPercent});hit=[r.value,r.sigma];cache.set(id,hit);}
+    if(!hit){const a=Math.max(i-w+1,epochStartFor(i,bounds)),vals=new Array(i-a+1);for(let j=a;j<=i;j++)vals[j-a]=get(j);const r=estimate(vals,[],method,estimatorOptions());hit=[r.value,r.sigma];cache.set(id,hit);}
     NC[k]=hit[0];NS[k]=hit[1];
   }
   const at=(i,arr)=>{
@@ -967,15 +1209,15 @@ function updateMetrics(){
   // panel never mixes values that are relative to two different zero references.
   const epochStart=(!diagnostic&&tare)?Math.min(lowerBoundTime(tare.effectiveFromTime),last):0;
   const n=Math.max(1,Math.min(state.window,state.count-epochStart));
-  const method=state.estimator,robust=method==='median'||method==='trimmed'||method==='hampel';
+  const method=state.estimator,robust=method==='median'||method==='trimmed'||method==='hampel'||method==='hampelLocal';
   let value,used=n,rejected=0,sig=NaN;
   if(method==='mean')value=diagnostic?getRawMA(last):getMassMA(last);
-  else if(method==='ema'){const c=buildEstimatorCurve(last,last,diagnostic);value=c.center(last);sig=c.sigma(last);}
-  else{const w=collectCurrentWindow(Math.min(n,MAX_ROBUST_WINDOW));const r=estimate(diagnostic?w.raws:w.values,w.times,method,{tau:state.emaTau,trimPercent:state.trimPercent});value=r.value;used=w.values.length;rejected=r.rejected;sig=r.sigma;}
+  else if(isEmaMethod(method)){const c=buildEstimatorCurve(last,last,diagnostic);value=c.center(last);sig=c.sigma(last);}
+  else{const w=collectCurrentWindow(Math.min(n,MAX_ROBUST_WINDOW));const r=estimate(diagnostic?w.raws:w.values,w.times,method,estimatorOptions());value=r.value;used=w.values.length;rejected=r.rejected;sig=r.sigma;}
   const spread=method==='mean'?(diagnostic?getRawSD(last):getMassSD(last)):sig;
   $('currentValueLabel').textContent=diagnostic?'Raw sensor estimator':'Current measured mass';
   $('currentValue').textContent=diagnostic?fmtNumber(value,0):formatMass(value);
-  $('currentValueDetail').textContent=method==='ema'?`EMA · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)} · ${used} samples${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
+  $('currentValueDetail').textContent=isEmaMethod(method)?`${method==='emaNorm'?'EMA (seed-normalised)':'EMA (seeded)'} · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)}${method==='hampelLocal'?` (k=${state.hampelHalf}, ${state.hampelSigma}σ)`:''} · ${used} samples${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
   $('currentValue').title=`Raw latest: ${raw} counts\nAbsolute calibrated mass: ${fmtNumber(getMassMg(last),3)} mg\nNet calibrated mass: ${fmtNumber(getNetMg(last),3)} mg\nCalibration: ${state.revisionId}`;
   const outside=calibrateAbsolute(raw).outOfRange&&!diagnostic;
   $('rangeStatus').hidden=!outside;if(outside)$('rangeStatus').textContent='Latest sample is outside the calibrated range (extrapolated).';
@@ -990,26 +1232,22 @@ function updateMetrics(){
   $('manualTareInput').disabled=diagnostic;
   $('uncertaintyStatus').textContent=calibration.validation?.status==='validated'?'Measurement uncertainty: see calibration validation metadata.':'Measurement uncertainty: not characterized by the embedded demonstration calibration. Sensor spread is repeatability information, not a complete uncertainty statement.';
 }
-function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Global MAD filter + mean',ema:'Exponential moving average (EMA)'})[method]||'Arithmetic mean';}
+function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Global MAD filter + mean',hampelLocal:'Sliding Hampel filter + mean',ema:'Exponential moving average (EMA, seeded)',emaNorm:'EMA, seed-normalised'})[method]||'Arithmetic mean';}
 
 function setLive(on){state.live=on;if(on)fitLiveWindow();updateViewLabel();}
-function trackLive(){setLive(true);state.selection=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();}
+function trackLive(){setLive(true);state.selection=null;state.logPinned=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();}
 function zoomBy(factor,anchorRatio=.5){const oldSpan=Math.max(PERIOD_MS,state.viewMax-state.viewMin),maxSpan=Math.max(500,state.capacity*PERIOD_MS),newSpan=clamp(state.liveWindowSpan*factor,250,maxSpan);state.liveWindowSpan=newSpan;if(state.live)fitLiveWindow();else{const anchor=state.viewMin+clamp(anchorRatio,0,1)*oldSpan;state.viewMin=clamp(anchor-anchorRatio*newSpan,oldestTime(),Math.max(oldestTime(),newestTime()-newSpan));state.viewMax=Math.min(newestTime(),state.viewMin+newSpan);}scheduleRender();}
 function wheelZoom(e){e.preventDefault();const rect=state.mainPlot.over.getBoundingClientRect(),x=clamp(e.clientX-rect.left,0,rect.width);zoomBy(e.deltaY<0?.8:1.25,rect.width?x/rect.width:.5);}
 
-function wireCrosshairSync(){
-  const mainOver=state.mainPlot.over,miniOver=state.miniPlot.over;
-  const sync=(from,to,e)=>{
-    const rect=from.getBoundingClientRect(),x=clamp(e.clientX-rect.left,0,rect.width);
-    const value=(from===mainOver?state.mainPlot:state.miniPlot).posToVal(x,'x');
-    const target=from===mainOver?state.miniPlot:state.mainPlot;
-    const targetX=target.valToPos(value,'x');
-    target.setCursor({left:targetX,top:Math.max(2,target.bbox.height/2)});
-  };
-  mainOver.addEventListener('pointermove',e=>sync(mainOver,miniOver,e));
-  miniOver.addEventListener('pointermove',e=>sync(miniOver,mainOver,e));
-  mainOver.addEventListener('pointerleave',()=>state.miniPlot?.setCursor({left:-10,top:-10}));
-  miniOver.addEventListener('pointerleave',()=>state.mainPlot?.setCursor({left:-10,top:-10}));
+function wireCrosshairSync(u,which){
+  // The other chart is looked up at event time, so either chart can be recreated on its own.
+  const over=u.over;
+  over.addEventListener('pointermove',e=>{
+    const other=which==='main'?state.miniPlot:state.mainPlot;if(!other)return;
+    const rect=over.getBoundingClientRect(),x=clamp(e.clientX-rect.left,0,rect.width);
+    other.setCursor({left:other.valToPos(u.posToVal(x,'x'),'x'),top:Math.max(2,other.bbox.height/2)});
+  });
+  over.addEventListener('pointerleave',()=>{(which==='main'?state.miniPlot:state.mainPlot)?.setCursor({left:-10,top:-10});});
 }
 function wireMainInteractions(){
   const over=state.mainPlot.over;let drag=null;
@@ -1041,10 +1279,13 @@ function wireMiniInteractions(){
   over.addEventListener('touchend',()=>{if(drag&&drag.id==='touch')drag=null;});
 }
 
-function sampleIndicesForEstimator(first,end,method,limit=MAX_ROBUST_WINDOW){
-  const total=end-first;
-  if(method==='mean'||method==='ema'||total<=limit)return Array.from({length:total},(_,i)=>first+i);
-  // Median/trimmed/Hampel/EMA analysis is intentionally bounded for predictable UI cost.
+function sampleIndicesForEstimator(first,end,method,limit){
+  const total=end-first;if(limit==null)limit=method==='hampelLocal'?HAMPEL_SELECTION_MAX:MAX_ROBUST_WINDOW;
+  if(method==='mean'||method==='ema'||method==='emaNorm'||total<=limit)return Array.from({length:total},(_,i)=>first+i);
+  // The local Hampel test needs CONTIGUOUS samples (neighbours spaced by a stride would not be local):
+  // the newest `limit` samples are used. The UI discloses the bounded analysis.
+  if(method==='hampelLocal')return Array.from({length:limit},(_,k)=>end-limit+k);
+  // Median/trimmed/global-Hampel analysis is intentionally bounded for predictable UI cost.
   // Evenly spaced samples cover the selected interval; the UI discloses this approximation.
   const indices=new Array(limit),step=(total-1)/(limit-1);
   for(let i=0;i<limit;i++)indices[i]=first+Math.round(i*step);
@@ -1053,24 +1294,30 @@ function sampleIndicesForEstimator(first,end,method,limit=MAX_ROBUST_WINDOW){
 function calculateSelection(first,end,settings={}){
   const method=settings.estimator||state.estimator, total=end-first, currentTare=currentTareMassMg();
   const selectedTau=settings.emaTau??state.emaTau, selectedTrim=settings.trimPercent??state.trimPercent;
-  const options={tau:selectedTau,trimPercent:selectedTrim};
+  const selectedHalf=settings.hampelHalf??state.hampelHalf,selectedHSigma=settings.hampelSigma??state.hampelSigma;
+  const options={tau:selectedTau,trimPercent:selectedTrim,hampelHalf:selectedHalf,hampelSigma:selectedHSigma};
+  let emaNeff=null;
   let originalValueMg=0,currentValueMg=0,rawEstimatorValue=0,spreadMg=0,rawSpread=0,rawMean=0,usedSamples=0,rejectedSamples=0,outOfRangeCount=0;
 
-  if(method==='mean'||method==='ema'){
+  if(method==='mean'||method==='ema'||method==='emaNorm'){
     // Simple mean and EMA are streamed in O(N) with constant extra memory. A large
     // graph selection therefore does not allocate several million-element JS arrays.
     let sumOriginal=0,sumCurrent=0,sumRaw=0,wN=0,wMeanC=0,wM2C=0,wMeanR=0,wM2R=0; // Welford accumulators (stable SD)
-    let emaOriginal=0,emaCurrent=0,emaRaw=0,previousTime=0,vC=0,vR=0;   // vC/vR: exponentially weighted variances
+    let emaOriginal=0,emaCurrent=0,emaRaw=0,previousTime=0,vC=0,vR=0;
+    const mkEN=()=>({W:0,m:0,S:0,sw:0,sw2:0}),enO=mkEN(),enC=mkEN(),enR=mkEN(),tauN=Math.max(.025,selectedTau);   // vC/vR: exponentially weighted variances
     for(let i=first;i<end;i++){
       const raw=getRaw(i),time=getTime(i),original=getNetMg(i),absolute=calibrateAbsolute(raw),current=absolute.valueMg-currentTare;
       if(absolute.outOfRange)outOfRangeCount++;
       sumOriginal+=original;sumCurrent+=current;sumRaw+=raw;wN++;{const dC=current-wMeanC;wMeanC+=dC/wN;wM2C+=dC*(current-wMeanC);const dR=raw-wMeanR;wMeanR+=dR/wN;wM2R+=dR*(raw-wMeanR);}
-      if(i===first){emaOriginal=original;emaCurrent=current;emaRaw=raw;}
+      if(method==='emaNorm'){const dtN=i===first?PERIOD_MS/1000:Math.max(0,(time-previousTime)/1000);emaNormStep(enO,original,dtN,tauN);emaNormStep(enC,current,dtN,tauN);emaNormStep(enR,raw,dtN,tauN);}
+      else if(method!=='ema'){/* mean: no EMA bookkeeping */}
+      else if(i===first){emaOriginal=original;emaCurrent=current;emaRaw=raw;}
       else{const dt=Math.max(0,(time-previousTime)/1000),alpha=1-Math.exp(-dt/Math.max(.025,selectedTau));const dC=current-emaCurrent,dR=raw-emaRaw;vC=(1-alpha)*(vC+alpha*dC*dC);vR=(1-alpha)*(vR+alpha*dR*dR);emaOriginal=alpha*original+(1-alpha)*emaOriginal;emaCurrent=alpha*current+(1-alpha)*emaCurrent;emaRaw=alpha*raw+(1-alpha)*emaRaw;}
       previousTime=time;
     }
     usedSamples=total;rawMean=sumRaw/total;spreadMg=Math.sqrt(wM2C/total);rawSpread=Math.sqrt(wM2R/total);
     if(method==='mean'){originalValueMg=sumOriginal/total;currentValueMg=sumCurrent/total;rawEstimatorValue=rawMean;}
+    else if(method==='emaNorm'){originalValueMg=enO.m;currentValueMg=enC.m;rawEstimatorValue=enR.m;spreadMg=Math.sqrt(Math.max(0,enC.S/enC.W));rawSpread=Math.sqrt(Math.max(0,enR.S/enR.W));emaNeff=enC.sw2>0?enC.sw*enC.sw/enC.sw2:null;}
     else{originalValueMg=emaOriginal;currentValueMg=emaCurrent;rawEstimatorValue=emaRaw;spreadMg=Math.sqrt(vC);rawSpread=Math.sqrt(vR);}
   }else{
     const indices=sampleIndicesForEstimator(first,end,method),origValues=[],currentValues=[],times=[],rawValues=[];
@@ -1088,7 +1335,7 @@ function calculateSelection(first,end,settings={}){
   return {
     originalValueMg,currentValueMg,rawEstimatorValue,spreadMg,rawSpread,usedSamples,totalSamples:total,rawMean,
     firstIndex:first,lastIndex:end-1,t0:getTime(first),t1:getTime(end-1),
-    estimator:method,estimatorWindow:state.window,trimPercent:selectedTrim,emaTau:selectedTau,rejectedSamples,outOfRangeCount,
+    estimator:method,estimatorWindow:state.window,trimPercent:selectedTrim,emaTau:selectedTau,hampelHalf:selectedHalf,hampelSigma:selectedHSigma,emaNeff,rejectedSamples,outOfRangeCount,
     // Provenance (v8): the revision stored here is the one the samples were RECORDED with.
     calibrationRevisionId:calLast.revisionId,crossesCalibration:calFirst!==calLast,
     calibrationChanged:calFirst.revisionId!==state.revisionId||calLast.revisionId!==state.revisionId,
@@ -1110,7 +1357,7 @@ function selectInterval(t0,t1,log=true){
 function updateSelectionReadout(){
   const s=state.selection;if(!s){$('selectionSummary').textContent='No interval selected.';return;}
   const changed=s.contextChanged?'<br><span class="warning">Tare context differs from the current tare. Both original and current interpretations are shown.</span>':'';
-  const calibrationChanged=(s.calibrationChanged?'<br><span class="warning">Samples were recorded under a different calibration revision than the active one. “Original” uses the recorded calibration; “current” re-calibrates with the active one.</span>':'')+(s.crossesTare?'<br><span class="warning">The interval spans a tare event: the original result mixes values relative to different zero references.</span>':'')+(s.crossesCalibration?'<br><span class="warning">The interval spans a calibration change.</span>':'')+'<br><span class="small">Validity analysis: not implemented yet.</span>';
+  const calibrationChanged=(s.calibrationChanged?'<br><span class="warning">Samples were recorded under a different calibration revision than the active one. “Original” uses the recorded calibration; “current” re-calibrates with the active one.</span>':'')+(s.crossesTare?'<br><span class="warning">The interval spans a tare event: the original result mixes values relative to different zero references.</span>':'')+(s.crossesCalibration?'<br><span class="warning">The interval spans a calibration change.</span>':'')+'<br>'+analysisHTML(s.analysis,true);
   const subsampled=s.usedSamples<s.totalSamples?` · bounded analysis used ${s.usedSamples.toLocaleString()} of ${s.totalSamples.toLocaleString()} samples`:'';
   $('selectionSummary').innerHTML=`<strong>${s.totalSamples.toLocaleString()} selected samples</strong><br>`+
     `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
@@ -1118,12 +1365,12 @@ function updateSelectionReadout(){
     // The selection EMA is seeded with the first selected sample, which keeps weight exp(-T/tau)
     // (product of the (1-alpha) factors). When T is not >> tau the result is mostly that seed,
     // so it is an end-of-selection filtered value, not an interval statistic.
-    (s.estimator==='ema'?` · seed weight ${(100*Math.exp(-Math.max(0,s.t1-s.t0)/1000/Math.max(.025,s.emaTau))).toFixed(1)}%`:'')+`<br>`+
+    (s.estimator==='emaNorm'?` · no seed weight (normalised)${s.emaNeff?` · effective samples ≈ ${s.emaNeff.toFixed(1)}`:''}`:'')+(s.estimator==='hampelLocal'?` · k=${s.hampelHalf}, ${s.hampelSigma}σ`:'')+(s.estimator==='ema'?` · seed weight ${(100*Math.exp(-Math.max(0,s.t1-s.t0)/1000/Math.max(.025,s.emaTau))).toFixed(1)}%`:'')+`<br>`+
     (state.unitId==='raw'?`Raw estimator result: <strong>${fmtNumber(s.rawEstimatorValue,0)} counts</strong><br>`:`Original result: <strong>${formatMass(s.originalValueMg)}</strong><br>`+
     `Current calibration + latest tare: <strong>${formatMass(s.currentValueMg)}</strong><br>`)+
     `Current spread (σ, ${spreadDescription(s.estimator)}): <strong>${state.unitId==='raw'?fmtNumber(s.rawSpread,2)+' counts':formatMass(s.spreadMg)}</strong><br>`+
     `Raw average: <strong>${fmtNumber(s.rawMean,2)} counts</strong><br>`+
-    `Out-of-range samples in analysis: <strong>${s.outOfRangeCount}</strong>${subsampled}${changed}${calibrationChanged}`;
+    (s.rejectedSamples?`Excluded by estimator: <strong>${s.rejectedSamples}</strong><br>`:'')+`Out-of-range samples in analysis: <strong>${s.outOfRangeCount}</strong>${subsampled}${changed}${calibrationChanged}`;
 }
 function appendLogEntry(entry){state.logs.unshift(entry);renderLog();}
 function appendSelectionLog(s){const entry={type:'selection',entryId:`selection-${Date.now()}-${state.logs.length}`,createdAt:new Date().toISOString(),...s};appendLogEntry(entry);}
@@ -1163,13 +1410,315 @@ function manualTare(){
 }
 function setSelectMode(on){state.selectMode=on;$('selectModeBtn').setAttribute('aria-pressed',String(on));$('selectModeBtn').classList.toggle('primary',on);$('selectModeBtn').textContent=on?'Selecting… tap-drag':'Select interval';}
 
-// ---------------------------------------------------------------------------------------------
-// Interval analysis hook, shared by Measurement, Selection analysis and (later) the calibration
-// wizard. v8 only reserves the interface. Planned checks: autocorrelation / effective sample size,
-// Allan deviation, step (moved weight) and vibration detection, and gap detection from the device
-// sample counter. Every caller stores the returned object with its result.
+// ===== BEGIN VALIDITY ANALYSIS (pure functions on arrays; no DOM, no state) ==========================
+// Purpose: decide whether an interval of raw samples is fit to be reduced to ONE number (mean, median,
+// ...). The functions never alter results; they only describe the data and attach a verdict.
+//
+// Design rules
+//  * Input is a plain array / typed array of RAW COUNTS plus (optionally) timestamps in ms. Raw counts
+//    are used on purpose: a tare or a calibration change is a relabelling of the axis, not a change of
+//    the physical signal, so it can neither create nor hide a step. All statistics below are scale-free,
+//    so the verdicts do not depend on the unit or on the (illustrative) calibration.
+//  * Autocorrelation, Allan deviation, the step test and the spectrum need UNIFORM sampling. The
+//    series is therefore cut into uniform segments at every gap (see analysisSegments) and those tests
+//    run on the longest segment. Segments longer than ANALYSIS_THRESHOLDS.maxSamples are cut to their
+//    newest samples (the disclosure is part of the result).
+//  * Every verdict is one of 'ok' | 'suspect' | 'invalid' | 'n/a'. 'n/a' = the check could not run
+//    (too few samples); it never counts as a pass. All thresholds live in ANALYSIS_THRESHOLDS and are
+//    echoed in every check ({warn, fail}) so the UI shows exactly what was applied.
+//  * The thresholds are conservative rules of thumb written for this tool. They are NOT calibrated to
+//    any particular balance, cell or environment, and a status of 'ok' does not certify an
+//    uncertainty. 'ok' only means: none of these specific problems was detected.
+const ANALYSIS_THRESHOLDS = {
+  minSamples: 32,        // below this no statistical check is attempted
+  maxSamples: 40000,     // longest stretch analysed (cost is O(n * maxLag) for the autocorrelation)
+  gapFactor: 1.5,        // a time step > 1.5 x the nominal period counts as a gap
+  gapFailFraction: 0.05, // > 5 % of the expected samples missing -> invalid (any missing -> suspect)
+  essWarn: 0.30,         // effective sample size / n below this -> suspect
+  essFail: 0.02,         // ... below this -> invalid (the series is essentially one slowly varying value)
+  stepWarn: 1.36,        // CUSUM statistic Q: 5 % critical value of the Kolmogorov distribution
+  stepFail: 1.95,        // 0.1 % critical value; 'invalid' additionally needs a step of >= stepMinSigma
+  stepMinSigma: 2,       // step size in units of the within-segment SD
+  allanWarn: 1.5,        // sigma_A(longest tau) / min sigma_A above this -> averaging stopped helping
+  vibWarn: 6,            // spectral line power / local median power (see analysisSpectrum)
+  vibFail: 20,
+  rangeFailFraction: 0.05 // > 5 % of the samples outside the calibrated range -> invalid
+};
+
+// ---- helpers ------------------------------------------------------------------------------------
+function anMean(x, a = 0, b = x.length) { let s = 0; for (let i = a; i < b; i++) s += x[i]; return (b > a) ? s / (b - a) : NaN; }
+function anSD(x, a = 0, b = x.length) {            // population SD, two-pass (stable for large offsets)
+  const n = b - a; if (n < 1) return NaN; const m = anMean(x, a, b); let s = 0;
+  for (let i = a; i < b; i++) { const d = x[i] - m; s += d * d; }
+  return Math.sqrt(s / n);
+}
+function anMedianSorted(a) { const n = a.length; return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2; }
+function anMedian(x) { return x.length ? anMedianSorted(Float64Array.from(x).sort()) : NaN; }
+function anVerdict(value, warn, fail, higherIsWorse = true) {
+  if (!Number.isFinite(value)) return 'n/a';
+  const bad = (v, t) => (t == null) ? false : (higherIsWorse ? v >= t : v <= t);
+  if (bad(value, fail)) return 'invalid';
+  if (bad(value, warn)) return 'suspect';
+  return 'ok';
+}
+const ANALYSIS_ORDER = { 'n/a': 0, ok: 1, suspect: 2, invalid: 3 };
+function worstVerdict(checks) { let w = 'ok', seen = false; for (const c of checks) { if (c.verdict === 'n/a') continue; seen = true; if (ANALYSIS_ORDER[c.verdict] > ANALYSIS_ORDER[w]) w = c.verdict; } return seen ? w : 'n/a'; }
+
+// ---- gaps, duplicates and uniform segments --------------------------------------------------------
+// times: ms. counters (optional, from the device): integer per-sample counter. Timestamps are
+// authoritative; the counter is an independent witness for dropped / repeated frames.
+// A segment is a maximal run [start,end) with 0 < dt <= gapFactor * nominal between neighbours.
+function analysisSegments(times, nominalMs, gapFactor = ANALYSIS_THRESHOLDS.gapFactor) {
+  const n = times.length, segs = []; if (!n) return segs;
+  let start = 0;
+  for (let i = 1; i < n; i++) {
+    const dt = times[i] - times[i - 1];
+    if (!(dt > 0) || dt > gapFactor * nominalMs) { segs.push([start, i]); start = i; }
+  }
+  segs.push([start, n]); return segs;
+}
+function analysisGaps(times, nominalMs, counters = null) {
+  const n = times.length, T = ANALYSIS_THRESHOLDS;
+  let gaps = 0, missing = 0, duplicates = 0, backwards = 0, counterGaps = 0, counterMissing = 0, counterDup = 0;
+  for (let i = 1; i < n; i++) {
+    const dt = times[i] - times[i - 1];
+    if (dt === 0) duplicates++;
+    else if (dt < 0) backwards++;
+    else if (dt > T.gapFactor * nominalMs) { gaps++; missing += Math.max(1, Math.round(dt / nominalMs) - 1); }
+    if (counters) {
+      const dc = counters[i] - counters[i - 1];
+      if (dc === 0) counterDup++; else if (dc < 0 || dc > 1) { counterGaps++; counterMissing += Math.max(0, dc - 1); }
+    }
+  }
+  const expected = n + missing, fraction = expected ? missing / expected : 0;
+  let verdict = 'ok';
+  if (duplicates || backwards || counterDup) verdict = 'invalid';
+  else if (fraction > T.gapFailFraction) verdict = 'invalid';
+  else if (gaps || counterGaps) verdict = 'suspect';
+  const parts = [`${gaps} gap${gaps === 1 ? '' : 's'} (${missing} missing samples)`];
+  if (duplicates) parts.push(`${duplicates} duplicate timestamp${duplicates === 1 ? '' : 's'}`);
+  if (backwards) parts.push(`${backwards} backwards step${backwards === 1 ? '' : 's'}`);
+  if (counters) parts.push(`counter: ${counterGaps} jump${counterGaps === 1 ? '' : 's'}, ${counterMissing} missing, ${counterDup} repeated`);
+  return { id: 'gaps', label: 'Gaps and duplicates', value: fraction, valueText: `${(100 * fraction).toFixed(2)} % missing`, threshold: { warn: 'any gap', fail: T.gapFailFraction, failText: 'duplicate/backwards time, or > ' + (100 * T.gapFailFraction) + ' % missing' }, verdict, detail: parts.join('; '), gaps, missing, duplicates, backwards };
+}
+
+// ---- autocorrelation and effective sample size ----------------------------------------------------
+// rho_k = sum (x_i - m)(x_{i+k} - m) / sum (x_i - m)^2 (biased estimator, always a valid correlation
+// sequence). Effective sample size n_eff = n / (1 + 2 sum_{k>=1} rho_k) with the sum truncated at the
+// first lag where rho_k falls below the white-noise band 2/sqrt(n) (the usual "initial positive
+// sequence" rule): beyond that point the estimates are dominated by noise. n_eff is capped at n; an
+// anticorrelated series would otherwise claim n_eff > n, which this tool does not exploit.
+function analysisAutocorr(x, maxLag) {
+  const n = x.length, m = anMean(x), K = Math.max(1, Math.min(maxLag | 0, n - 1));
+  let c0 = 0; for (let i = 0; i < n; i++) { const d = x[i] - m; c0 += d * d; }
+  const rho = new Float64Array(K + 1); rho[0] = 1;
+  if (!(c0 > 0)) return { rho, neff: n, ratio: 1, rho1: 0, constant: true, lagUsed: 0 };
+  for (let k = 1; k <= K; k++) { let s = 0; for (let i = 0; i + k < n; i++) s += (x[i] - m) * (x[i + k] - m); rho[k] = s / c0; }
+  const band = 2 / Math.sqrt(n); let sum = 0, lagUsed = 0;
+  for (let k = 1; k <= K; k++) { if (rho[k] < band) break; sum += rho[k]; lagUsed = k; }
+  const neff = Math.max(1, Math.min(n, n / (1 + 2 * sum)));
+  return { rho, neff, ratio: neff / n, rho1: rho[1], constant: false, lagUsed, truncated: lagUsed === K };
+}
+function analysisAutocorrCheck(x) {
+  const T = ANALYSIS_THRESHOLDS, n = x.length;
+  const r = analysisAutocorr(x, Math.min(200, Math.floor(n / 4)));
+  return { id: 'autocorrelation', label: 'Autocorrelation / effective sample size', value: r.ratio, valueText: `n_eff ≈ ${r.neff.toFixed(1)} of ${n} (${(100 * r.ratio).toFixed(1)} %), ρ₁ = ${r.rho1.toFixed(2)}`,
+    threshold: { warn: T.essWarn, fail: T.essFail, direction: 'below' }, verdict: anVerdict(r.ratio, T.essWarn, T.essFail, false),
+    detail: r.truncated ? 'correlation still positive at the longest lag examined: n_eff is an upper bound' : (r.constant ? 'constant series' : `positive correlation up to lag ${r.lagUsed}`), neff: r.neff, rho1: r.rho1 };
+}
+
+// ---- Allan deviation ---------------------------------------------------------------------------------
+// Overlapping Allan deviation of the reading series for averaging factors m = 1, 2, 4, ...:
+//   sigma_A^2(m tau0) = 1 / (2 (N - 2m + 1)) * sum_j ( ybar_{j+m} - ybar_j )^2,  ybar_j = mean of x[j..j+m)
+// computed with prefix sums (O(N) per m). For white noise sigma_A falls like tau^-1/2 (averaging helps);
+// a minimum followed by a rise means drift/flicker noise takes over: averaging beyond tau_min does not
+// reduce the scatter any further. The verdict compares sigma_A at the longest tau (m <= N/4, so at
+// least 2 independent pairs) with the minimum. Values at long tau have few terms and are noisy.
+function analysisAllan(x, dtS) {
+  const N = x.length, pts = [];
+  const S = new Float64Array(N + 1); for (let i = 0; i < N; i++) S[i + 1] = S[i] + (x[i] - x[0]);
+  for (let m = 1; 4 * m <= N; m *= 2) {
+    const terms = N - 2 * m + 1; if (terms < 2) break;
+    let acc = 0;
+    for (let j = 0; j < terms; j++) { const d = (S[j + 2 * m] - S[j + m]) / m - (S[j + m] - S[j]) / m; acc += d * d; }
+    pts.push({ m, tau: m * dtS, adev: Math.sqrt(acc / (2 * terms)), terms });
+  }
+  return pts;
+}
+function analysisAllanCheck(x, dtS) {
+  const T = ANALYSIS_THRESHOLDS, pts = analysisAllan(x, dtS);
+  if (pts.length < 3) return { id: 'allan', label: 'Allan deviation', value: NaN, valueText: 'too few samples', threshold: { warn: T.allanWarn }, verdict: 'n/a', detail: '', points: pts };
+  let best = pts[0]; for (const p of pts) if (p.adev < best.adev) best = p;
+  const last = pts[pts.length - 1], ratio = best.adev > 0 ? last.adev / best.adev : (last.adev > 0 ? Infinity : 1);
+  return { id: 'allan', label: 'Allan deviation', value: ratio, valueText: `minimum σ_A at τ = ${best.tau.toFixed(3)} s; σ_A(${last.tau.toFixed(2)} s) / minimum = ${Number.isFinite(ratio) ? ratio.toFixed(2) : '∞'}`,
+    threshold: { warn: T.allanWarn, fail: null }, verdict: anVerdict(ratio, T.allanWarn, null, true),
+    detail: best === last ? 'still falling at the longest τ: averaging keeps helping' : `averaging beyond ≈ ${best.tau.toFixed(2)} s no longer reduces the scatter`, points: pts, bestTauS: best.tau };
+}
+
+// ---- level step (moved weight) and drift --------------------------------------------------------------
+// CUSUM change-point statistic. S_k = sum_{i<k} (x_i - xbar); under "constant level + stationary noise"
+//   Q = max_k |S_k| / (sigma_LR sqrt(n))
+// converges to the supremum of a Brownian bridge (Kolmogorov distribution: 5 % at 1.36, 0.1 % at 1.95).
+// sigma_LR is the long-run SD of the RESIDUALS of the fitted two-level step, sigma * sqrt(n / n_eff), so
+// moderately autocorrelated noise does not produce false alarms. If the residuals are still strongly
+// correlated (n_eff < essWarn * n) the check reports n/a instead of a misleading verdict. The change point k* = argmax |S_k| is then classified: if a two-level step
+// model leaves clearly less residual variance than a straight line (SSE_step < 0.8 SSE_line) the
+// event is called a step, otherwise a trend/drift. 'invalid' needs both Q >= stepFail and a step of
+// at least stepMinSigma within-segment SDs (a statistically detectable but tiny drift stays 'suspect').
+function analysisStepCheck(x) {
+  const T = ANALYSIS_THRESHOLDS, n = x.length, m = anMean(x);
+  const none = { id: 'step', label: 'Level step / drift', value: NaN, valueText: 'n/a', threshold: { warn: T.stepWarn, fail: T.stepFail }, verdict: 'n/a', detail: '' };
+  if (n < T.minSamples) return none;
+  if (!(anSD(x) > 0)) return { ...none, value: 0, valueText: 'Q = 0.00 (constant series)', verdict: 'ok' };
+  // change point: argmax |S_k| (independent of any variance estimate)
+  let c = 0, best = 0, kStar = 1;
+  for (let k = 1; k < n; k++) { c += x[k - 1] - m; if (Math.abs(c) > best) { best = Math.abs(c); kStar = k; } }
+  const m1 = anMean(x, 0, kStar), m2 = anMean(x, kStar, n), delta = m2 - m1;
+  // Noise level from the residuals of the two-level fit. Estimating sigma_LR from the raw data would
+  // let a large step inflate the autocorrelation (and hence sigma_LR) and so hide itself.
+  const res = new Float64Array(n); let sse = 0;
+  for (let i = 0; i < n; i++) { res[i] = x[i] - (i < kStar ? m1 : m2); sse += res[i] * res[i]; }
+  const sdWithin = Math.sqrt(sse / n), ac = analysisAutocorr(res, Math.min(200, Math.floor(n / 4)));
+  const sigmaLR = sdWithin * Math.sqrt(n / ac.neff), Q = best / (sigmaLR * Math.sqrt(n));
+  // straight-line least squares for the step-versus-trend comparison
+  let sx = 0, sxx = 0, sy = 0, sxy = 0; for (let i = 0; i < n; i++) { sx += i; sxx += i * i; sy += x[i]; sxy += i * x[i]; }
+  const den = n * sxx - sx * sx, b = den ? (n * sxy - sx * sy) / den : 0, a = (sy - b * sx) / n;
+  let sseLine = 0; for (let i = 0; i < n; i++) { const r = x[i] - (a + b * i); sseLine += r * r; }
+  const stepLike = sse < 0.8 * sseLine, sizeSigma = sdWithin > 0 ? Math.abs(delta) / sdWithin : Infinity;
+  // If the residuals are still strongly correlated (drift, flicker noise) the Kolmogorov critical
+  // values do not apply: report n/a and leave the verdict to the autocorrelation and Allan checks.
+  if (ac.ratio < T.essWarn) return { ...none, value: Q, valueText: `not reliable: residual n_eff is only ${(100 * ac.ratio).toFixed(1)} % of n`, detail: 'strongly correlated noise; see the autocorrelation and Allan checks', changeIndex: kStar, delta };
+  let verdict = anVerdict(Q, T.stepWarn, null, true);
+  if (Q >= T.stepFail && sizeSigma >= T.stepMinSigma) verdict = 'invalid';
+  return { id: 'step', label: 'Level step / drift', value: Q, valueText: `Q = ${Q.toFixed(2)}${verdict === 'ok' ? '' : `; ${stepLike ? 'step' : 'trend'} of ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} counts (${sizeSigma.toFixed(1)} σ) near sample ${kStar} of ${n}`}`,
+    threshold: { warn: T.stepWarn, fail: T.stepFail, failText: `Q ≥ ${T.stepFail} and step ≥ ${T.stepMinSigma} σ` }, verdict,
+    detail: verdict === 'ok' ? 'no evidence of a level change' : (stepLike ? 'abrupt level change: a weight may have been moved or placed' : 'gradual change: drift or creep'), changeIndex: kStar, delta, sizeSigma, stepLike };
+}
+
+// ---- spectrum: vibration / interference lines --------------------------------------------------------------
+// Welch periodogram: linear detrend, Hann window, 50 % overlap, segment length L = largest power of two
+// <= n/4 (so at least ~7 averaged segments), L >= 16. A "line" is a bin whose power exceeds the MEDIAN
+// power of its neighbourhood (+-10 bins, excluding the bin and its two nearest neighbours) by the factor
+// vibWarn / vibFail. The local median makes the test insensitive to the red (drifting) background of
+// real sensors. With K averaged segments a white-noise bin is chi-square distributed with 2K degrees of
+// freedom, so ratios above ~3 are already rare for K >= 7; the thresholds 6 and 20 are conservative.
+// Frequencies above the Nyquist limit (fs/2 = 40 Hz at 80 Hz) alias: a 50 Hz mains tone appears at
+// 30 Hz. The reported frequency is therefore the APPARENT frequency.
+function analysisFFT(re, im) {                       // in-place iterative radix-2 FFT, length = power of two
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = i + k + len / 2, tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+}
+function analysisWelch(x, fs) {
+  const n = x.length; let L = 16; while (L * 2 <= n / 4) L *= 2;
+  if (n < 4 * L || L < 16) return null;
+  const hop = L / 2, win = new Float64Array(L); let wsum2 = 0;
+  for (let i = 0; i < L; i++) { win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / L); wsum2 += win[i] * win[i]; }
+  const P = new Float64Array(L / 2 + 1), re = new Float64Array(L), im = new Float64Array(L); let K = 0;
+  for (let s = 0; s + L <= n; s += hop) {
+    let sx = 0, sxx = 0, sy = 0, sxy = 0;                               // linear detrend of this segment
+    for (let i = 0; i < L; i++) { sx += i; sxx += i * i; sy += x[s + i]; sxy += i * x[s + i]; }
+    const den = L * sxx - sx * sx, b = (L * sxy - sx * sy) / den, a = (sy - b * sx) / L;
+    for (let i = 0; i < L; i++) { re[i] = (x[s + i] - (a + b * i)) * win[i]; im[i] = 0; }
+    analysisFFT(re, im);
+    for (let k = 0; k <= L / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k];
+    K++;
+  }
+  for (let k = 0; k <= L / 2; k++) P[k] /= K * wsum2 * fs;            // one-sided PSD up to a constant factor
+  return { P, L, K, df: fs / L, fs };
+}
+function analysisSpectrumCheck(x, fs) {
+  const T = ANALYSIS_THRESHOLDS, W = analysisWelch(x, fs);
+  const na = { id: 'vibration', label: 'Vibration / interference lines', value: NaN, valueText: 'too few samples', threshold: { warn: T.vibWarn, fail: T.vibFail }, verdict: 'n/a', detail: '' };
+  if (!W) return na;
+  const { P, L, df } = W, half = L / 2; let bestRatio = 0, bestK = 0;
+  const kMin = Math.max(3, Math.ceil(1.0 / df));                         // lines below ~1 Hz are drift / air flow, not vibration
+  for (let k = kMin; k < half; k++) {
+    const nb = []; for (let j = Math.max(1, k - 10); j <= Math.min(half, k + 10); j++) if (Math.abs(j - k) > 1) nb.push(P[j]);
+    const med = anMedian(nb); const r = med > 0 ? P[k] / med : (P[k] > 0 ? Infinity : 0);
+    if (r > bestRatio) { bestRatio = r; bestK = k; }
+  }
+  let tot = 0; for (let k = 1; k <= half; k++) tot += P[k];
+  const frac = tot > 0 ? (P[bestK - 1] + P[bestK] + P[bestK + 1]) / tot : 0;
+  const verdict = anVerdict(bestRatio, T.vibWarn, T.vibFail, true);
+  const f = bestK * df;
+  return { id: 'vibration', label: 'Vibration / interference lines', value: bestRatio, valueText: `strongest line ${bestRatio >= 1e4 ? '>1e4' : bestRatio.toFixed(1)}× its local floor at ${f.toFixed(2)} Hz (apparent), ${(100 * Math.min(1, frac)).toFixed(0)} % of the spectrum power`,
+    threshold: { warn: T.vibWarn, fail: T.vibFail }, verdict, detail: verdict === 'ok' ? `resolution ${df.toFixed(2)} Hz, ${W.K} averaged segments` : 'periodic disturbance: frequencies above 40 Hz appear aliased', frequencyHz: f, powerFraction: frac, segments: W.K };
+}
+
+// ---- top level ------------------------------------------------------------------------------------------
+// analyzeSeries(values, times, opts) -> { status, checks:[{id,value,threshold,verdict,...}], segments, ... }
+//  values: raw counts; times: ms (same length); opts: { nominalMs, counters, outOfRangeCount }
+function analyzeSeries(values, times, opts = {}) {
+  const T = ANALYSIS_THRESHOLDS, n = values.length, nominalMs = opts.nominalMs || (1000 / 80);
+  const checks = [];
+  if (!n) return { status: 'n/a', checks, segments: [], n, analyzedN: 0, note: 'empty interval' };
+  checks.push(analysisGaps(times, nominalMs, opts.counters || null));
+  if (opts.outOfRangeCount != null) {
+    const f = opts.outOfRangeCount / n;
+    checks.push({ id: 'range', label: 'Calibrated range', value: f, valueText: `${opts.outOfRangeCount} of ${n} samples outside`, threshold: { warn: 'any', fail: T.rangeFailFraction }, verdict: opts.outOfRangeCount === 0 ? 'ok' : (f > T.rangeFailFraction ? 'invalid' : 'suspect'), detail: 'extrapolated mass values are not backed by a calibration anchor' });
+  }
+  const segs = analysisSegments(times, nominalMs);
+  let seg = segs[0]; for (const s of segs) if (s[1] - s[0] > seg[1] - seg[0]) seg = s;
+  let a = seg[0], b = seg[1], cut = false;
+  if (b - a > T.maxSamples) { a = b - T.maxSamples; cut = true; }
+  const x = Array.prototype.slice.call(values, a, b), segN = b - a, fs = 1000 / nominalMs;
+  let note = segs.length > 1 ? `split into ${segs.length} uniform segments; time-series checks use the longest (${segN} samples)` : '';
+  if (cut) note += (note ? '; ' : '') + `time-series checks use the newest ${T.maxSamples.toLocaleString ? T.maxSamples.toLocaleString() : T.maxSamples} samples`;
+  if (segN < T.minSamples) {
+    for (const [id, label] of [['autocorrelation', 'Autocorrelation / effective sample size'], ['allan', 'Allan deviation'], ['step', 'Level step / drift'], ['vibration', 'Vibration / interference lines']])
+      checks.push({ id, label, value: NaN, valueText: `needs ≥ ${T.minSamples} uniform samples (have ${segN})`, threshold: {}, verdict: 'n/a', detail: '' });
+    note += (note ? '; ' : '') + 'interval too short to validate';
+  } else {
+    const ac = analysisAutocorrCheck(x); checks.push(ac);
+    checks.push(analysisAllanCheck(x, 1 / fs));
+    checks.push(analysisStepCheck(x));
+    checks.push(analysisSpectrumCheck(x, fs));
+  }
+  let status = worstVerdict(checks);
+  if (segN < T.minSamples && status === 'ok') status = 'suspect';   // cannot demonstrate validity of a tiny interval
+  return { status, checks, segments: segs.length, n, analyzedN: segN, note };
+}
+// ===== END VALIDITY ANALYSIS ============================================================================
+
+// analyzeInterval: shared by Measurement, Selection analysis and (later) the calibration wizard. It
+// gathers the RAW counts, timestamps and the out-of-range count (against the calibration each sample was
+// RECORDED with) and hands them to the pure function analyzeSeries(). It never modifies a result.
+// ESP32 milestone: pass the device's per-sample counter slice as opts.counters (already supported by
+// analysisGaps) so dropped or repeated frames are detected independently of the timestamps.
 function analyzeInterval(first,end){
-  return {status:'not-analyzed',checks:[],note:'Validity analysis is not implemented yet.'};
+  const n=end-first;if(n<=0)return{status:'n/a',checks:[],note:'empty interval'};
+  const raws=new Float64Array(n),times=new Float64Array(n);let oor=0;
+  for(let j=0;j<n;j++){const i=first+j,t=getTime(i),r=getRaw(i);raws[j]=r;times[j]=t;if(calibrateAbsolute(r,calibrationAt(t).config).outOfRange)oor++;}
+  return analyzeSeries(raws,times,{nominalMs:PERIOD_MS,counters:null,outOfRangeCount:oor});
+}
+const VERDICT_ICON={ok:'✓',suspect:'⚠',invalid:'✖','n/a':'–'};
+const STATUS_TEXT={ok:'no problem detected',suspect:'suspect',invalid:'invalid','n/a':'not analysed'};
+function analysisThresholdText(c){
+  const t=c.threshold||{},sym=t.direction==='below'?'≤':'≥',p=[];
+  if(t.warn!=null)p.push(`suspect ${typeof t.warn==='number'?sym+' ':''}${t.warn}`);
+  if(t.failText)p.push(`invalid: ${t.failText}`);else if(t.fail!=null)p.push(`invalid ${typeof t.fail==='number'?sym+' ':''}${t.fail}`);
+  return p.join(' · ');
+}
+function analysisBadgeHTML(a,prefix=''){
+  if(!a)return'';
+  const bad=(a.checks||[]).filter(c=>c.verdict==='suspect'||c.verdict==='invalid').map(c=>c.label.split(' / ')[0]);
+  return `${prefix}<span class="vbadge ${a.status==='n/a'?'na':a.status}">${VERDICT_ICON[a.status]||'–'} Validity: ${STATUS_TEXT[a.status]||a.status}${bad.length?' ('+esc(bad.join(', '))+')':''}</span>`;
+}
+function analysisHTML(a,open){
+  if(!a)return'';
+  const rows=(a.checks||[]).map(c=>`<div class="an-row ${c.verdict==='n/a'?'':c.verdict}"><strong>${VERDICT_ICON[c.verdict]} ${esc(c.label)}</strong>: ${esc(c.valueText||'')}<br><span class="small">${esc(c.detail||'')}${c.detail?' · ':''}${esc(analysisThresholdText(c))}</span></div>`).join('');
+  return `<details class="an"${open?' open':''}><summary>${analysisBadgeHTML(a)}</summary>${rows}${a.note?`<div class="small">${esc(a.note)}</div>`:''}<div class="small">Checks run on raw counts; thresholds are rules of thumb, not calibrated to this hardware. “No problem detected” is not an uncertainty statement.</div></details>`;
 }
 
 // ---- Measurement -------------------------------------------------------------------------------
@@ -1185,7 +1734,7 @@ function startMeasurement(){
   $('measSamples').value=target;syncMeasurementInputs('samples');   // show the clamped value
   if(!state.unlimited&&target>state.capacity){$('measProgress').textContent=`The buffer limit (${state.capacity.toLocaleString()} samples) is smaller than the requested ${target.toLocaleString()} samples.`;return;}
   // Captured now so later changes of the estimator settings cannot alter a running measurement.
-  state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau};
+  state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau,hampelHalf:state.hampelHalf,hampelSigma:state.hampelSigma};
   state.highlight={t0:state.nextTime,t1:state.nextTime};
   $('measProgress').textContent='';updateMeasurementUI();scheduleRender();
 }
@@ -1196,8 +1745,8 @@ function measurementSampleAdded(sampleTime){
 function finishMeasurement(){
   const m=state.measurement;state.measurement=null;
   const first=lowerBoundTime(m.t0),end=state.count;
-  const result=calculateSelection(first,end,{estimator:m.estimator,trimPercent:m.trimPercent,emaTau:m.emaTau});
-  const entry={type:'measurement',entryId:m.id,createdAt:new Date().toISOString(),...result,targetSamples:m.target,nominalDurationS:m.target/RATE_HZ,analysis:analyzeInterval(first,end)};
+  const result=calculateSelection(first,end,{estimator:m.estimator,trimPercent:m.trimPercent,emaTau:m.emaTau,hampelHalf:m.hampelHalf,hampelSigma:m.hampelSigma});
+  const entry={type:'measurement',entryId:m.id,createdAt:new Date().toISOString(),...result,targetSamples:m.target,nominalDurationS:m.target/RATE_HZ};   // result.analysis comes from calculateSelection
   state.lastMeasurement=entry;state.highlight={t0:result.t0,t1:result.t1};
   appendLogEntry(entry);updateMeasurementUI();scheduleRender();
 }
@@ -1233,9 +1782,10 @@ function updateMeasurementUI(){
   const notes=[];
   if(last.outOfRangeCount)notes.push(`<span class="warning">${last.outOfRangeCount} samples outside the calibrated range</span>`);
   // The EMA is seeded with the first sample, which keeps weight exp(-T/tau): see updateSelectionReadout().
+  if(last.estimator==='emaNorm')notes.push(`EMA normalised${last.emaNeff?` · effective samples ≈ ${last.emaNeff.toFixed(1)}`:''}`);
   if(last.estimator==='ema')notes.push(`EMA seed weight ${(100*Math.exp(-Math.max(0,last.t1-last.t0)/1000/Math.max(.025,last.emaTau))).toFixed(1)}%`);
   if(last.usedSamples<last.totalSamples)notes.push('bounded analysis (subsampled)');
-  notes.push('Validity analysis: not implemented yet');
+  notes.push(analysisHTML(last.analysis,false));
   $('measNote').innerHTML=notes.join(' · ');
 }
 
@@ -1246,17 +1796,18 @@ function renderLog(){
   $('logList').innerHTML=state.logs.map(entry=>{
     const time=new Date(entry.createdAt).toLocaleTimeString(),id=esc(entry.entryId||entry.eventId);
     const row=(cls,type,body)=>`<div class="log-row ${cls}" data-log-id="${id}" data-log-type="${type}"><time>${time}</time><div>${body}</div></div>`;
-    const detail=e=>`${estimatorLabel(e.estimator)} · ${e.estimator==='trimmed'?e.trimPercent+'% trim · ':''}${e.estimator==='ema'?'τ '+e.emaTau+' s · ':''}${((e.t1-e.t0)/1000).toFixed(2)} s · Calibration ${esc(e.calibrationRevisionId)}`;
+    const detail=e=>`${estimatorLabel(e.estimator)} · ${e.estimator==='trimmed'?e.trimPercent+'% trim · ':''}${(e.estimator==='ema'||e.estimator==='emaNorm')?'τ '+e.emaTau+' s · ':''}${e.estimator==='hampelLocal'?'k='+e.hampelHalf+', '+e.hampelSigma+'σ · ':''}${((e.t1-e.t0)/1000).toFixed(2)} s · Calibration ${esc(e.calibrationRevisionId)}`;
     if(entry.type==='tare')return row('event','tare',`<strong>${esc(entry.eventId)} · ${esc(entry.method)}</strong><br>Tare: ${formatMass(entry.tareMassMg)} · Raw reference: ${entry.tareRaw==null?'not applicable':fmtNumber(entry.tareRaw,2)+' counts'}${entry.outOfRangeCount?`<br><span class="warning">${entry.outOfRangeCount} of ${entry.sourceCount} tare samples were outside the calibrated range.</span>`:''}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s · Calibration ${esc(entry.calibrationRevisionId)}</span>`);
     if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
     if(entry.type==='note')return row('note','note',esc(entry.text));
     const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
     const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal)`:`Selection · ${entry.totalSamples.toLocaleString()} samples`;
-    return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}<br><span class="small">${detail(entry)}</span>`);
+    return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}${analysisBadgeHTML(entry.analysis,'<br>')}<br><span class="small">${detail(entry)}</span>`);
   }).join('');
 }
 function jumpToLogEntry(id,type){
   if(type==='note')return;
+  {const pe=logEntryOf(id),r=logEntryRange(pe);state.logPinned=r?{...r,id}:null;}   // blue highlight in both graphs
   if(type==='tare'||type==='calibration'){
     const point=type==='tare'?state.tareEvents.find(item=>item.eventId===id):state.logs.find(item=>item.entryId===id);if(!point)return;
     if(point.effectiveFromTime<oldestTime()||point.effectiveFromTime>newestTime()){$('selectionSummary').innerHTML='<span class="warning">This event is outside the retained sample buffer. Its log record is still available.</span>';return;}
@@ -1268,7 +1819,7 @@ function jumpToLogEntry(id,type){
   const entry=state.logs.find(item=>item.entryId===id);if(!entry)return;
   if(entry.t0<oldestTime()||entry.t1>newestTime()){$('selectionSummary').innerHTML='<span class="warning">Some or all of the samples are no longer retained in the ring buffer. The log result remains available.</span>';return;}
   const first=lowerBoundTime(entry.t0),end=lowerBoundTime(entry.t1+0.0001);
-  state.selection=calculateSelection(first,end,{estimator:entry.estimator,trimPercent:entry.trimPercent,emaTau:entry.emaTau});
+  state.selection=calculateSelection(first,end,{estimator:entry.estimator,trimPercent:entry.trimPercent,emaTau:entry.emaTau,hampelHalf:entry.hampelHalf,hampelSigma:entry.hampelSigma});
   state.live=false;const selectionSpan=Math.max(PERIOD_MS,entry.t1-entry.t0),viewSpan=Math.max(selectionSpan*1.2,state.liveWindowSpan);
   state.liveWindowSpan=viewSpan;state.viewMin=Math.max(oldestTime(),entry.t0-(viewSpan-selectionSpan)/2);state.viewMax=Math.min(newestTime(),state.viewMin+viewSpan);
   updateSelectionReadout();scheduleRender();
@@ -1298,7 +1849,7 @@ function setMovingAverageWindow(rawValue,immediate=false,preserveInput=false){
   if(state.maRebuildTimer)clearTimeout(state.maRebuildTimer);
   state.maRebuildTimer=setTimeout(()=>{state.maRebuildTimer=null;rebuildDerived();scheduleRender();},immediate?0:70);
 }
-function updateEstimatorFields(){$('trimField').hidden=state.estimator!=='trimmed';$('emaField').hidden=state.estimator!=='ema';}
+function updateEstimatorFields(){$('trimField').hidden=state.estimator!=='trimmed';$('emaField').hidden=!isEmaMethod(state.estimator);$('hampelField').hidden=state.estimator!=='hampelLocal';$('hampelSigmaField').hidden=state.estimator!=='hampelLocal';}
 function applyBufferSize(){
   const choice=$('bufferInput').value;state.unlimited=choice==='unlimited';
   if(!state.unlimited){
@@ -1317,7 +1868,8 @@ function initializeManualYAxis(){
   if(!state.count)return;const i=state.count-1,center=state.unitId==='raw'?getRawMA(i):mgToUnit(getMassMA(i),state.unitId),sd=state.unitId==='raw'?getRawSD(i):mgToUnit(getMassSD(i),state.unitId),pad=Math.max(sd*5,Math.abs(center)*.02,state.unitId==='raw'?5:.001),low=Math.floor(center-pad*3),high=Math.ceil(center+pad*3),step=Math.max(.0001,(high-low)/2000);
   state.yMin=center-pad;state.yMax=center+pad;$('yMinRange').min=low;$('yMinRange').max=high;$('yMinRange').step=step;$('yMinRange').value=state.yMin;$('yMaxRange').min=low;$('yMaxRange').max=high;$('yMaxRange').step=step;$('yMaxRange').value=state.yMax;$('yMinText').textContent=fmtNumber(state.yMin,3);$('yMaxText').textContent=fmtNumber(state.yMax,3);
 }
-function resizeCharts(){if(!state.mainPlot||!state.miniPlot)return;state.mainPlot.setSize({width:$('mainChart').clientWidth,height:Math.max(300,Math.min(560,window.innerHeight*.47))});state.miniPlot.setSize({width:$('miniChart').clientWidth,height:125});scheduleRender();}
+function mainChartHeight(){return Math.max(300,Math.min(560,window.innerHeight*.47));}
+function resizeCharts(){if(!state.mainPlot||!state.miniPlot)return;state.mainPlot.setSize({width:$('mainChart').clientWidth,height:mainChartHeight()});state.miniPlot.setSize({width:$('miniChart').clientWidth,height:125});scheduleRender();}
 
 function populateSettings(){
   const select=$('unitSelect');
@@ -1412,14 +1964,17 @@ function initEvents(){
   $('calImportBtn').addEventListener('click',()=>$('calFile').click());$('calFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)importCalibrationFile(f);});
   $('calExportBtn').addEventListener('click',exportCalibration);$('calDemoBtn').addEventListener('click',restoreDemoCalibration);
   $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
-  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();}scheduleRender();});
+  $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();recreateMainChart();scheduleRender();});
+  $('hampelHalf').addEventListener('change',e=>{state.hampelHalf=clamp(Math.round(Number(e.target.value)||HAMPEL_DEFAULT_HALF),2,50);e.target.value=state.hampelHalf;scheduleRender();});
+  $('hampelSigma').addEventListener('change',e=>{state.hampelSigma=clamp(Number(e.target.value)||HAMPEL_DEFAULT_SIGMA,1,10);e.target.value=state.hampelSigma;scheduleRender();});
+  $('simModeSelect').addEventListener('change',e=>{state.simMode=e.target.value;state.simOffset=0;});
   $('trimPercent').addEventListener('input',e=>{state.trimPercent=Number(e.target.value);$('trimPercentText').textContent=`${state.trimPercent}%`;scheduleRender();});
   $('emaTau').addEventListener('change',e=>{state.emaTau=clamp(Number(e.target.value)||.5,.025,120);e.target.value=state.emaTau;rebuildEMA();scheduleRender();});
-  $('unitSelect').addEventListener('change',e=>{state.unitId=e.target.value;state.autoYMin=null;state.autoYMax=null;const raw=state.unitId==='raw';$('rawModeToggle').checked=raw;$('mainChartTitle').textContent=raw?'Raw sensor diagnostics':'Measured mass';$('zeroFillToggle').disabled=raw;$('zeroRawFillToggle').disabled=raw;$('zeroLineToggle').disabled=raw;$('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();}scheduleRender();});
+  $('unitSelect').addEventListener('change',e=>{state.unitId=e.target.value;state.autoYMin=null;state.autoYMax=null;const raw=state.unitId==='raw';$('rawModeToggle').checked=raw;$('mainChartTitle').textContent=raw?'Raw sensor diagnostics':'Measured mass';$('zeroFillToggle').disabled=raw;$('zeroRawFillToggle').disabled=raw;$('zeroLineToggle').disabled=raw;$('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';if(state.mainPlot){destroyCharts();createCharts();}scheduleRender();});
   $('rawModeToggle').addEventListener('change',e=>{state.unitId=e.target.checked?'raw':UNIT_CONFIG.defaultUnit;$('unitSelect').value=state.unitId;$('unitSelect').dispatchEvent(new Event('change'));});
-  $('precisionSelect').addEventListener('change',e=>{state.precision=e.target.value;scheduleRender();if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();scheduleRender();}});
+  $('precisionSelect').addEventListener('change',e=>{state.precision=e.target.value;scheduleRender();if(state.mainPlot){destroyCharts();createCharts();scheduleRender();}});
   $('settingsBtn').addEventListener('click',()=>openSettings($('settingsMenu').hidden));document.addEventListener('pointerdown',e=>{if(!$('settingsMenu').hidden&&!e.target.closest('.settings-wrap'))openSettings(false);});
-  $('themeBtn').addEventListener('click',()=>{const light=document.documentElement.classList.toggle('light');$('themeBtn').textContent=light?'☾ Dark mode':'☼ Light mode';if(state.mainPlot){state.mainPlot.destroy();state.miniPlot.destroy();state.mainPlot=null;state.miniPlot=null;createCharts();scheduleRender();}});
+  $('themeBtn').addEventListener('click',()=>{const light=document.documentElement.classList.toggle('light');$('themeBtn').textContent=light?'☾ Dark mode':'☼ Light mode';if(state.mainPlot){destroyCharts();createCharts();scheduleRender();}});
   $('yResponseRange').addEventListener('input',e=>{$('yResponseText').textContent=`${e.target.value}%`;scheduleRender();});
   ['zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
   $('yControlsToggle').addEventListener('change',e=>{$('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;if(state.manualY)initializeManualYAxis();else{state.autoYMin=null;state.autoYMax=null;}scheduleRender();});
@@ -1428,9 +1983,14 @@ function initEvents(){
   $('zoomInBtn').addEventListener('click',()=>zoomBy(.75));$('zoomOutBtn').addEventListener('click',()=>zoomBy(1.33));
   $('backBtn').addEventListener('click',()=>{state.live=false;const span=state.viewMax-state.viewMin;const min=Math.max(oldestTime(),state.viewMin-span*.8);state.viewMin=min;state.viewMax=Math.min(newestTime(),min+span);scheduleRender();});
   $('forwardBtn').addEventListener('click',()=>{const span=state.viewMax-state.viewMin;const min=Math.min(newestTime()-span,state.viewMin+span*.8);state.viewMin=Math.max(oldestTime(),min);state.viewMax=Math.min(newestTime(),state.viewMin+span);if(state.viewMax>=newestTime()-PERIOD_MS)state.live=true;scheduleRender();});
-  $('clearSelectionBtn').addEventListener('click',()=>{state.selection=null;if(!state.measurement)state.highlight=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();});$('clearLogBtn').addEventListener('click',()=>{state.logs=[];renderLog();});
-  $('logList').addEventListener('click',e=>{const row=e.target.closest('[data-log-id]');if(row)jumpToLogEntry(row.dataset.logId,row.dataset.logType);});
+  $('clearSelectionBtn').addEventListener('click',()=>{state.selection=null;state.logPinned=null;if(!state.measurement)state.highlight=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();});$('clearLogBtn').addEventListener('click',()=>{state.logs=[];state.logPinned=null;state.hoverRange=null;renderLog();redrawOverlays();});
+  $('logList').addEventListener('click',e=>{const row=e.target.closest('[data-log-id]');if(row){jumpToLogEntry(row.dataset.logId,row.dataset.logType);redrawOverlays();}});
+  $('logList').addEventListener('mouseover',e=>{const row=e.target.closest('[data-log-id]');setHoverRange(row?logEntryRange(logEntryOf(row.dataset.logId)):null);});
+  $('logList').addEventListener('mouseleave',()=>setHoverRange(null));
   window.addEventListener('resize',resizeCharts);
+  // Background tabs suspend requestAnimationFrame. On return the Y-axis is placed on the current data
+  // in one undamped step (snapY), after which the normal damping resumes.
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)state.wasHidden=true;else if(state.wasHidden){state.wasHidden=false;state.snapY=true;scheduleRender();}});
 }
 
 // Simulator pacing (v8). Samples are generated from elapsed wall-clock time instead of one sample
