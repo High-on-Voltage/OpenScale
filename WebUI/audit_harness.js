@@ -409,6 +409,76 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   R(`handleSseMessage('/s1',${JSON.stringify(msg('a',400,10))})`); ok('V17 data still flows into a sensor after a list reload', R(`sensors.get('a').state.count`)===countsBefore+10);
   ok('V17 an empty sensor can be shown without errors', (()=>{ try { R(`activateSensor('d'); renderEmpty(); activateSensor('test')`); return true; } catch(e){ console.log(e); return false; } })());
 
+  // ===== v12 =====================================================================================
+  R = await load();
+  const J = s => JSON.parse(R(`JSON.stringify(${s})`));
+  // W1 fitting maths on the demo observations (analytic: counts = 4600 + 4 m[g], residuals -2, 0, 0, +2 ... )
+  R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)))`);
+  { const f = J(`(()=>{const p=wizPoints(wiz).points;const l=fitCalibration(p,'linear');return {n:p.length,ok:l.ok,sd:l.sdRawRes,dof:l.dof,slope:(l.g(200000)-l.g(0))/200,a:l.g(0),mono:l.monotone,nodes:l.nodes,gm:l.groups.length}})()`);
+    ok('W1 demo observations: 5 points, 3 distinct masses', f.n===5&&f.gm===3);
+    ok('W1 linear fit: 4 counts/g, intercept 4600, s = sqrt(8/3), dof 3', near(f.slope,4,1e-9)&&near(f.a,4600,1e-9)&&near(f.sd,Math.sqrt(8/3),1e-9)&&f.dof===3, JSON.stringify(f)); }
+  { const f = J(`(()=>{const a=fitCalibration(wizPoints(wiz).points,'anchors');return {an:a.anchors.map(x=>[x.massMg,x.raw]),dof:a.dof}})()`);
+    ok('W1 anchors model reproduces the embedded anchors (mean of the three 100 g placements = 5000)', JSON.stringify(f.an)==='[[0,4600],[100000,5000],[200000,5400]]'&&f.dof===2, JSON.stringify(f)); }
+  // W2 curved cell: quadratic recovers the truth; written anchors invert it
+  { const r = J(`(()=>{const pts=[];for(let k=0;k<=8;k++){const m=k*25000;pts.push({id:'p'+k,massMg:m,raw:5000+4*(m/1000)+0.002*(m/1000)**2});}
+      const q=fitCalibration(pts,'poly2'),l=fitCalibration(pts,'linear');
+      const cfg=prepareCalibration({schemaVersion:1,calibrationUnit:'mg',calibrationAnchors:q.anchors.map((a,i)=>({anchorId:'a'+i,rawMean:a.raw,referenceValue:a.massMg,referenceUnit:'mg'}))});
+      let worst=0;for(let g=1;g<=199;g+=0.5){const raw=5000+4*g+0.002*g*g;worst=Math.max(worst,Math.abs(calibrateAbsolute(raw,cfg).valueMg-g*1000));}
+      return {rms:q.rmsMassMg,sd:q.sdRawRes,lin:l.maxAbsMassMg,nodes:q.nodes,interp:q.maxInterpErrMg,worst}})()`);
+    ok('W2 quadratic fit of exactly quadratic data has ~0 residual; a straight line does not', r.sd<1e-6&&r.rms<1e-6&&r.lin>1000, JSON.stringify(r));
+    ok('W2 sampled anchors invert the curve: worst error over 1..199 g below 1e-5 of the span and equal to the reported bound', r.worst<=1e-5*200000*1.0001&&r.interp<=1e-5*200000, JSON.stringify(r)); }
+  // W3 errors: too few masses, non-monotonic cubic, inverse polarity accepted
+  { const r = J(`(()=>{const mk=(a)=>a.map((y,i)=>({id:'p'+i,massMg:i*1000,raw:y}));
+      return {one:fitCalibration([{id:'a',massMg:5,raw:1},{id:'b',massMg:5,raw:2}],'linear').errors.length,
+              quad2:fitCalibration(mk([0,10]),'poly2').errors.length,
+              nonmono:fitCalibration(mk([0,100,90,300]),'poly3').errors.length,
+              inv:fitCalibration(mk([5000,4000,3000,2000]),'linear').ok}})()`);
+    ok('W3 one mass / degree too high / non-monotonic fit are rejected; falling counts (inverted polarity) accepted', r.one>0&&r.quad2>0&&r.nonmono>0&&r.inv, JSON.stringify(r)); }
+  // W4 config -> validate -> activate -> calibration really used; excluded observation stays in file but not in fit
+  R = await load();
+  R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION))); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wiz.fitModel='linear'; wiz.profile.profileId='wizard-test'; wiz.profile.profileName='<i>wiz</i>'; wiz.observations[1].include=false;`);
+  { const r = J(`(()=>{const b=wizBuild();return {err:b.errors,n:b.fit.n,excl:b.cfg.observations.filter(o=>o.excluded).map(o=>o.observationId),an:b.cfg.calibrationAnchors.length,unit:b.cfg.calibrationUnit,v:validateCalibrationConfig(b.cfg).errors.length,m:b.cfg.calibrationMethod}})()`);
+    ok('W4 built document validates; excluded observation is marked in the file and not fitted', r.err.length===0&&r.n===4&&r.excl.join()==='obs-100-A-01'&&r.v===0&&r.m==='piecewise-linear'&&r.an===2, JSON.stringify(r)); }
+  { const res = await R(`wizActivate().then(()=>JSON.stringify({m:wiz.message,rev:state.revisionId,n:state.calibrations.length,c:calibrateAbsolute(5200).valueMg}))`); const o = JSON.parse(res);
+    ok('W4 activation starts a new calibration epoch; 5200 counts = 149.875 g on the fitted line (intercept 4600.5 without the excluded 4998)', o.n===2&&near(o.c,149875,1e-9,1e-3), JSON.stringify(o));
+    ok('W4 wizard cannot activate on another sensor', await R(`(async()=>{wiz.sensorId='other';await wizActivate();return /not the wizard/.test(wiz.message)&&state.calibrations.length===2})()`)); }
+  ok('W4 wizard HTML escapes untrusted profile names', !R(`(()=>{wiz.sensorId=activeSensor.id;wiz.tab='weights';wizRender();return wq('wizBody').innerHTML})()`).includes('<i>wiz</i>'));
+  for (const t of ['weights','observations','fit','review']) ok(`W4 tab "${t}" renders without error`, (()=>{ try { R(`wiz.tab='${t}';wizRender();wq('wizBody').innerHTML.length`); return true; } catch(e){ console.log(e); return false; } })());
+  // W5 capture through the measurement machinery
+  R = await load();
+  R(`for(let i=0;i<100;i++)appendSample(nextSensorValue()); wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wiz.captureSeconds=5; wiz.open=true; wizRecord();`);
+  ok('W5 recording starts a tagged measurement of 400 samples', R(`state.measurement&&state.measurement.target===400&&state.measurement.tag==='calibration wizard'&&wiz.capture!==null`));
+  R(`for(let i=0;i<400;i++)appendSample(nextSensorValue());`);
+  { const o = J(`(()=>{const ob=wiz.observations[0],v=[];for(let i=100;i<500;i++)v.push(getRaw(i));const m=v.reduce((a,b)=>a+b,0)/400;return {n:wiz.observations.length,cnt:ob.sampleCount,dm:ob.rawMean-m,load:ob.loadId,st:ob.validity.status,done:wiz.capture===null,idx:ob.placementIndex,dur:ob.durationMs}})()`);
+    ok('W5 observation = brute-force raw mean of exactly the 400 samples after the press', o.n===1&&o.cnt===400&&near(o.dm,0,1e-12,1e-9)&&o.done&&o.idx===1&&near(o.dur,5000,1e-9,1e-6), JSON.stringify(o)); }
+  R(`wiz.selLoad='load-empty'; wizRecord(); for(let i=0;i<10;i++)appendSample(nextSensorValue()); autoTare();`);
+  ok('W5 a tare during a capture cancels it and leaves no observation', R(`wiz.capture===null&&state.measurement===null&&wiz.observations.length===1&&/cancelled/.test(wiz.message)`));
+  R(`wizUseSelection()`); ok('W5 "use selected interval" without a selection is refused', R(`wiz.observations.length===1&&/no selected/.test(wiz.message)`));
+  R(`selectInterval(getTime(150),getTime(349));wizUseSelection()`); ok('W5 selected interval becomes an observation', R(`wiz.observations.length===2&&wiz.observations[1].sampleCount===200&&wiz.observations[1].source==='selection'`));
+  // W6 UI settings
+  R = await load();
+  ok('W6 sanitize: defaults for missing keys, wrong types and versions reported', J(`sanitizeUiSettings({schemaVersion:1,theme:'light'}).value.yResponsePercent`)===5 && J(`sanitizeUiSettings({schemaVersion:1,theme:'pink'}).errors.length`)===1 && J(`sanitizeUiSettings({schemaVersion:2}).value`)===null && J(`sanitizeUiSettings({schemaVersion:1,yResponsePercent:500}).errors.length`)===0 && J(`sanitizeUiSettings({schemaVersion:1,yResponsePercent:500}).value.yResponsePercent`)===100);
+  R(`globalThis.__ls={};globalThis.localStorage={getItem:k=>(k in __ls?__ls[k]:null),setItem:(k,v)=>{__ls[k]=String(v)},removeItem:k=>{delete __ls[k]}};`);
+  R(`$('yResponseRange').value=17;$('downsampleToggle').checked=true;$('zeroLine').checked;uiLocalWrite(collectUiSettings())`);
+  { const o = J(`uiLocalRead()`); ok('W6 collect -> localStorage -> read round trip', o&&o.yResponsePercent===17&&o.downsample===true&&o.theme==='dark', JSON.stringify(o)); }
+  R(`$('yResponseRange').value=5;$('downsampleToggle').checked=false;applyUiSettings(uiLocalRead())`);
+  ok('W6 applying stored settings restores the controls', R(`$('yResponseRange').value`)===17&&R(`$('downsampleToggle').checked`)===true&&R(`$('yResponseText').textContent`)==='17%');
+  R(`globalThis.__ls.massTelemetryWorkbench_bad=1;localStorage.setItem(UI_LOCAL_KEY,'{not json')`); ok('W6 corrupt stored settings are ignored', R(`uiLocalRead()`)===null);
+  await R(`uiResetLocal()`); ok('W6 reset clears the browser copy and restores the built-in values', R(`uiLocalRead()`)===null&&R(`$('yResponseRange').value`)===5&&R(`$('downsampleToggle').checked`)===false&&R(`uiTheme`)==='dark');
+  ok('W6 without a server the server buttons are disabled and say so', R(`updateUiSettingsInfo(),$('uiSaveServerBtn').disabled`)===true && (await R(`uiSaveAsServerDefault().then(()=>$('uiMessages').textContent)`)).includes('not configured')===false && (await R(`$('uiMessages').textContent`)).includes('No settings server'));
+  // W7 sensor settings document
+  R = await load();
+  R(`applySensorList([{id:'a',name:'Scale A',sseUrl:'/s1',rateHz:10},{id:'b',name:'B',sseUrl:'/s1'}]); sensors.get('a').settings.notes='bench 2'`);
+  { const d = J(`sensorSettingsDoc()`); ok('W7 sensor_settings.json lists the server sensors (not the test signal) with rate and notes', d.schemaVersion===1&&d.sensors.length===2&&d.sensors[0].nominalRateHz===10&&d.sensors[0].notes==='bench 2'&&!d.sensors.some(s=>s.id==='test'), JSON.stringify(d)); }
+  R(`ssSelectedId='a';$('ssName').value='Scale A2';$('ssRate').value=20;$('ssNotes').value='n';`);
+  await R(`sensorSettingsApply()`);
+  ok('W7 apply: name and notes updated; rate changeable while empty; nothing sent without server', R(`sensors.get('a').name`)==='Scale A2'&&R(`sensors.get('a').state.rateHz`)===20&&/Nothing was sent/.test(R(`$('ssMessages').textContent`)));
+  R(`handleSseMessage('/s1',JSON.stringify([{id:'a',t:1000,raw:5000},{id:'a',t:1050,raw:5001}]))`);
+  R(`ssSelectedId='a';$('ssRate').value=99;sensorSettingsApply()`); await new Promise(r=>setTimeout(r,10));
+  ok('W7 rate is fixed once samples exist', R(`sensors.get('a').state.rateHz`)===20&&R(`sensorSettingsRender(),$('ssRate').disabled`)===true);
+  // W8 static: dynamic wizard ids and modals exist
+  ok('W8 modals and settings-menu controls exist in the HTML', ['settingsModal','wizModal','wizBody','wizMin','wizClose','calWizardBtn','openSettingsMenuBtn','uiResetBtn','uiSaveServerBtn','uiResetServerBtn','uiExportBtn','ssSensor','ssApplyBtn','ssDownloadBtn','smTab_ui','smTab_sensor','smPane_ui','smPane_sensor','uiMessages','uiSettingsInfo'].every(i=>html.includes(`id="${i}"`)));
+
   console.log(fails? `\n${fails} FAILED` : '\nall passed');
   process.exitCode = fails?1:0;
 })();

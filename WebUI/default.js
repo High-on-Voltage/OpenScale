@@ -163,7 +163,7 @@ let state = null;
 function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
-  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, details: def.details || {}, unlisted: false,
+  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
   return sensor;
@@ -803,6 +803,7 @@ function renderEmpty(){
   if(state.mainPlot)state.mainPlot.setData([[],[],[],[],[]]);if(state.miniPlot)state.miniPlot.setData([[],[]]);
 }
 function renderFrame(){
+  if(wiz.open)wizTick();
   if(!state.count){renderEmpty();return;}
   if(!state.live)autoTrackIfAtEnd();
   if(state.live)fitLiveWindow();
@@ -1568,11 +1569,15 @@ function startMeasurement(){
   if(state.measurement){cancelMeasurement('cancelled by user');return;}
   const target=clamp(Math.floor(Number($('measSamples').value)||0),2,MEASUREMENT_MAX_SAMPLES);
   $('measSamples').value=target;syncMeasurementInputs('samples');   // show the clamped value
-  if(!state.unlimited&&target>state.capacity){$('measProgress').textContent=`The buffer limit (${state.capacity.toLocaleString()} samples) is smaller than the requested ${target.toLocaleString()} samples.`;return;}
+  beginMeasurement(target);
+}
+// hooks (v12, used by the calibration wizard): {tag, onDone(entry, firstIndex, endIndex), onCancel(reason)}
+function beginMeasurement(target,hooks={}){
+  if(!state.unlimited&&target>state.capacity){$('measProgress').textContent=`The buffer limit (${state.capacity.toLocaleString()} samples) is smaller than the requested ${target.toLocaleString()} samples.`;return false;}
   // Captured now so later changes of the estimator settings cannot alter a running measurement.
-  state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau,hampelHalf:state.hampelHalf,hampelSigma:state.hampelSigma};
+  state.measurement={id:`measurement-${Date.now()}`,target,collected:0,t0:state.nextTime,estimator:state.estimator,trimPercent:state.trimPercent,emaTau:state.emaTau,hampelHalf:state.hampelHalf,hampelSigma:state.hampelSigma,tag:hooks.tag||null,onDone:hooks.onDone||null,onCancel:hooks.onCancel||null};
   state.highlight={t0:state.nextTime,t1:state.nextTime};
-  $('measProgress').textContent='';updateMeasurementUI();scheduleRender();
+  $('measProgress').textContent='';updateMeasurementUI();scheduleRender();return true;
 }
 function measurementSampleAdded(sampleTime){
   const m=state.measurement;m.collected++;state.highlight={t0:m.t0,t1:sampleTime};
@@ -1582,13 +1587,14 @@ function finishMeasurement(){
   const m=state.measurement;state.measurement=null;
   const first=lowerBoundTime(m.t0),end=state.count;
   const result=calculateSelection(first,end,{estimator:m.estimator,trimPercent:m.trimPercent,emaTau:m.emaTau,hampelHalf:m.hampelHalf,hampelSigma:m.hampelSigma});
-  const entry={type:'measurement',entryId:m.id,createdAt:new Date().toISOString(),...result,targetSamples:m.target,nominalDurationS:m.target/RATE_HZ};   // result.analysis comes from calculateSelection
+  const entry={type:'measurement',entryId:m.id,createdAt:new Date().toISOString(),...result,targetSamples:m.target,nominalDurationS:m.target/RATE_HZ,tag:m.tag||null};   // result.analysis comes from calculateSelection
   state.lastMeasurement=entry;delete state.detailsOpen.meas;state.highlight={t0:result.t0,t1:result.t1};
   appendLogEntry(entry);updateMeasurementUI();scheduleRender();
+  if(m.onDone)m.onDone(entry,first,end);
 }
 function cancelMeasurement(reason){
   if(!state.measurement)return;
-  state.measurement=null;state.highlight=null;
+  const cm=state.measurement;state.measurement=null;state.highlight=null;if(cm.onCancel)cm.onCancel(reason);
   appendLogEntry({type:'note',entryId:`note-${Date.now()}`,createdAt:new Date().toISOString(),text:`Measurement cancelled: ${reason}`});
   updateMeasurementUI();scheduleRender();
 }
@@ -1637,7 +1643,7 @@ function renderLog(){
     if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
     if(entry.type==='note')return row('note','note',esc(entry.text));
     const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
-    const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal)`:`Selection · ${entry.totalSamples.toLocaleString()} samples`;
+    const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal)${entry.tag?' · '+esc(entry.tag):''}`:`Selection · ${entry.totalSamples.toLocaleString()} samples`;
     return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}${entry.analysis?'<br>'+analysisHTML(entry.analysis,false,'log:'+entry.entryId):''}<br><span class="small">${detail(entry)}</span>`);
   }).join('');
 }
@@ -1818,7 +1824,7 @@ function initEvents(){
   $('rawModeToggle').addEventListener('change',e=>{state.unitId=e.target.checked?'raw':UNIT_CONFIG.defaultUnit;$('unitSelect').value=state.unitId;$('unitSelect').dispatchEvent(new Event('change'));});
   $('precisionSelect').addEventListener('change',e=>{state.precision=e.target.value;scheduleRender();if(state.mainPlot){destroyCharts();createCharts();scheduleRender();}});
   $('settingsBtn').addEventListener('click',()=>openSettings($('settingsMenu').hidden));document.addEventListener('pointerdown',e=>{if(!$('settingsMenu').hidden&&!e.target.closest('.settings-wrap'))openSettings(false);});
-  $('themeBtn').addEventListener('click',()=>{const light=document.documentElement.classList.toggle('light');$('themeBtn').textContent=light?'☾ Dark mode':'☼ Light mode';if(state.mainPlot){destroyCharts();createCharts();scheduleRender();}});
+  $('themeBtn').addEventListener('click',()=>{setTheme(uiTheme!=='light');uiSaveSoon();});
   $('yResponseRange').addEventListener('input',e=>{$('yResponseText').textContent=`${e.target.value}%`;scheduleRender();});
   ['zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
   $('yControlsToggle').addEventListener('change',e=>{$('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;if(state.manualY)initializeManualYAxis();else{state.autoYMin=null;state.autoYMax=null;}scheduleRender();});
@@ -1909,6 +1915,7 @@ function activateSensor(id){
   if(state.live)fitLiveWindow();else clampHistoricalView();
   syncUIFromState();
   if(window.uPlot)createCharts();
+  if(wiz.open)wizRender();
   scheduleRender();
 }
 const SELECTION_DEFAULT_HTML='No interval selected.<br>Shift-drag on the main chart or use Select interval mode.';
@@ -2055,6 +2062,614 @@ function initSensorCalibration(st,fp){
   st.calibrations=[{effectiveFromTime:-Infinity,revisionId:fp.id,profileId:EMBEDDED_CALIBRATION.profileId,hashType:fp.type,config:EMBEDDED_PREPARED,source:'embedded demo'}];
 }
 
+// ===== v12: SETTINGS (UI settings + sensor settings) ====================================================
+// ASSUMED server API (no server exists yet; both URLs are null, which disables the server buttons):
+//   UI_SETTINGS_URL      GET -> 200 + ui-settings.json | 404 = no default stored; PUT = store the body as the
+//                        server default; DELETE = remove the server default.
+//   SENSOR_SETTINGS_URL  PUT sensor_settings.json (all server sensors in one document).
+// Order of precedence for the UI settings: this browser's own copy (localStorage) > server default > built-in.
+// Applying a setting never writes it anywhere; only a user change writes the browser copy.
+const UI_SETTINGS_URL = null;
+const SENSOR_SETTINGS_URL = null;
+const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
+const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false });
+const UI_CONTROL_IDS = new Set(['navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
+let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = UI_SETTINGS_URL ? 'not loaded yet' : 'not configured';
+const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
+
+// Missing keys fall back to the built-in default, unknown keys are ignored, wrong types are reported.
+function sanitizeUiSettings(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return { value: null, errors: ['The top level must be a JSON object.'] };
+  const out = { ...UI_DEFAULTS }, errors = [];
+  if (o.schemaVersion !== 1) errors.push('schemaVersion must be 1.');
+  if (o.theme !== undefined) { if (o.theme === 'dark' || o.theme === 'light') out.theme = o.theme; else errors.push('theme must be "dark" or "light".'); }
+  for (const k of ['navPanelVisible', 'downsample', 'zeroFill', 'zeroRawFill', 'zeroLine'])
+    if (o[k] !== undefined) { if (typeof o[k] === 'boolean') out[k] = o[k]; else errors.push(`${k} must be true or false.`); }
+  if (o.yResponsePercent !== undefined) { if (Number.isFinite(o.yResponsePercent)) out.yResponsePercent = clamp(Math.round(o.yResponsePercent), 1, 100); else errors.push('yResponsePercent must be a number.'); }
+  return { value: errors.length ? null : out, errors };
+}
+function collectUiSettings() {
+  return { schemaVersion: 1, theme: uiTheme, navPanelVisible: !$('navPanel').hidden, yResponsePercent: clamp(Math.round(Number($('yResponseRange').value) || 5), 1, 100),
+    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked };
+}
+function setTheme(light) {
+  uiTheme = light ? 'light' : 'dark';
+  document.documentElement.classList.toggle('light', !!light);
+  $('themeBtn').textContent = light ? '☾ Dark mode' : '☼ Light mode';
+  if (state.mainPlot) { destroyCharts(); createCharts(); scheduleRender(); }
+}
+function applyUiSettings(s) {
+  setTheme(s.theme === 'light');
+  setNavPanelVisible(!!s.navPanelVisible);
+  $('yResponseRange').value = s.yResponsePercent; $('yResponseText').textContent = `${s.yResponsePercent}%`;
+  $('downsampleToggle').checked = !!s.downsample; $('zeroFillToggle').checked = !!s.zeroFill; $('zeroRawFillToggle').checked = !!s.zeroRawFill; $('zeroLineToggle').checked = !!s.zeroLine;
+  if (state) { state.autoYMin = null; state.autoYMax = null; }
+  scheduleRender();
+}
+function uiLocalRead() { try { if (typeof localStorage === 'undefined') return null; const t = localStorage.getItem(UI_LOCAL_KEY); return t ? sanitizeUiSettings(JSON.parse(t)).value : null; } catch (_) { return null; } }
+function uiLocalWrite(o) { try { localStorage.setItem(UI_LOCAL_KEY, JSON.stringify(o)); return true; } catch (_) { return false; } }
+function uiLocalClear() { try { localStorage.removeItem(UI_LOCAL_KEY); } catch (_) {} }
+function uiSaveSoon() { clearTimeout(uiSaveTimer); uiSaveTimer = setTimeout(() => { uiSaveTimer = null; uiLocalWrite(collectUiSettings()); updateUiSettingsInfo(); }, 250); }
+function uiMsg(t) { $('uiMessages').textContent = t; }
+function updateUiSettingsInfo() {
+  const local = uiLocalRead();
+  $('uiSettingsInfo').innerHTML = `This browser: <strong>${local ? 'own settings stored' : 'nothing stored (server default or built-in values apply)'}</strong><br>Server default: <strong>${esc(uiServerState)}</strong><br><span class="small">Stored items: theme, navigation panel, Y-axis response, downsampling, zero fills, zero line.</span>`;
+  $('uiSaveServerBtn').disabled = !UI_SETTINGS_URL; $('uiResetServerBtn').disabled = !UI_SETTINGS_URL;
+}
+async function uiFetchServerDefault() {
+  if (!UI_SETTINGS_URL) { uiServerState = 'not configured'; return null; }
+  try {
+    const r = await fetch(UI_SETTINGS_URL, { cache: 'no-store' });
+    if (r.status === 404) { uiServerDefault = null; uiServerState = 'no default stored'; return null; }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const s = sanitizeUiSettings(await r.json()); if (!s.value) throw new Error(s.errors.join(' '));
+    uiServerDefault = s.value; uiServerState = 'default available'; return s.value;
+  } catch (e) { uiServerState = `unavailable (${e.message})`; return null; }
+}
+async function uiSaveAsServerDefault() {
+  if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
+  try {
+    const body = collectUiSettings(), r = await fetch(UI_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body, null, 2) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    uiServerDefault = body; uiServerState = 'default available'; uiMsg('The current UI settings are now the server default.');
+  } catch (e) { uiMsg(`Could not save the server default: ${e.message}`); }
+  updateUiSettingsInfo();
+}
+async function uiResetServerDefault() {
+  if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
+  try {
+    const r = await fetch(UI_SETTINGS_URL, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+    uiServerDefault = null; uiServerState = 'no default stored'; uiMsg('The server default was removed. Browsers without their own settings use the built-in values.');
+  } catch (e) { uiMsg(`Could not reset the server default: ${e.message}`); }
+  updateUiSettingsInfo();
+}
+// "Reset": forget this browser's own copy and fall back to the server default (re-read now) or the built-in values.
+async function uiResetLocal() {
+  uiLocalClear(); clearTimeout(uiSaveTimer);
+  await uiFetchServerDefault();
+  applyUiSettings(uiServerDefault || UI_DEFAULTS);
+  uiMsg(uiServerDefault ? 'This browser’s UI settings were reset to the server default.' : 'This browser’s UI settings were reset to the built-in values.');
+  updateUiSettingsInfo();
+}
+function initUiSettings() {
+  const local = uiLocalRead(); if (local) applyUiSettings(local);
+  for (const type of ['change', 'input']) document.addEventListener(type, e => { if (e.target && UI_CONTROL_IDS.has(e.target.id)) uiSaveSoon(); });
+  $('uiResetBtn').addEventListener('click', uiResetLocal);
+  $('uiSaveServerBtn').addEventListener('click', uiSaveAsServerDefault);
+  $('uiResetServerBtn').addEventListener('click', uiResetServerDefault);
+  $('uiExportBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(collectUiSettings(), null, 2)], { type: 'application/json' }), 'ui-settings.json'));
+  if (UI_SETTINGS_URL) uiFetchServerDefault().then(d => { if (!local && d) applyUiSettings(d); updateUiSettingsInfo(); });
+  updateUiSettingsInfo();
+}
+
+// ---- sensor settings -------------------------------------------------------------------------------------
+// One document for all server sensors (the test signal has no settings). The nominal rate can be changed
+// locally only while the sensor has no samples: every statistic of the stored samples assumes it.
+let ssSelectedId = null;
+function sensorSettingsDoc() {
+  return { schemaVersion: 1, generatedAt: new Date().toISOString(),
+    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '' })) };
+}
+function sensorSettingsRender() {
+  const server = [...sensors.values()].filter(s => s.kind === 'server');
+  if (!ssSelectedId || !sensors.has(ssSelectedId) || sensors.get(ssSelectedId).kind !== 'server') ssSelectedId = server.length ? (activeSensor.kind === 'server' ? activeSensor.id : server[0].id) : null;
+  const sel = $('ssSensor'); sel.innerHTML = '';
+  for (const s of server) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.name + (s.unlisted ? ' (not in list)' : ''); sel.appendChild(o); }
+  if (ssSelectedId) sel.value = ssSelectedId;
+  const s = ssSelectedId && sensors.get(ssSelectedId), none = !s;
+  $('ssForm').hidden = none; $('ssNone').hidden = !none;
+  if (none) return;
+  $('ssName').value = s.name; $('ssRate').value = s.state.rateHz; $('ssNotes').value = s.settings.notes || '';
+  $('ssRate').disabled = s.state.count > 0; $('ssRateNote').textContent = s.state.count > 0 ? 'Fixed: this sensor already holds samples.' : 'Can still be changed: no samples yet.';
+}
+function ssMsg(t) { $('ssMessages').textContent = t; }
+async function sensorSettingsApply() {
+  const s = ssSelectedId && sensors.get(ssSelectedId); if (!s) return;
+  const rate = Number($('ssRate').value);
+  if (s.state.count === 0 && !(rate > 0 && rate <= 10000)) { ssMsg('The nominal rate must be between 0 and 10,000 Hz.'); return; }
+  s.name = ($('ssName').value || '').trim() || s.id; s.settings.notes = $('ssNotes').value || '';
+  if (s.state.count === 0 && rate !== s.state.rateHz) {
+    s.state.rateHz = rate;
+    if (s === activeSensor) { RATE_HZ = rate; PERIOD_MS = 1000 / rate; syncUIFromState(); }
+  }
+  renderSensorSelect(); sensorSettingsRender();
+  if (!SENSOR_SETTINGS_URL) { ssMsg('Applied in this session. Nothing was sent: no sensor server is configured (SENSOR_SETTINGS_URL is empty). “Download” saves sensor_settings.json.'); return; }
+  try {
+    const r = await fetch(SENSOR_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sensorSettingsDoc(), null, 2) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    ssMsg('Applied and sent sensor_settings.json to the server.');
+  } catch (e) { ssMsg(`Applied locally, but the server did not accept sensor_settings.json: ${e.message}`); }
+}
+function openSettingsMenu(tab) {
+  openSettings(false); $('settingsModal').hidden = false; settingsMenuTab(tab || 'ui');
+  updateUiSettingsInfo(); sensorSettingsRender();
+}
+function settingsMenuTab(tab) {
+  for (const t of ['ui', 'sensor']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); }
+}
+function initSettingsMenu() {
+  $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
+  $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
+  $('settingsModal').addEventListener('pointerdown', e => { if (e.target === $('settingsModal')) $('settingsModal').hidden = true; });
+  $('smTab_ui').addEventListener('click', () => settingsMenuTab('ui')); $('smTab_sensor').addEventListener('click', () => settingsMenuTab('sensor'));
+  $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
+  $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
+  $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorSettingsDoc(), null, 2)], { type: 'application/json' }), 'sensor_settings.json'));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
+}
+
+// ===== v12: CALIBRATION FITTING (pure functions: no DOM, no state) ===========================================
+// Model. A reading is raw = g(m) + noise, m = reference mass. The noise sits in the COUNTS (the reference masses are
+// known far better than one reading), so g is fitted as raw on mass by ordinary least squares, i.e. in the variable that
+// carries the noise. Regressing mass on raw would bias the slope low (regression dilution) whenever the counts are noisy.
+// The engine needs the inverse f(raw) = mass and it is piecewise linear, so f is written as anchors SAMPLED ON THE
+// FITTED CURVE: m_k uniform over the reference range, raw_k = g(m_k). The piecewise-linear interpolant through points of a
+// monotone curve needs no inversion. Its deviation from the exact inverse is measured at the segment mid-counts
+// (bisection inside one segment) and the number of segments is doubled until that error is < 1e-5 of the mass span
+// (at most 256 segments); the final value is reported. Outside the range the engine extrapolates linearly and flags it.
+// Weights: all observations count equally (each placement is one independent observation). Residual SD is s = sqrt(SSE/(n-p)),
+// observed scatter around the model, NOT an uncertainty. The polynomial is fitted in u = (m - c)/h, u in [-1,1], so the
+// normal equations stay well conditioned up to degree 3.
+const FIT_MODELS = {
+  anchors: { label: 'Piecewise-linear through the mean of each reference mass', degree: null },
+  linear: { label: 'Straight line (least squares)', degree: 1 },
+  poly2: { label: 'Quadratic (least squares)', degree: 2 },
+  poly3: { label: 'Cubic (least squares)', degree: 3 }
+};
+function rawStats(a) {
+  const n = a.length; if (!n) return { n: 0, mean: NaN, sd: NaN, median: NaN, mad: NaN };
+  let s = 0; for (const v of a) s += v; const mean = s / n; let q = 0; for (const v of a) q += (v - mean) * (v - mean);
+  const med = anMedian(a);
+  return { n, mean, sd: Math.sqrt(q / n), median: med, mad: anMedian(Array.from(a, v => Math.abs(v - med))) };
+}
+function fitSolve(A, b) {   // Gaussian elimination with partial pivoting; null if (numerically) singular
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (!(Math.abs(M[p][c]) > 1e-12)) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = c + 1; r < n; r++) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+  }
+  const x = new Array(n);
+  for (let i = n - 1; i >= 0; i--) { let s = M[i][n]; for (let k = i + 1; k < n; k++) s -= M[i][k] * x[k]; x[i] = s / M[i][i]; }
+  return x;
+}
+function fitPolynomial(xs, ys, degree) {
+  const n = xs.length, p = degree + 1, lo = Math.min(...xs), hi = Math.max(...xs), c = (lo + hi) / 2, h = (hi - lo) / 2 || 1;
+  const A = Array.from({ length: p }, () => new Array(p).fill(0)), b = new Array(p).fill(0);
+  for (let i = 0; i < n; i++) {
+    const u = (xs[i] - c) / h, pw = [1]; for (let k = 1; k <= 2 * p - 2; k++) pw.push(pw[k - 1] * u);
+    for (let r = 0; r < p; r++) { b[r] += ys[i] * pw[r]; for (let k = 0; k < p; k++) A[r][k] += pw[r + k]; }
+  }
+  const coef = fitSolve(A, b); if (!coef) return null;
+  return { coef, center: c, half: h, degree,
+    g: m => { const u = (m - c) / h; let s = 0; for (let k = p - 1; k >= 0; k--) s = s * u + coef[k]; return s; },
+    dg: m => { const u = (m - c) / h; let s = 0; for (let k = p - 1; k >= 1; k--) s = s * u + k * coef[k]; return s / h; } };
+}
+const fitKey = m => Number(m.toPrecision(12));   // equal reference masses (up to rounding) form one group
+function fitGroups(points) {
+  const map = new Map();
+  for (const p of points) { const k = fitKey(p.massMg); let g = map.get(k); if (!g) { g = { massMg: p.massMg, raws: [], ids: [] }; map.set(k, g); } g.raws.push(p.raw); g.ids.push(p.id); }
+  const gs = [...map.values()].sort((a, b) => a.massMg - b.massMg);
+  for (const g of gs) { const st = rawStats(g.raws); g.rawMean = st.mean; g.rawSD = g.raws.length > 1 ? st.sd * Math.sqrt(g.raws.length / (g.raws.length - 1)) : NaN; }   // between-placement SD (n-1)
+  return gs;
+}
+function fitInterpError(nodes) {   // max |piecewise-linear inverse - exact inverse| at the mid-counts of the segments (mg)
+  let worst = 0;
+  for (let k = 0; k + 1 < nodes.length; k++) {
+    const a = nodes[k], b = nodes[k + 1], rm = (a.raw + b.raw) / 2, g = nodes.g;
+    let lo = a.massMg, hi = b.massMg; const up = g(hi) > g(lo);
+    for (let it = 0; it < 60; it++) { const mid = (lo + hi) / 2; if ((g(mid) < rm) === up) lo = mid; else hi = mid; }
+    const exact = (lo + hi) / 2, lin = a.massMg + (rm - a.raw) / (b.raw - a.raw) * (b.massMg - a.massMg);
+    worst = Math.max(worst, Math.abs(lin - exact));
+  }
+  return worst;
+}
+// points: [{id, massMg, raw}] (one per included observation). Never throws; problems are in .errors.
+function fitCalibration(points, model) {
+  const out = { ok: false, errors: [], model, n: points.length, groups: [], anchors: [], residuals: [], g: null };
+  const spec = FIT_MODELS[model]; if (!spec) { out.errors.push(`Unknown fit model "${model}".`); return out; }
+  const groups = fitGroups(points); out.groups = groups; out.distinct = groups.length;
+  if (groups.length < 2) { out.errors.push('At least two different reference masses are needed.'); return out; }
+  const mLo = groups[0].massMg, mHi = groups[groups.length - 1].massMg; out.mRange = [mLo, mHi];
+  const stats = () => {
+    let sse = 0; for (const r of out.residuals) sse += r.resRaw * r.resRaw;
+    out.sdRawRes = out.dof > 0 ? Math.sqrt(sse / out.dof) : NaN;
+    const fin = out.residuals.map(r => r.resMassMg).filter(Number.isFinite);
+    out.rmsMassMg = fin.length ? Math.sqrt(fin.reduce((s, v) => s + v * v, 0) / fin.length) : NaN;
+    out.maxAbsMassMg = fin.length ? Math.max(...fin.map(Math.abs)) : NaN;
+  };
+  if (model === 'anchors') {
+    out.params = groups.length; out.dof = points.length - groups.length;
+    out.anchors = groups.map(g => ({ massMg: g.massMg, raw: g.rawMean, sourceIds: g.ids, count: g.raws.length }));
+    out.g = m => { let i = 0; while (i < groups.length - 2 && m > groups[i + 1].massMg) i++; const a = groups[i], b = groups[i + 1]; return a.rawMean + (m - a.massMg) / (b.massMg - a.massMg) * (b.rawMean - a.rawMean); };
+    const index = new Map(groups.map((g, i) => [fitKey(g.massMg), i]));
+    out.residuals = points.map(p => {
+      const gi = index.get(fitKey(p.massMg)), s = Math.min(gi, groups.length - 2), a = groups[s], b = groups[s + 1], slope = (b.rawMean - a.rawMean) / (b.massMg - a.massMg), res = p.raw - groups[gi].rawMean;
+      return { id: p.id, massMg: p.massMg, raw: p.raw, fitRaw: groups[gi].rawMean, resRaw: res, resMassMg: res / slope };
+    });
+    stats(); out.ok = true; return out;
+  }
+  const need = spec.degree + 1;
+  if (groups.length < need) { out.errors.push(`${spec.label} needs at least ${need} different reference masses; there are ${groups.length}.`); return out; }
+  const fit = fitPolynomial(points.map(p => p.massMg), points.map(p => p.raw), spec.degree);
+  if (!fit) { out.errors.push('The fit is numerically singular (too few distinct masses for this degree).'); return out; }
+  Object.assign(out, { g: fit.g, dg: fit.dg, coef: fit.coef, center: fit.center, half: fit.half, params: need, dof: points.length - need });
+  out.residuals = points.map(p => { const f = fit.g(p.massMg), d = fit.dg(p.massMg); return { id: p.id, massMg: p.massMg, raw: p.raw, fitRaw: f, resRaw: p.raw - f, resMassMg: (p.raw - f) / d }; });
+  stats();
+  let sign = 0; out.monotone = true;
+  for (let k = 0; k <= 400; k++) { const s = Math.sign(fit.dg(mLo + (mHi - mLo) * k / 400)); if (s === 0 || (sign && s !== sign)) { out.monotone = false; break; } sign = s; }
+  if (!out.monotone) { out.errors.push('The fitted curve is not monotonic over the range of the reference masses. Use a lower degree or exclude an observation.'); return out; }
+  let N = spec.degree > 1 ? 17 : 2, nodes;
+  const build = () => { nodes = Array.from({ length: N }, (_, k) => { const m = mLo + (mHi - mLo) * k / (N - 1); return { massMg: m, raw: fit.g(m) }; }); nodes.g = fit.g; return fitInterpError(nodes); };
+  let err = build();
+  while (spec.degree > 1 && err > 1e-5 * (mHi - mLo) && N < 257) { N = 2 * N - 1; err = build(); }
+  out.nodes = N; out.maxInterpErrMg = err;
+  out.anchors = nodes.map(n => ({ massMg: n.massMg, raw: n.raw, sourceIds: [], count: 0 }));
+  out.ok = true; return out;
+}
+
+// ---- calibration document from wizard data (pure: W is passed in) ------------------------------------------
+function wizLoadMassMg(W, load) {
+  let s = 0;
+  for (const c of load.components) {
+    const w = W.weights.find(x => x.weightId === c.weightId);
+    if (!w) throw new Error(`Load "${load.name}" refers to a missing weight.`);
+    s += Number(c.quantity) * massToMg(Number(w.assignedMass != null ? w.assignedMass : w.nominalMass), w.unit);
+  }
+  return s;
+}
+function wizPoints(W) {
+  const points = [], errors = [];
+  for (const o of W.observations) {
+    if (!o.include) continue;
+    const load = W.loads.find(l => l.loadId === o.loadId);
+    if (!load) { errors.push(`Observation ${o.observationId} refers to a missing load.`); continue; }
+    if (!Number.isFinite(o.rawMean)) { errors.push(`Observation ${o.observationId} has no valid raw mean.`); continue; }
+    try { points.push({ id: o.observationId, massMg: wizLoadMassMg(W, load), raw: o.rawMean }); } catch (e) { errors.push(e.message); }
+  }
+  return { points, errors };
+}
+function wizObsWeightId(load) { return load.weightRef || (load.components.length === 1 && Number(load.components[0].quantity) === 1 ? load.components[0].weightId : null); }
+function buildCalibrationConfig(W, fit, nowIso) {
+  const unit = W.profile.unit, pad = (n, w) => String(n).padStart(w, '0');
+  const included = W.observations.filter(o => o.include);
+  const anchors = fit.anchors.map((a, i) => {
+    const base = { anchorId: `anchor-${pad(i, 3)}`, referenceValue: mgToUnit(a.massMg, unit), referenceUnit: unit, rawMean: a.raw };
+    if (fit.model === 'anchors') return { ...base, sourceObservationIds: a.sourceIds, aggregationMethod: a.count > 1 ? 'arithmetic-mean-of-observation-raw-means' : 'single-observation', replicateCount: a.count };
+    return { ...base, sourceObservationIds: [], aggregationMethod: `fit-sampled:${fit.model}` };
+  });
+  return {
+    schemaVersion: 1, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '12.0-wizard',
+    calibrationUnit: unit, calibrationMethod: 'piecewise-linear',
+    sensor: { model: W.profile.sensorModel || '', hardwareId: W.sensorId || '', adcResolutionBits: null, samplingRateHz: W.rateHz || null },
+    environment: { temperatureC: null, relativeHumidityPercent: null, notes: W.profile.notes || '' },
+    referenceWeights: W.weights.map(w => ({ weightId: w.weightId, name: w.name, nominalMass: Number(w.nominalMass), assignedMass: w.assignedMass == null ? null : Number(w.assignedMass), unit: w.unit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty })),
+    referenceLoads: W.loads.map(l => ({ loadId: l.loadId, name: l.name, components: l.components.map(c => ({ weightId: c.weightId, quantity: Number(c.quantity) })) })),
+    observations: W.observations.map(o => {
+      const r = { observationId: o.observationId, weightId: wizObsWeightId(W.loads.find(l => l.loadId === o.loadId) || { components: [] }), loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId, placementIndex: o.placementIndex, removedAndReplaced: !!o.removedAndReplaced,
+        rawMean: o.rawMean, rawStdDev: o.rawStdDev, rawMedian: o.rawMedian, rawMAD: o.rawMAD, sampleCount: o.sampleCount, durationMs: o.durationMs, outlierMethod: null,
+        validityStatus: (o.validity && o.validity.status) || 'n/a', validityFlags: (o.validity && o.validity.flagged) || [] };
+      if (!o.include) { r.excluded = true; r.exclusionReason = o.exclusionReason || 'excluded in the fitting editor'; }
+      return r;
+    }),
+    calibrationAnchors: anchors,
+    fit: { model: fit.model, label: FIT_MODELS[fit.model].label, direction: fit.model === 'anchors' ? 'interpolation through group means' : 'counts on mass (least squares), inverted by sampling the fitted curve',
+      parameters: fit.params, observationsUsed: included.length, distinctMasses: fit.distinct, degreesOfFreedom: fit.dof, residualSdCounts: Number.isFinite(fit.sdRawRes) ? fit.sdRawRes : null,
+      rmsResidualMassMg: Number.isFinite(fit.rmsMassMg) ? fit.rmsMassMg : null, maxAbsResidualMassMg: Number.isFinite(fit.maxAbsMassMg) ? fit.maxAbsMassMg : null,
+      sampledSegments: fit.model === 'anchors' ? null : fit.nodes - 1, maxInterpolationErrorMg: fit.model === 'anchors' ? null : fit.maxInterpErrMg,
+      polynomial: fit.coef ? { variable: 'u = (mass_mg - center)/half', center: fit.center, half: fit.half, coefficients: fit.coef } : null },
+    validation: { status: 'not-characterized', method: null, checks: [{ id: 'fit-residuals', status: 'informational', note: 'observed scatter of the observations around the model; not an uncertainty' }], modelUncertainty: null },
+    reserved: { warmUpDurationSeconds: null, loadApproach: 'not-recorded', loadingDirection: 'not-determined', hysteresisAnalysis: null, temperatureCompensation: null, humidityCompensation: null }
+  };
+}
+
+// ===== v12: CALIBRATION WIZARD + FITTING EDITOR (UI) ===================================================
+// Four free-order tabs: 1 Weights (profile, reference weights, combination loads), 2 Observations (record
+// raw counts of a load from the shown sensor, reuse a selected interval, or type a value), 3 Fit (model choice,
+// plots, residuals, include/exclude observations), 4 Review (checks, activate on the shown sensor, export).
+// A capture reuses the Measurement machinery (beginMeasurement), so it is highlighted, logged, analysed with
+// analyzeSeries and cancelled by a tare / calibration change / gap exactly like a measurement. Observations store
+// RAW counts, so the wizard result does not depend on any tare or on the calibration that is active meanwhile.
+// An observation whose validity check is 'invalid' starts excluded (it can be included again, knowingly).
+const wiz = { open: false, tab: 'weights', minimised: false, sensorId: null, rateHz: null, profile: null, weights: [], loads: [], observations: [], runId: null,
+  captureSeconds: 10, capture: null, fitModel: 'anchors', message: '', newQty: {}, selLoad: null, replaced: true, nextNum: 1 };
+function wizId(prefix, list, key) { let n = wiz.nextNum++; while (list.some(x => x[key] === `${prefix}${n}`)) n = wiz.nextNum++; return `${prefix}${n}`; }
+function wizStamp() { return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12); }
+function wizNew() {
+  Object.assign(wiz, { tab: 'weights', profile: { profileId: `scale-profile-${wizStamp()}`, profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', message: '',
+    weights: [{ weightId: 'ref-empty', name: 'Empty platform / zero reference', nominalMass: 0, assignedMass: null, unit: 'g', referenceUncertainty: null }], loads: [], newQty: {}, runId: `run-${wizStamp()}`, selLoad: null });
+  wizSyncLoads(); wiz.selLoad = wiz.loads[0].loadId;
+}
+// Every weight has an automatic single-weight load; the empty platform has none (components: []).
+function wizSyncLoads() {
+  for (const w of wiz.weights) if (!wiz.loads.some(l => l.auto && l.weightRef === w.weightId))
+    wiz.loads.push({ loadId: `load-${w.weightId.replace(/^ref-/, '')}`, name: w.weightId === 'ref-empty' ? 'Empty platform' : (w.name || w.weightId), weightRef: w.weightId, auto: true, components: w.weightId === 'ref-empty' ? [] : [{ weightId: w.weightId, quantity: 1 }] });
+  wiz.loads = wiz.loads.filter(l => (l.auto ? wiz.weights.some(w => w.weightId === l.weightRef) : l.components.every(c => wiz.weights.some(w => w.weightId === c.weightId))));
+  for (const l of wiz.loads) if (l.auto) { const w = wiz.weights.find(x => x.weightId === l.weightRef); if (w && w.weightId !== 'ref-empty') l.name = w.name || w.weightId; }
+  if (!wiz.loads.some(l => l.loadId === wiz.selLoad)) wiz.selLoad = wiz.loads.length ? wiz.loads[0].loadId : null;
+}
+function wizLoadFromConfig(cfg) {
+  const num = v => (v == null ? null : Number(v));
+  wiz.profile = { profileId: cfg.profileId, profileName: cfg.profileName, unit: cfg.calibrationUnit, notes: (cfg.environment && cfg.environment.notes) || '', sensorModel: (cfg.sensor && cfg.sensor.model) || '' };
+  wiz.weights = (cfg.referenceWeights || []).map(w => ({ weightId: w.weightId, name: w.name || w.weightId, nominalMass: Number(w.nominalMass), assignedMass: num(w.assignedMass), unit: w.unit || cfg.calibrationUnit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty }));
+  const zero = wiz.weights.find(w => w.weightId === 'ref-empty') || wiz.weights.find(w => Number(w.nominalMass) === 0);
+  wiz.loads = (cfg.referenceLoads || []).map(l => {
+    const comps = (l.components || []).map(c => ({ weightId: c.weightId, quantity: Number(c.quantity) || 1 }));
+    const single = comps.length === 1 && comps[0].quantity === 1, empty = comps.length === 0 && zero;
+    return { loadId: l.loadId, name: l.name || l.loadId, components: comps, auto: !!(single || empty), weightRef: single ? comps[0].weightId : (empty ? zero.weightId : null) };
+  });
+  wiz.observations = (cfg.observations || []).map(o => ({ observationId: o.observationId, loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId || 'imported', placementIndex: o.placementIndex || 0, removedAndReplaced: !!o.removedAndReplaced,
+    rawMean: Number(o.rawMean), rawStdDev: num(o.rawStdDev), rawMedian: num(o.rawMedian), rawMAD: num(o.rawMAD), sampleCount: num(o.sampleCount), durationMs: num(o.durationMs),
+    validity: { status: o.validityStatus || 'n/a', flagged: o.validityFlags || [] }, include: !o.excluded, exclusionReason: o.exclusionReason, source: 'imported' }));
+  wiz.fitModel = (cfg.fit && FIT_MODELS[cfg.fit.model]) ? cfg.fit.model : 'anchors';
+  wiz.newQty = {}; wiz.runId = `run-${wizStamp()}`; wiz.nextNum = wiz.weights.length + 1; wiz.capture = null; wiz.tab = 'fit';
+  wizSyncLoads();
+}
+function wizWeightUse(weightId) { const loads = wiz.loads.filter(l => l.components.some(c => c.weightId === weightId) || l.weightRef === weightId).map(l => l.loadId); return wiz.observations.filter(o => loads.includes(o.loadId)).length; }
+function wizMassText(mg, unit) { return Number.isFinite(mg) ? `${fmtNumber(mgToUnit(mg, unit), Math.max(3, unitById(unit).decimals))} ${unitById(unit).symbol}` : '—'; }
+function wizLoadMassSafe(load) { try { return wizLoadMassMg(wiz, load); } catch (_) { return NaN; } }
+function wizBlock() {
+  if (wiz.sensorId !== activeSensor.id) return 'The wizard belongs to another sensor than the one shown. Select that sensor or use “Use the shown sensor”.';
+  if (state.measurement) return 'A measurement is running; wait for it to finish or cancel it.';
+  return '';
+}
+// ---- observations ----------------------------------------------------------------------------------------------------
+function wizNextObsId() { let n = wiz.observations.length + 1, id; do { id = `obs-${String(n++).padStart(3, '0')}`; } while (wiz.observations.some(o => o.observationId === id)); return id; }
+function wizObservationFromRange(first, end, loadId, source) {
+  const raws = new Array(end - first); for (let i = first; i < end; i++) raws[i - first] = getRaw(i);
+  const st = rawStats(raws), an = analyzeInterval(first, end);
+  const flagged = (an.checks || []).filter(c => c.verdict === 'suspect' || c.verdict === 'invalid').map(c => c.label.split(' / ')[0]);
+  return { observationId: wizNextObsId(), loadId, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced,
+    rawMean: st.mean, rawStdDev: st.sd, rawMedian: st.median, rawMAD: st.mad, sampleCount: st.n, durationMs: getTime(end - 1) - getTime(first) + PERIOD_MS,
+    validity: { status: an.status, flagged }, include: an.status !== 'invalid', exclusionReason: an.status === 'invalid' ? 'validity check: invalid' : undefined, source };
+}
+function wizRecord() {
+  const why = wizBlock(); if (why) { wiz.message = why; wizRender(); return; }
+  const load = wiz.loads.find(l => l.loadId === wiz.selLoad); if (!load) { wiz.message = 'Choose a load first.'; wizRender(); return; }
+  const n = clamp(Math.round(wiz.captureSeconds * RATE_HZ), 2, MEASUREMENT_MAX_SAMPLES);
+  wiz.capture = { loadId: load.loadId, target: n };
+  const ok = beginMeasurement(n, { tag: 'calibration wizard', onDone: wizCaptureDone, onCancel: r => { wiz.capture = null; wiz.message = `Capture cancelled: ${r}`; if (wiz.open) wizRender(); } });
+  if (!ok) { wiz.capture = null; wiz.message = $('measProgress').textContent; }
+  else wiz.message = `Recording ${n.toLocaleString()} samples (${(n / RATE_HZ).toFixed(1)} s). Do not touch the platform.`;
+  wizRender();
+}
+function wizCaptureDone(entry, first, end) {
+  const cap = wiz.capture; wiz.capture = null; if (!cap) return;
+  const o = wizObservationFromRange(first, end, cap.loadId, 'capture'); wiz.observations.push(o);
+  wiz.message = `Observation ${o.observationId} recorded: mean ${fmtNumber(o.rawMean, 2)} counts, SD ${fmtNumber(o.rawStdDev, 2)}, validity ${STATUS_TEXT[o.validity.status] || o.validity.status}${o.include ? '' : ' (excluded by default)'}.`;
+  wiz.replaced = true; if (wiz.open) wizRender();
+}
+function wizUseSelection() {
+  const why = wizBlock(); const s = state.selection;
+  if (why && !/measurement is running/.test(why)) { wiz.message = why; wizRender(); return; }
+  if (!s) { wiz.message = 'There is no selected interval on the chart.'; wizRender(); return; }
+  if (s.t0 < oldestTime() || s.t1 > newestTime()) { wiz.message = 'The selected samples are no longer in the buffer.'; wizRender(); return; }
+  const first = lowerBoundTime(s.t0), end = lowerBoundTime(s.t1 + 0.0001);
+  if (end - first < 2) { wiz.message = 'Select at least two samples.'; wizRender(); return; }
+  const o = wizObservationFromRange(first, end, wiz.selLoad, 'selection'); wiz.observations.push(o);
+  wiz.message = `Observation ${o.observationId} taken from the selected interval (${o.sampleCount.toLocaleString()} samples).`; wizRender();
+}
+function wizAddManual() {
+  const raw = Number(wq('wizManualRaw').value), sd = wq('wizManualSd').value === '' ? null : Number(wq('wizManualSd').value), n = wq('wizManualN').value === '' ? null : Math.round(Number(wq('wizManualN').value));
+  if (!Number.isFinite(raw)) { wiz.message = 'Enter the mean raw counts.'; wizRender(); return; }
+  wiz.observations.push({ observationId: wizNextObsId(), loadId: wiz.selLoad, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced,
+    rawMean: raw, rawStdDev: sd, rawMedian: null, rawMAD: null, sampleCount: n, durationMs: null, validity: { status: 'n/a', flagged: [] }, include: true, source: 'manual' });
+  wiz.message = 'Manual observation added (no validity analysis available).'; wizRender();
+}
+// ---- rendering -------------------------------------------------------------------------------------------------------
+const WIZ_TABS = [['weights', '1 Weights'], ['observations', '2 Observations'], ['fit', '3 Fit'], ['review', '4 Review']];
+function wizInput(a, i, f, v, type = 'text', extra = '') { return `<input type="${type}" ${type === 'number' ? 'step="any" ' : ''}data-w="${a}" data-i="${i}" data-f="${f}" value="${esc(v == null ? '' : v)}" ${extra}>`; }
+function wizUnitSelect(a, i, f, cur) { return `<select data-w="${a}" data-i="${i}" data-f="${f}">${UNIT_CONFIG.units.filter(u => u.id !== 'raw').map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${esc(u.symbol)}</option>`).join('')}</select>`; }
+function wizValidityBadge(v) { const st = (v && v.status) || 'n/a'; return `<span class="vbadge ${st === 'n/a' ? 'na' : st}">${VERDICT_ICON[st] || '–'} ${esc(STATUS_TEXT[st] || st)}${v && v.flagged && v.flagged.length ? ' (' + esc(v.flagged.join(', ')) + ')' : ''}</span>`; }
+function wizPaneWeights() {
+  const w = wiz, p = w.profile;
+  const rows = w.weights.map((x, i) => `<tr><td>${wizInput('weight', i, 'name', x.name)}</td><td>${wizInput('weight', i, 'nominalMass', x.nominalMass, 'number', 'min="0"')}</td><td>${wizInput('weight', i, 'assignedMass', x.assignedMass, 'number', 'min="0" placeholder="= nominal"')}</td><td>${wizUnitSelect('weight', i, 'unit', x.unit)}</td><td>${wizInput('newqty', i, 'qty', w.newQty[x.weightId] || 0, 'number', 'min="0" step="1"')}</td><td>${x.weightId === 'ref-empty' ? '' : `<button data-wa="delWeight" data-i="${i}" title="Remove this weight">✕</button>`}</td></tr>`).join('');
+  const combos = w.loads.filter(l => !l.auto).map(l => `<tr><td>${esc(l.name)}</td><td>${l.components.map(c => `${c.quantity} × ${esc((w.weights.find(x => x.weightId === c.weightId) || {}).name || '?')}`).join(' + ')}</td><td>${wizMassText(wizLoadMassSafe(l), p.unit)}</td><td><button data-wa="delLoad" data-id="${esc(l.loadId)}">✕</button></td></tr>`).join('');
+  return `<div class="button-row" style="margin-top:0"><button data-wa="restart">Start empty</button><button data-wa="fromActive">Load the active calibration of the shown sensor (refit / edit)</button></div>
+  <div class="control-grid" style="margin-top:10px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', p.profileName)}</div>
+  <div class="field"><label>Profile ID</label>${wizInput('profile', 0, 'profileId', p.profileId)}</div>
+  <div class="field"><label>Calibration unit (masses in the file)</label>${wizUnitSelect('profile', 0, 'unit', p.unit)}</div>
+  <div class="field span2"><label>Notes (stored in environment.notes)</label>${wizInput('profile', 0, 'notes', p.notes)}</div></div>
+  <h3 style="margin:12px 0 4px">Reference weights</h3>
+  <div class="small">Enter the certificate (assigned) mass if you have one; otherwise the nominal mass is used. Weights of equal nominal mass are not merged unless their masses are equal.</div>
+  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>Name</th><th>Nominal</th><th>Assigned</th><th>Unit</th><th title="Quantity in the combination that “Add combination” creates">Qty</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  <div class="button-row"><button data-wa="addWeight">＋ Add weight</button><button data-wa="addLoad" title="Creates a load of all weights with Qty &gt; 0 (e.g. 100 g A + 100 g B placed together)">＋ Add combination from Qty</button></div>
+  ${combos ? `<h3 style="margin:12px 0 4px">Combination loads</h3><div class="tablewrap"><table class="wiz-table"><tbody>${combos}</tbody></table></div>` : ''}`;
+}
+function wizPaneObs() {
+  const w = wiz, p = w.profile, why = wizBlock(), busy = !!w.capture;
+  const opts = w.loads.map(l => `<option value="${esc(l.loadId)}"${l.loadId === w.selLoad ? ' selected' : ''}>${esc(l.name)} · ${wizMassText(wizLoadMassSafe(l), p.unit)}</option>`).join('');
+  const rows = w.observations.map((o, i) => { const l = w.loads.find(x => x.loadId === o.loadId);
+    return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(o.observationId)}</td><td>${esc(l ? l.name : '?')}</td><td>${l ? wizMassText(wizLoadMassSafe(l), p.unit) : '—'}</td><td>${fmtNumber(o.rawMean, 3)}</td><td>${o.rawStdDev == null ? '—' : fmtNumber(o.rawStdDev, 3)}</td><td>${o.sampleCount == null ? '—' : o.sampleCount.toLocaleString()}</td><td>${wizValidityBadge(o.validity)}</td><td><input type="checkbox" data-w="obsInclude" data-i="${i}" ${o.include ? 'checked' : ''} aria-label="Include in the fit"></td><td><button data-wa="delObs" data-i="${i}">✕</button></td></tr>`; }).join('');
+  return `<div class="small">Put the load on the platform, wait until the reading has settled, then record. Observations store raw counts of the shown sensor (<strong>${esc(activeSensor.name)}</strong>). Place and remove a weight repeatedly for replicates: the scatter between placements is what the fit can resolve.</div>
+  <div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Load on the platform</label><select data-w="selLoad">${opts}</select></div>
+  <div class="field"><label>Recording length (s) → <span id="wizSamplesNote">${Math.round(w.captureSeconds * RATE_HZ).toLocaleString()} samples at ${RATE_HZ} Hz</span></label><input type="number" min="0.1" step="any" data-w="capSeconds" value="${w.captureSeconds}"></div>
+  <div class="field"><label class="check" style="margin-top:18px"><input type="checkbox" data-w="replaced" ${w.replaced ? 'checked' : ''}> removed and replaced since the last placement</label></div></div>
+  <div class="button-row"><button class="primary" data-wa="record" ${why || busy ? 'disabled' : ''}>● Record from the shown sensor</button><button data-wa="useSel" ${why && !/measurement is running/.test(why) ? 'disabled' : ''}>Use the selected interval</button>${busy ? '<button data-wa="cancelRec">Cancel recording</button>' : ''}</div>
+  <progress id="wizRecBar" max="1" value="0" ${busy ? '' : 'hidden'}></progress><div class="small" id="wizRecProgress">${why ? esc(why) : ''}</div>
+  <div class="control-grid" style="margin-top:8px"><div class="field"><label>Manual: mean counts</label><input type="number" step="any" id="wizManualRaw"></div><div class="field"><label>SD (optional)</label><input type="number" step="any" id="wizManualSd"></div><div class="field"><label>Samples (optional)</label><input type="number" step="1" id="wizManualN"></div><div class="field"><label>&nbsp;</label><button data-wa="addManual">＋ Add manual observation</button></div></div>
+  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>ID</th><th>Load</th><th>Mass</th><th>Mean (counts)</th><th>SD</th><th>n</th><th>Validity</th><th title="Include in the fit">Use</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="small">No observations yet.</td></tr>'}</tbody></table></div>`;
+}
+function wizNiceTicks(min, max, n = 5) {
+  const span = max - min || 1, raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p, step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p, t = [];
+  for (let v = Math.ceil(min / step - 1e-9) * step; v <= max + 1e-9 * step; v += step) t.push(Math.abs(v) < 1e-12 * step ? 0 : v);
+  return t;
+}
+// o: {w,h,xMin,xMax,yMin,yMax,xFmt,yFmt,curve:[[x,y]],points:[{x,y,on}],zero,xTitle,yTitle}
+function wizPlotSVG(o) {
+  const W = o.w, H = o.h, L = 66, R = 10, T = 8, B = 36, pw = W - L - R, ph = H - T - B;
+  const sx = x => L + (x - o.xMin) / ((o.xMax - o.xMin) || 1) * pw, sy = y => T + ph - (y - o.yMin) / ((o.yMax - o.yMin) || 1) * ph;
+  let s = `<svg viewBox="0 0 ${W} ${H}" class="wizplot" role="img" aria-label="${esc(o.yTitle)} versus ${esc(o.xTitle)}"><rect x="${L}" y="${T}" width="${pw}" height="${ph}" fill="none" stroke="var(--line)"/>`;
+  for (const t of wizNiceTicks(o.xMin, o.xMax)) s += `<line x1="${sx(t)}" x2="${sx(t)}" y1="${T}" y2="${T + ph}" stroke="var(--line)" stroke-opacity=".5"/><text x="${sx(t)}" y="${T + ph + 14}" text-anchor="middle" font-size="10" fill="var(--muted)">${esc(o.xFmt(t))}</text>`;
+  for (const t of wizNiceTicks(o.yMin, o.yMax, 4)) s += `<line y1="${sy(t)}" y2="${sy(t)}" x1="${L}" x2="${L + pw}" stroke="var(--line)" stroke-opacity=".5"/><text x="${L - 5}" y="${sy(t) + 3}" text-anchor="end" font-size="10" fill="var(--muted)">${esc(o.yFmt(t))}</text>`;
+  if (o.zero && o.yMin < 0 && o.yMax > 0) s += `<line x1="${L}" x2="${L + pw}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--zero)" stroke-width="1.5"/>`;
+  if (o.curve && o.curve.length) s += `<polyline fill="none" stroke="var(--ma)" stroke-width="2" points="${o.curve.map(([x, y]) => `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join(' ')}"/>`;
+  for (const p of o.points) s += p.on ? `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="4" fill="var(--raw)"/>` : `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="4" fill="none" stroke="var(--danger)" stroke-width="1.5"/>`;
+  return s + `<text x="${L + pw / 2}" y="${H - 4}" text-anchor="middle" font-size="10" fill="var(--muted)">${esc(o.xTitle)}</text><text x="12" y="${T + ph / 2}" font-size="10" fill="var(--muted)" transform="rotate(-90 12 ${T + ph / 2})" text-anchor="middle">${esc(o.yTitle)}</text></svg>`;
+}
+function wizFits() {
+  const pts = wizPoints(wiz), fits = {};
+  for (const m of Object.keys(FIT_MODELS)) fits[m] = fitCalibration(pts.points, m);
+  return { pts, fits };
+}
+function wizPaneFit() {
+  const p = wiz.profile, u = p.unit, { pts, fits } = wizFits(), fit = fits[wiz.fitModel], uf = mg => mgToUnit(mg, u);
+  const sel = Object.entries(FIT_MODELS).map(([id, m]) => `<option value="${id}"${id === wiz.fitModel ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
+  const cmp = Object.entries(FIT_MODELS).map(([id, m]) => { const f = fits[id]; return `<tr class="${id === wiz.fitModel ? 'sel' : ''}"><td>${esc(m.label)}</td>${f.ok ? `<td>${f.params}</td><td>${f.dof}</td><td>${Number.isFinite(f.sdRawRes) ? fmtNumber(f.sdRawRes, 3) : '—'}</td><td>${wizMassText(f.rmsMassMg, u)}</td><td>${wizMassText(f.maxAbsMassMg, u)}</td>` : `<td colspan="5" class="warning">${esc(f.errors[0] || 'not possible')}</td>`}</tr>`; }).join('');
+  let plots = '';
+  const all = wiz.observations.map(o => { const l = wiz.loads.find(x => x.loadId === o.loadId); return l ? { o, m: wizLoadMassSafe(l) } : null; }).filter(x => x && Number.isFinite(x.m));
+  if (all.length >= 2 && fit.g) {
+    const xs = all.map(a => uf(a.m)), lo = Math.min(...xs), hi = Math.max(...xs), cur = [];
+    for (let k = 0; k <= 60; k++) { const m = fit.mRange[0] + (fit.mRange[1] - fit.mRange[0]) * k / 60; cur.push([uf(m), fit.g(m)]); }
+    const ys = all.map(a => a.o.rawMean).concat(cur.map(c => c[1])), yl = Math.min(...ys), yh = Math.max(...ys), py = (yh - yl) * 0.08 || 1, px = (hi - lo) * 0.04 || 1;
+    plots += wizPlotSVG({ w: 560, h: 250, xMin: lo - px, xMax: hi + px, yMin: yl - py, yMax: yh + py, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 0), curve: cur, points: all.map(a => ({ x: uf(a.m), y: a.o.rawMean, on: a.o.include })), xTitle: `reference mass (${unitById(u).symbol})`, yTitle: 'mean raw counts' });
+    const rp = all.map(a => { const g = fit.g(a.m), d = fit.dg ? fit.dg(a.m) : null; return { x: uf(a.m), y: d ? uf((a.o.rawMean - g) / d) : NaN, on: a.o.include }; }).filter(q => Number.isFinite(q.y));
+    if (rp.length && fit.dg) { const r = Math.max(...rp.map(q => Math.abs(q.y)), 1e-9) * 1.15; plots += wizPlotSVG({ w: 560, h: 170, xMin: lo - px, xMax: hi + px, yMin: -r, yMax: r, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 3), curve: [], points: rp, zero: true, xTitle: `reference mass (${unitById(u).symbol})`, yTitle: `residual (${unitById(u).symbol})` }); }
+  }
+  const rrows = fit.ok ? fit.residuals.map(r => { const o = wiz.observations.find(x => x.observationId === r.id); return `<tr><td>${esc(r.id)}</td><td>${wizMassText(r.massMg, u)}</td><td>${fmtNumber(r.raw, 3)}</td><td>${fmtNumber(r.fitRaw, 3)}</td><td>${fmtNumber(r.resRaw, 3)}</td><td>${Number.isFinite(r.resMassMg) ? fmtNumber(uf(r.resMassMg), 4) : '—'}</td></tr>`; }).join('') : '';
+  const groups = fit.groups.map(g => `<tr><td>${wizMassText(g.massMg, u)}</td><td>${g.raws.length}</td><td>${fmtNumber(g.rawMean, 3)}</td><td>${Number.isFinite(g.rawSD) ? fmtNumber(g.rawSD, 3) : '—'}</td></tr>`).join('');
+  return `${pts.errors.length ? `<div class="warning small">${pts.errors.map(esc).join('<br>')}</div>` : ''}
+  <div class="field"><label>Model</label><select data-w="fitModel">${sel}</select></div>
+  <div class="small" style="margin:6px 0">The curve is fitted as counts on mass (the noise is in the counts) and then written to the file as anchors sampled on the fitted curve. Switch observations on or off in step 2 (or here, via the checkboxes of step 2); excluded ones stay in the file, marked.</div>
+  ${fit.ok ? `<div class="readout">Observations used: <strong>${fit.n}</strong> · different masses: <strong>${fit.distinct}</strong> · parameters: <strong>${fit.params}</strong> · degrees of freedom: <strong>${fit.dof}</strong><br>Residual SD: <strong>${Number.isFinite(fit.sdRawRes) ? fmtNumber(fit.sdRawRes, 3) + ' counts' : 'not defined (no degrees of freedom)'}</strong> · RMS residual: <strong>${wizMassText(fit.rmsMassMg, u)}</strong> · largest: <strong>${wizMassText(fit.maxAbsMassMg, u)}</strong>${fit.nodes ? `<br>Written as <strong>${fit.nodes - 1}</strong> linear segments; largest deviation from the exact inverse: <strong>${wizMassText(fit.maxInterpErrMg, u)}</strong>` : ''}</div>` : `<div class="warning">${fit.errors.map(esc).join('<br>')}</div>`}
+  <div class="plots">${plots}</div>
+  <h3 style="margin:12px 0 4px">Model comparison (same observations)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Model</th><th>p</th><th>dof</th><th>SD (counts)</th><th>RMS</th><th>largest</th></tr></thead><tbody>${cmp}</tbody></table></div>
+  <div class="small">A lower residual SD with fewer degrees of freedom is not better evidence: a model with dof = 0 passes through every point and says nothing about scatter. Prefer the simplest model whose residuals show no pattern.</div>
+  ${groups ? `<h3 style="margin:12px 0 4px">Replicates per reference mass</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>Placements</th><th>Mean (counts)</th><th>SD between placements</th></tr></thead><tbody>${groups}</tbody></table></div>` : ''}
+  ${rrows ? `<h3 style="margin:12px 0 4px">Residuals (observed scatter, not uncertainty)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Observation</th><th>Mass</th><th>Counts</th><th>Fit</th><th>Residual (counts)</th><th>Residual (${esc(unitById(u).symbol)})</th></tr></thead><tbody>${rrows}</tbody></table></div>` : ''}`;
+}
+function wizBuild() {
+  const { pts, fits } = wizFits(), fit = fits[wiz.fitModel], errors = [...pts.errors], warnings = [];
+  if (!wiz.profile.profileName.trim()) errors.push('The profile needs a name.');
+  if (!fit.ok) errors.push(...fit.errors);
+  let cfg = null, checked = null;
+  if (!errors.length) {
+    cfg = buildCalibrationConfig(Object.assign({}, wiz, { sensorId: wiz.sensorId, rateHz: wiz.rateHz }), fit, new Date().toISOString());
+    checked = validateCalibrationConfig(cfg); errors.push(...checked.errors); warnings.push(...checked.warnings);
+    if (fit.dof <= 0) warnings.push('No degrees of freedom: the model passes through every observation, so its residuals say nothing about the scatter. Record replicates.');
+    if (fit.distinct < 3) warnings.push('Only two different reference masses: linearity cannot be checked.');
+    const odd = wiz.observations.filter(o => o.include && o.validity && (o.validity.status === 'invalid' || o.validity.status === 'suspect')).length;
+    if (odd) warnings.push(`${odd} included observation(s) have a validity flag (suspect or invalid).`);
+    if (!wiz.observations.some(o => o.removedAndReplaced && o.placementIndex > 1)) warnings.push('No placement is marked as removed and replaced: placement repeatability was not sampled.');
+  }
+  return { cfg, fit, errors, warnings };
+}
+function wizPaneReview() {
+  const b = wizBuild(), u = wiz.profile.unit;
+  const anchors = b.fit.ok ? b.fit.anchors.slice(0, 40).map(a => `<tr><td>${wizMassText(a.massMg, u)}</td><td>${fmtNumber(a.raw, 3)}</td></tr>`).join('') + (b.fit.anchors.length > 40 ? `<tr><td colspan="2" class="small">… ${b.fit.anchors.length - 40} more</td></tr>` : '') : '';
+  const block = wiz.sensorId !== activeSensor.id ? 'The wizard belongs to another sensor than the one shown.' : '';
+  return `<div class="readout"><strong>${esc(wiz.profile.profileName)}</strong> · ${esc(FIT_MODELS[wiz.fitModel].label)} · unit ${esc(unitById(u).symbol)} · ${b.fit.anchors.length} anchors for sensor <strong>${esc(wiz.sensorId)}</strong></div>
+  ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e)}</div>`).join('')}
+  <div class="small" style="margin:6px 0">Activating starts a new calibration epoch on the shown sensor: the tare is reset, a running measurement is aborted, and earlier samples keep the calibration they were recorded with. The file claims no uncertainty (validation status “not-characterized”); only its structure and monotonicity are checked.</div>
+  <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button></div>
+  ${block ? `<div class="warning small">${esc(block)}</div>` : ''}
+  ${anchors ? `<h3 style="margin:12px 0 4px">Anchors that will be written</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>Counts</th></tr></thead><tbody>${anchors}</tbody></table></div>` : ''}`;
+}
+function wizRender() {
+  const body = wq('wizBody'); if (!body || !wiz.profile) return;
+  const keep = body.scrollTop;
+  const tabs = `<div class="tabs" role="tablist">${WIZ_TABS.map(([id, t]) => `<button role="tab" data-wa="tab" data-id="${id}" aria-selected="${wiz.tab === id}">${t}</button>`).join('')}</div>`;
+  const banner = (wiz.sensorId !== activeSensor.id ? `<div class="warning small">This wizard was started for sensor “${esc(wiz.sensorId)}”, but “${esc(activeSensor.id)}” is shown. <button data-wa="useShown">Use the shown sensor</button></div>` : '') + (wiz.message ? `<div class="status-note" style="margin:6px 0">${esc(wiz.message)}</div>` : '');
+  const pane = wiz.tab === 'weights' ? wizPaneWeights() : wiz.tab === 'observations' ? wizPaneObs() : wiz.tab === 'fit' ? wizPaneFit() : wizPaneReview();
+  body.innerHTML = tabs + banner + `<div class="wiz-pane">${pane}</div>`; body.scrollTop = keep;
+}
+function wizTick() {   // called every rendered frame while the wizard is open: only the progress readouts change
+  const m = state.measurement, on = !!(wiz.capture && m && m.tag === 'calibration wizard');
+  const bar = wq('wizRecBar'), txt = wq('wizRecProgress'), badge = wq('wizRecBadge');
+  if (bar && on) { bar.hidden = false; bar.value = m.collected / m.target; }
+  if (txt && on) txt.textContent = `Recording ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;
+  if (badge) badge.textContent = on ? `● ${Math.round(100 * m.collected / m.target)} %` : '';
+}
+function wizOpen(fresh) {
+  if (!wiz.profile || fresh) { wizNew(); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; }
+  wiz.open = true; $('wizModal').hidden = false; $('wizModal').classList.toggle('min', wiz.minimised = false); openSettings(false); wizRender();
+}
+function wizClose() { wiz.open = false; $('wizModal').hidden = true; }
+function wizFromActive() {
+  wizLoadFromConfig(JSON.parse(JSON.stringify(CALIBRATION))); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ;
+  wiz.message = 'Loaded the observations of the active calibration. A calibration file without observations cannot be refitted.'; wizRender();
+}
+function wizOnChange(e) {
+  const t = e.target, a = t.dataset && t.dataset.w; if (!a) return;
+  const i = Number(t.dataset.i), f = t.dataset.f, v = t.type === 'checkbox' ? t.checked : t.value;
+  let render = false;
+  if (a === 'profile') { wiz.profile[f] = v; render = f === 'unit'; }
+  else if (a === 'weight') {
+    const w = wiz.weights[i]; if (!w) return;
+    if (f === 'name') { w.name = v; wizSyncLoads(); }
+    else if (f === 'unit') { w.unit = v; render = true; }
+    else { w[f] = v === '' ? (f === 'assignedMass' ? null : 0) : Number(v); render = true; }
+  }
+  else if (a === 'newqty') { const w = wiz.weights[i]; if (w) wiz.newQty[w.weightId] = Math.max(0, Math.floor(Number(v) || 0)); }
+  else if (a === 'capSeconds') { wiz.captureSeconds = clamp(Number(v) || 10, 0.1, 1200); const n = wq('wizSamplesNote'); if (n) n.textContent = `${Math.round(wiz.captureSeconds * RATE_HZ).toLocaleString()} samples at ${RATE_HZ} Hz`; }
+  else if (a === 'selLoad') wiz.selLoad = v;
+  else if (a === 'replaced') wiz.replaced = v;
+  else if (a === 'obsInclude') { const o = wiz.observations[i]; if (o) { o.include = v; if (v) delete o.exclusionReason; else o.exclusionReason = 'excluded in the fitting editor'; } render = true; }
+  else if (a === 'fitModel') { wiz.fitModel = v; render = true; }
+  if (render) wizRender();
+}
+function wizOnClick(e) {
+  const b = e.target.closest && e.target.closest('[data-wa]'); if (!b) return;
+  const a = b.dataset.wa, i = Number(b.dataset.i);
+  switch (a) {
+    case 'tab': wiz.tab = b.dataset.id; wiz.message = ''; break;
+    case 'restart': wizNew(); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; break;
+    case 'fromActive': return wizFromActive();
+    case 'useShown': wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; break;
+    case 'addWeight': { const id = wizId('ref-', wiz.weights, 'weightId'); wiz.weights.push({ weightId: id, name: `Weight ${wiz.weights.length}`, nominalMass: 100, assignedMass: null, unit: wiz.profile.unit, referenceUncertainty: null }); wizSyncLoads(); break; }
+    case 'delWeight': { const w = wiz.weights[i]; if (!w) return; const n = wizWeightUse(w.weightId); if (n) { wiz.message = `“${w.name}” is used by ${n} observation(s); delete those first.`; break; } wiz.weights.splice(i, 1); wizSyncLoads(); break; }
+    case 'addLoad': {
+      const comps = wiz.weights.filter(w => (wiz.newQty[w.weightId] || 0) > 0).map(w => ({ weightId: w.weightId, quantity: wiz.newQty[w.weightId] }));
+      if (comps.length < 1 || (comps.length === 1 && comps[0].quantity === 1)) { wiz.message = 'Set Qty > 0 for at least two weights (or Qty ≥ 2 for one) to describe a combination.'; break; }
+      wiz.loads.push({ loadId: wizId('load-combo-', wiz.loads, 'loadId'), name: comps.map(c => `${c.quantity > 1 ? c.quantity + '×' : ''}${(wiz.weights.find(w => w.weightId === c.weightId) || {}).name}`).join(' + '), components: comps, auto: false, weightRef: null });
+      wiz.newQty = {}; break; }
+    case 'delLoad': { const id = b.dataset.id; if (wiz.observations.some(o => o.loadId === id)) { wiz.message = 'This load is used by observations; delete those first.'; break; } wiz.loads = wiz.loads.filter(l => l.loadId !== id); wizSyncLoads(); break; }
+    case 'record': return wizRecord();
+    case 'cancelRec': cancelMeasurement('cancelled by user'); return;
+    case 'useSel': return wizUseSelection();
+    case 'addManual': return wizAddManual();
+    case 'delObs': wiz.observations.splice(i, 1); break;
+    case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), `calibration-${String(r.cfg.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
+    case 'activate': return wizActivate();
+  }
+  wizRender();
+}
+async function wizActivate() {
+  const r = wizBuild(); if (!r.cfg || r.errors.length) { wiz.message = 'Fix the listed errors first.'; wizRender(); return; }
+  if (wiz.sensorId !== activeSensor.id) { wiz.message = 'The shown sensor is not the wizard’s sensor.'; wizRender(); return; }
+  const res = await activateCalibration(r.cfg, 'calibration wizard');
+  wiz.message = res.errors.length ? `Not activated: ${res.errors.join(' ')}` : (res.unchanged ? 'This calibration is already active; nothing changed.' : 'Calibration activated on the shown sensor (new epoch, tare reset). Check it with a known weight; it is not a metrological validation.');
+  wizRender();
+}
+function initWizard() {
+  $('calWizardBtn').addEventListener('click', () => wizOpen(false));
+  $('wizClose').addEventListener('click', wizClose);
+  $('wizMin').addEventListener('click', () => { wiz.minimised = !wiz.minimised; $('wizModal').classList.toggle('min', wiz.minimised); $('wizMin').textContent = wiz.minimised ? 'Expand' : 'Minimise'; });
+  $('wizModal').addEventListener('click', wizOnClick); $('wizModal').addEventListener('change', wizOnChange);
+}
+
 // uPlot is pinned to one exact version (reproducible builds; no surprise breaking changes). To
 // upgrade, change only this constant. 1.6.32 is the newest release verified at build time.
 const UPLOT_VERSION='1.6.32';
@@ -2066,7 +2681,7 @@ function loadUPlotAsync(){return new Promise((resolve,reject)=>{
   script.onload=()=>resolve();script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));document.head.appendChild(script);
 });}
 async function boot(){
-  populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();$('sensorReloadBtn').disabled=!SENSOR_LIST_URL;setSensorListInfo(SENSOR_LIST_URL?'Sensor list not loaded yet.':'No sensor server configured (SENSOR_LIST_URL is empty). Only the test signal is available.');
+  populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=!SENSOR_LIST_URL;setSensorListInfo(SENSOR_LIST_URL?'Sensor list not loaded yet.':'No sensor server configured (SENSOR_LIST_URL is empty). Only the test signal is available.');
   // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped
   // with the placeholder revision id.
   embeddedFp=await fingerprintConfig(EMBEDDED_CALIBRATION);
