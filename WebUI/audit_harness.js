@@ -5,8 +5,10 @@ const fs = require('fs'), vm = require('vm');
 const file = process.argv[2];
 const html = fs.readFileSync(file, 'utf8');
 const json = id => html.match(new RegExp(`<script type="application/json" id="${id}">([\\s\\S]*?)</script>`))[1];
-const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-const code = scripts[scripts.length - 1][1];
+// v11: the application script is an external file referenced by <script src=...> (same folder as the HTML)
+const srcMatch = html.match(/<script src="([^"]+)"><\/script>/);
+const code = srcMatch ? fs.readFileSync(require('path').join(require('path').dirname(file), srcMatch[1]), 'utf8')
+                      : [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].pop()[1];
 
 async function load() {
   const els = {}; const ctxRef = {};
@@ -167,7 +169,7 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   // T20 settings placeholder / duplicate controls removed
   ok('T20 removed controls are really gone from the markup', !/id="(maToggle|spreadToggle|applySettingsBtn|estimatorWindow|latestValue)"/.test(html));
   ok('T20 grams default to 3 decimals', R(`unitById('g').decimals`)===3);
-  ok('T20 uPlot pinned to one version constant, no stale URLs', /const UPLOT_VERSION='1\.6\.32'/.test(html) && !/uplot@1\.6\.30/.test(html));
+  ok('T20 uPlot pinned to one version constant, no stale URLs', /const UPLOT_VERSION='1\.6\.32'/.test(code) && !/uplot@1\.6\.30/.test(code));
 
   // ---- v9 tests -------------------------------------------------------------------------------
   const E = (R,vals,m,o={})=>JSON.parse(R(`JSON.stringify(estimate(${JSON.stringify(vals)},${JSON.stringify(o.times||[])},'${m}',${JSON.stringify(o)}))`));
@@ -236,7 +238,7 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   { const a = AN('5000+gauss()+0.6*Math.sin(2*Math.PI*10*i/80)'); ok('V1 weak 10 Hz tone is at least suspect, at 10 Hz', a.v.vibration!=='ok' && Math.abs(a.c.vibration.frequencyHz-10)<0.5, a.c.vibration.valueText); }
   { const a = AN('5000+gauss()','T.map((v,i)=>i>=1000?v+500:v)'); ok('V1 gap: flagged suspect/invalid, split in 2 segments', a.v.gaps!=='ok' && a.seg===2, JSON.stringify(a.v)); }
   { const a = AN('5000+gauss()','T.map((v,i)=>i===500?T[499]:v)'); ok('V1 duplicate timestamp: invalid', a.v.gaps==='invalid', JSON.stringify(a.v)); }
-  { const a = JSON.parse(R(`JSON.stringify(analyzeSeries([1,2,3,4,5],[0,12.5,25,37.5,50]))`)); ok('V1 too-short interval: checks n/a, status suspect (cannot demonstrate validity)', a.status==='suspect' && a.checks.filter(c=>c.verdict==='n/a').length===4, a.note); }
+  { const a = JSON.parse(R(`JSON.stringify(analyzeSeries([1,2,3,4,5],[0,12.5,25,37.5,50]))`)); ok('V1 too-short interval: checks n/a, status insufficient (not a pass, not a finding)', a.status==='insufficient' && a.checks.filter(c=>c.verdict==='n/a').length===4, a.note); }
   { const a = AN('5000'); ok('V1 constant series does not crash and is not invalid', a.status!=='invalid', JSON.stringify(a.v)); }
   { const r = JSON.parse(R(`(()=>{${RNG}let a=0;const x=Array.from({length:20000},()=>a=0.8*a+gauss());const k=analysisAutocorr(x,100);return JSON.stringify({ratio:k.ratio,rho1:k.rho1})})()`)); ok('V2 AR(1) rho=0.8: rho1 ~ 0.8, n_eff/n ~ (1-rho)/(1+rho) = 0.11', near(r.rho1,0.8,0.03) && r.ratio>0.07 && r.ratio<0.17, JSON.stringify(r)); }
   { const r = JSON.parse(R(`(()=>{${RNG}const x=Array.from({length:20000},()=>gauss());const p=analysisAllan(x,1/80);return JSON.stringify(p.map(q=>q.adev))})()`)); ok('V3 Allan deviation of white noise falls ~ tau^-1/2 (m=1 -> m=16 : factor 4)', near(r[0]/r[4],4,0.12), 'ratio '+(r[0]/r[4]).toFixed(2)); }
@@ -335,6 +337,78 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   await R(`calculateCalibrationRevision().then(()=>state.revisionId)`); const id2 = R(`state.revisionId`);
   ok('T9 revision id is key-order independent', id1===id2, id1+' vs '+id2);
   console.log('     revision:', R(`state.revisionId+' ('+state.hashType+')'`));
+
+  // ===== v11 =====================================================================================
+  R = await load();
+  // V13 'insufficient': derived minimum sample count (rate independent)
+  { const m = JSON.parse(R(`JSON.stringify(analysisMinSamples())`));
+    ok('V13 minimum sample count: acf 64, step 35, allan 64, welch 64 -> 64', m.acf===64 && m.step===35 && m.allan===64 && m.welch===64 && m.n===64 && R(`ANALYSIS_THRESHOLDS.minSamples`)===64, JSON.stringify(m)); }
+  let seed = 12345; const rnd = () => (seed = (seed*1664525+1013904223)>>>0)/4294967296;
+  const gauss = () => { let s=0; for(let i=0;i<12;i++) s+=rnd(); return s-6; };
+  const series = (n,dt) => { const v=[],tt=[]; for(let i=0;i<n;i++){v.push(Math.round(5000+gauss()*2));tt.push(i*dt);} return [v,tt]; };
+  { const [v,tt]=series(63,12.5); const a=JSON.parse(R(`JSON.stringify(analyzeSeries(${JSON.stringify(v)},${JSON.stringify(tt)},{nominalMs:12.5}))`)); ok('V13 63 uniform samples -> insufficient', a.status==='insufficient', a.status); }
+  { const [v,tt]=series(64,12.5); const a=JSON.parse(R(`JSON.stringify(analyzeSeries(${JSON.stringify(v)},${JSON.stringify(tt)},{nominalMs:12.5}))`)); ok('V13 64 uniform white-noise samples are analysed (not insufficient)', a.status!=='insufficient' && a.checks.every(c=>c.id==='gaps'||c.verdict!=='n/a'||c.id==='step'), a.status+' '+a.checks.map(c=>c.id+':'+c.verdict).join(',')); }
+  { const [v,tt]=series(40,100); const a=JSON.parse(R(`JSON.stringify(analyzeSeries(${JSON.stringify(v)},${JSON.stringify(tt)},{nominalMs:100}))`)); ok('V13 10 Hz sensor: same count, duration reported in its own rate', a.status==='insufficient' && /6\.40 s at 10 Hz/.test(a.checks.find(c=>c.id==='autocorrelation').valueText), a.checks.find(c=>c.id==='autocorrelation').valueText); }
+  { const [v,tt]=series(40,12.5); tt[20]=tt[19]; const a=JSON.parse(R(`JSON.stringify(analyzeSeries(${JSON.stringify(v)},${JSON.stringify(tt)},{nominalMs:12.5}))`)); ok('V13 a found problem (duplicate time) outranks insufficient', a.status==='invalid', a.status); }
+  ok('V13 badge text for insufficient', /insufficient data \(30 of ≥ 64/.test(R(`analysisBadgeHTML({status:'insufficient',analyzedN:30,checks:[]})`)));
+  // V14 details open state survives re-render; setHTML avoids rewriting identical markup
+  R(`state.detailsOpen={}`);
+  ok('V14 default open honoured', / open>/.test(R(`analysisHTML({status:'ok',checks:[]},true,'sel')`)));
+  R(`state.detailsOpen.sel=false`);
+  ok('V14 stored closed state wins over default open', !/ open>/.test(R(`analysisHTML({status:'ok',checks:[]},true,'sel')`)));
+  R(`globalThis.__el={innerHTML:''};setHTML(__el,'<b>x</b>');globalThis.__w=0;Object.defineProperty(__el,'innerHTML',{get(){return this._h},set(v){this._h=v;globalThis.__w++}});__el._h='<b>x</b>';__el.__out='<b>x</b>';__el.__src='<b>x</b>';setHTML(__el,'<b>x</b>');`);
+  ok('V14 identical markup is not rewritten', R(`__w`)===0);
+  // V15 auto Track Live at the far right
+  R = await load();
+  R(`for(let i=0;i<500;i++) appendSample(nextSensorValue()); state.live=false; state.viewMin=1000; state.viewMax=newestTime()-1000; autoTrackIfAtEnd();`);
+  ok('V15 view away from the end stays historical', R(`state.live`)===false);
+  R(`state.viewMax=newestTime(); autoTrackIfAtEnd();`);
+  ok('V15 view moved to the far right switches Track Live on', R(`state.live`)===true);
+  R(`state.live=false; state.viewMax=newestTime(); state.selection={t0:0,t1:1}; autoTrackIfAtEnd();`);
+  ok('V15 not while an interval is selected', R(`state.live`)===false);
+  // V16 Y damping keeps asking for frames until the latch releases (paused-chart fix)
+  { const r=JSON.parse(R(`(()=>{const l=[false,false];let cur={min:0,max:10};const tgt={min:50,max:60};let n=0;while(n<2000){cur=autoYStep(cur,tgt,.4,.05,l,false);n++;if(!l[0]&&!l[1])break;}return JSON.stringify({n,cur,l})})()`));
+    ok('V16 damping settles (latches release) within a bounded number of frames, close to the target', r.n<400 && Math.abs(r.cur.min-50)<=0.02*10+1e-9, JSON.stringify(r)); }
+  // V17 multi-sensor
+  R = await load();
+  R(`globalThis.__es=[];globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0;this.closed=false;__es.push(this)}close(){this.closed=true;this.readyState=2}}`);
+  const open = () => JSON.parse(R(`JSON.stringify(__es.filter(e=>!e.closed).map(e=>e.url).sort())`));
+  let res = JSON.parse(R(`JSON.stringify(applySensorList([{id:'a',name:'Scale A',sseUrl:'/s1'},{id:'b',name:'Scale B',sseUrl:'/s1',rateHz:10},{id:'c',name:'<b>C</b>',sseUrl:'/s2'},{id:'test',name:'x',sseUrl:'/s9'},{id:'bad',sseUrl:'ftp://x'}]))`));
+  ok('V17 list: 3 added; reserved id and non-http URL rejected', res.added.join()==='a,b,c' && res.errors.length===2, JSON.stringify(res));
+  ok('V17 sensors sharing an SSE URL share ONE connection', JSON.stringify(open())==='["/s1","/s2"]');
+  R(`setSensorPaused(sensors.get('a'),true)`); ok('V17 pausing one of two sensors on a URL keeps the connection', open().length===2);
+  R(`setSensorPaused(sensors.get('b'),true)`); ok('V17 pausing the last user of a URL closes it', JSON.stringify(open())==='["/s2"]');
+  R(`pauseAllToggle()`); ok('V17 Pause all closes everything', open().length===0 && R(`[...sensors.values()].every(s=>s.state.paused)`));
+  R(`pauseAllToggle()`); ok('V17 Resume all reopens the connections', JSON.stringify(open())==='["/s1","/s2"]' && R(`[...sensors.values()].every(s=>!s.state.paused)`));
+  const msg = (id,i0,n,dt=12.5,base=1e9) => JSON.stringify(Array.from({length:n},(_,k)=>({id,t:base+(i0+k)*dt,raw:5000+((i0+k)%7)})));
+  R(`handleSseMessage('/s1',${JSON.stringify(msg('a',0,300))}); handleSseMessage('/s1',${JSON.stringify(msg('b',0,50,100))}); handleSseMessage('/s2',${JSON.stringify(msg('c',0,20))})`);
+  ok('V17 samples routed to the right sensors; first device time becomes the origin', R(`sensors.get('a').state.count`)===300 && R(`sensors.get('b').state.count`)===50 && R(`sensors.get('a').state.times[0]`)===0 && R(`sensors.get('a').state.times[299]`)===299*12.5);
+  ok('V17 hidden sensors store raw only (no derived arrays)', R(`sensors.get('a').state.derivedReady`)===false && R(`sensors.get('a').state.massMg.length`)===0 && R(`sensors.get('a').state.unprocessed`)===300);
+  R(`handleSseMessage('/s2',${JSON.stringify(msg('a',0,5))})`); ok('V17 data for a sensor on another URL is ignored', R(`sensors.get('a').state.count`)===300);
+  R(`handleSseMessage('/s1',${JSON.stringify(msg('a',100,5))})`); ok('V17 non-monotonic times are rejected', R(`sensors.get('a').state.count`)===300 && R(`sensors.get('a').state.rejected`)===5);
+  R(`setSensorPaused(sensors.get('c'),true); handleSseMessage('/s2',${JSON.stringify(msg('c',20,10))})`); ok('V17 paused sensor discards incoming data', R(`sensors.get('c').state.count`)===20 && R(`sensors.get('c').state.dropped`)===10);
+  R(`setSensorPaused(sensors.get('c'),false)`);
+  // test sensor keeps recording in the background (raw only), then catches up when shown
+  R(`for(let i=0;i<400;i++) ingestSample(testSensor,nextSensorValue(testSensor.state)); autoTare();`);
+  ok('V17 tare is logged on the shown (test) sensor only', R(`state.logs.length`)===1 && R(`sensors.get('a').state.logs.length`)===0 && R(`state===testSensor.state`));
+  R(`activateSensor('a')`);
+  ok('V17 switching: derived arrays allocated and filled for the newly shown sensor', R(`state===sensors.get('a').state&&state.derivedReady&&state.unprocessed===0&&RATE_HZ===80`));
+  const chk = R(`(()=>{let ok1=true;for(let i=0;i<state.count;i++){if(getMassMg(i)!==calibrateAbsolute(getRaw(i)).valueMg){ok1=false;break;}}let s=0;const n=80;for(let j=state.count-n;j<state.count;j++)s+=getRaw(j);return {ok1,ma:getRawMA(state.count-1)-s/n,unit:state.unitId}})()`);
+  ok('V17 caught-up values equal direct calibration; rolling mean equals brute force', chk.ok1 && Math.abs(chk.ma)<1e-9 && chk.unit==='raw', JSON.stringify(chk));
+  R(`activateSensor('b')`); ok('V17 per-sensor rate follows the sensor (10 Hz)', R(`RATE_HZ`)===10 && R(`PERIOD_MS`)===100);
+  R(`for(let i=0;i<300;i++) ingestSample(testSensor,nextSensorValue(testSensor.state)); autoTare`); 
+  ok('V17 hidden test signal grows without being processed', R(`testSensor.state.unprocessed`)===300 && R(`testSensor.state.count`)===700);
+  R(`activateSensor('test')`);
+  { const b=R(`(()=>{const n=Math.min(state.window,state.count-lowerBoundTime(currentTareEvent().effectiveFromTime));let s=0;for(let j=state.count-n;j<state.count;j++)s+=getNetMg(j);return getMassMA(state.count-1)-s/n})()`);
+    ok('V17 test sensor after catch-up: net moving average matches brute force across the tare', Math.abs(b)<1e-6, String(b)); }
+  ok('V17 logs stay separate per sensor after switching back', R(`state.logs.length`)===1 && R(`sensors.get('b').state.logs.length`)===0);
+  const countsBefore = R(`sensors.get('a').state.count`);
+  res = JSON.parse(R(`JSON.stringify(applySensorList({sensors:[{id:'a',name:'Scale A (renamed)',sseUrl:'/s1'},{id:'d',name:'D',sseUrl:'/s3'}]}))`));
+  ok('V17 reload: data kept, renamed, new sensor added, missing ones marked not in list', R(`sensors.get('a').state.count`)===countsBefore && R(`sensors.get('a').name`)==='Scale A (renamed)' && res.added.join()==='d' && res.unlisted.sort().join()==='b,c' && R(`sensors.get('b').state.count`)===50);
+  ok('V17 unlisted sensors get no connection; listed ones do', JSON.stringify(open())==='["/s1","/s3"]');
+  R(`handleSseMessage('/s1',${JSON.stringify(msg('a',400,10))})`); ok('V17 data still flows into a sensor after a list reload', R(`sensors.get('a').state.count`)===countsBefore+10);
+  ok('V17 an empty sensor can be shown without errors', (()=>{ try { R(`activateSensor('d'); renderEmpty(); activateSensor('test')`); return true; } catch(e){ console.log(e); return false; } })());
+
   console.log(fails? `\n${fails} FAILED` : '\nall passed');
   process.exitCode = fails?1:0;
 })();

@@ -1,0 +1,7 @@
+{
+  "sensors": [
+    {"id": "scale-1", "name": "Scale 1", "sseUrl": "/stream/a", "rateHz": 80},
+    {"id": "scale-2", "name": "Scale 2", "sseUrl": "/stream/a", "rateHz": 80},
+    {"id": "scale-3", "name": "Scale 3 (10 Hz)", "sseUrl": "/stream/b", "rateHz": 10, "details": {"note": "further sensor details later"}}
+  ]
+}
