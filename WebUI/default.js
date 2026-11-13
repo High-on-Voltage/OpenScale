@@ -9,7 +9,7 @@ let PERIOD_MS = 1000 / RATE_HZ;
 // SENSOR_LIST_URL: URL of the JSON sensor list, e.g. '/api/sensors'. null = test signal only.
 // Expected JSON: an array (or {"sensors":[...]}) of {"id":"s1","name":"Scale 1","sseUrl":"/stream/a", ...}.
 // Further keys (rateHz, details, ...) are kept; rateHz is read when the sensor is first created.
-const SENSOR_LIST_URL = null;
+const SENSOR_LIST_URL = 'sensors_example.json';
 const TEST_SENSOR_ID = 'test';
 // Server sensors have no calibration of their own yet. Until one is imported they are shown as RAW
 // counts rather than as masses computed with the illustrative demo calibration (conservative choice).
