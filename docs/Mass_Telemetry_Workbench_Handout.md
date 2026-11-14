@@ -1,53 +1,76 @@
-# Mass Telemetry Workbench: handout v14 (read after v13.2; this overrides earlier handouts where they differ)
+# Mass Telemetry Workbench: handout v14.1 (addendum to v14; read after v14. Specifies the NEXT round. Nothing here is implemented yet.)
 
-Baseline: `telemetry_workbench_v14.html` + `.js`, `audit_harness_v14.js` (all checks pass; run `node audit_harness_v14.js telemetry_workbench_v14.html`), `sensors_example.json` (unchanged). **Still not browser-tested.** Rule kept: every new behaviour has a harness test; no v13 check was weakened (the 250 v13 checks run unchanged).
+Baseline stays `telemetry_workbench_v14.*` + `audit_harness_v14.js`. Rules unchanged: every new behaviour gets a harness test, none weakened; pure functions DOM-free; thresholds as named constants echoed in the UI; new file keys additive (`schemaVersion` 1); the app never claims an uncertainty it cannot support. User profile unchanged (enthusiast, plain wording, Claude manages everything).
 
-## 1. What v14 implements (handout v13.2 sections)
-| § | Feature | Where |
-|---|---|---|
-| 8 | Estimator length also in seconds (linked, samples ÷ rate); real time span next to sample counts (current value, selection, measurement, log, wizard) | window field, `fmtSpan` |
-| 5 | Band modes: symmetric (default) / asymmetric / step-aware, Display options, stored in `ui-settings.json` as `bandMode` | `bandStats`, `buildEstimatorCurve` |
-| 4 | Three "±" lines under the current value: σ, σ/√n_eff of the average, stability (max−min of the displayed value over the last window) | `updatePlusMinus` |
-| 3 | Uncertainty (stage 1 typed weight tolerance/certificate, stage 2 components, stage 3 "± U (label)" on measurements, selections, log, tooltip; `uncertainty` block in the calibration file) | `computeUncertainty`, `buildUncertaintyProfile` |
-| 2 | Hysteresis: `loadingDirection` per observation, mean(down)−mean(up) per mass, fit on both/up/down, optional return run in Simple mode, `reserved.loadingDirection` / `hysteresisAnalysis` filled | `hysteresisAnalysis` |
-| 6 | Password (HTTP Basic, own dialog, writes only) | `serverWrite`, `authDialogPrompt` |
-| 7 | History by independent range requests; sample ids; gap filling; merge into the ring buffer | `mergeHistory`, `historyLoadOlder` |
-| 1 | Placements per mass (Simple, 2–10, default 3, wizard setting only); `basis` field of the weight tolerance | wizard |
-| 8 | Advanced extras: leave-one-out residuals, environment fields (temperature, humidity, warm-up), full fit report export (JSON + text) | Fit tab |
+## 1. Decisions taken (user agreed to all)
+1. Off-centre loading, creep, zero drift and temperature sensitivity are **measured as part of the calibration** and stored in `calibration.json` (new `characterization` block, next to `uncertainty`).
+2. **Use conditions** (reading delay, time since tare, expected temperature difference) are NOT calibration data: they live in `sensor_settings.json` (or on the measurement).
+3. **Long-term drift** (weeks) is a log of check weighings, a separate growing file linked to the calibration revision; server storage later. Not part of the next round beyond the file format.
+4. **Temperature in two forms:** typed manual estimate (labelled "user estimate") and a real sensor channel. **Temperature correction of the mass readings is postponed** (later opt-in, own calibration epoch, because it changes the raw-to-mass pipeline). The next round only displays, records, and puts temperature into the uncertainty.
+5. **Auxiliary channels are open:** temperature is processed by us; any other channel gets storage, alignment, graph, CSV and history so the user can do what they like with it. No user formulas yet.
+6. Temperature and load-cell samples come from **one device and one clock**: alignment is by timestamp.
+7. The ESP32 chip temperature is not used as load-cell temperature.
 
-## 2. Decisions I took that you should know about (please check)
-1. **Extra uncertainty component "placement of the weighed object".** The handout lists (a) curve error from the fit, (b) reading noise, (c) resolution, (d) weight tolerance. A single weighing also puts the object down only once, so one more placement's scatter belongs in. It is a separate, switchable line (`UNC_INCLUDE_OBJECT_PLACEMENT`, shown in the component list). Without it the numbers would be lower and too optimistic.
-2. **Resolution:** one count / √12; if the reading noise is ≥ 1 count it dithers the rounding and the term is divided by √n_eff (`UNC_DITHER_SIGMA_COUNTS`).
-3. **Unknown n_eff** (interval shorter than 64 samples): n_eff = 1 is used (conservative: σ itself) and the component says so.
-4. **Weight tolerance is all-or-nothing.** If any weight used has no typed value, the component is left out and the label stays "repeatability only" (a half-included tolerance would look more complete than it is). Independent weights give u/√n per mass level; a bias shared by all weights is stated as not reduced and not detectable.
-5. **Labels:** `± U (estimated, repeatability only, not traceable)`; with typed tolerances for every weight `(estimated, not traceable)`; with hysteresis `(estimated, repeatability and hysteresis only, not traceable)`. The embedded demo calibration (and any older file) has no block: the app says why and shows no number.
-6. **No repeats → no number.** If repeatability cannot be estimated (no reference mass placed twice for the piecewise model, no degrees of freedom), the block is `not-estimable` with a reason.
-7. **Asymmetric band** is the literal definition (upper = mean of the samples above the centre value): after a down-step it equals the old level exactly; in steady noise it sits at about ±0.8 σ (narrower than the symmetric band). Not applied to EMA estimators.
-8. **Step-aware band** restarts the *whole* estimator window (centre line and band, so the band stays centred) at a step found by the existing CUSUM statistic (step-like, ≥ 2 σ, Q ≥ 1.36). Needs ≥ 64 samples in the window; a ramp is a trend and does not restart.
-9. **History: merge instead of "buffer live, then prepend".** Prepending while live samples keep flowing is valid at any moment, so live data is not held back. Merge is by time, duplicates by id (or by time if there is no id). Samples that no longer fit the buffer are dropped from the *oldest* end; a running measurement is cancelled if a sample is inserted into its interval. Data thrown away by **Pause** is never refilled (the first sample after resume is a new baseline); only real gaps (reconnect) are.
-10. **Observations without a loading direction count as "up"** when "up only" is chosen.
-11. **Hysteresis in the uncertainty:** half-width |down−up|/2, rectangular, only while the fit uses both directions.
-12. The ± stability line uses T = estimator window (adjustable later, as planned).
+## 2. `sensors.json`: auxiliary channels
+Each channel is its own entry (same list as the load cells; `kind` distinguishes them):
+```json
+{"id":"t-body","kind":"temperature","name":"Load cell body","sseUrl":"/stream/t","rateHz":1,
+ "unit":"°C","conversion":{"type":"polynomial","coefficients":[-12.3,0.0042]},"attachedTo":["scale-1"],
+ "deviceId":"esp32-1"}
+```
+- `kind`: `loadcell` (default, as today) | `temperature` | `generic`. `unit` is the unit of the converted value.
+- `conversion` (applied by the UI to the channel's native `raw` value): `polynomial` (coefficients c0, c1, … = 1 to x), `steinhart-hart` {a,b,c} (raw = resistance Ω → K → °C), `beta` {beta, r0, t0, rSeries}, `direct` (no conversion). A conversion failure marks the sample invalid, never silently zero.
+- `attachedTo`: array of load-cell ids, may be empty; stated only on the aux entry (one place to edit). A temperature channel attached to several cells serves all of them; a cell may have several (e.g. body + ambient): the user picks the **primary** one per cell for the uncertainty (`primaryTemperature` in the sensor settings).
+- `deviceId` (optional, default = `sseUrl`): sensors with the same device share **one time origin** (today every sensor sets its own origin at its first sample; that must change so that an aux channel and its load cell line up). Origin = first accepted timestamp of the device.
+- User corrections of a conversion (e.g. an ice-point offset) are saved via `sensor_settings.json` (password for writes as in v14); the firmware values stay the defaults.
+- SSE sample of an aux channel: `{"id":"t-body","t":<device ms>,"raw":<float>,"n":<sample id>}` (float, not rounded to integer counts). History API identical (`sensor=<aux id>`); binary layout v2 proposal: as v1 but 16-byte records (u32 id, u32 ms, f64 raw).
 
-## 3. File keys (all additive; `schemaVersion` stays 1)
-- `referenceWeights[].massUncertainty {value, unit, basis: certificate|class-tolerance|user-estimate, coverageFactor, distribution, standardUncertaintyMg}`
-- `observations[].loadingDirection` (`up|down|null`)
-- `uncertainty {status: estimated|not-estimable, traceable:false, basis, coverageProbability:0.95, dof, k:{dof,value}, components:[{id,label,included,dof,table:[{massMg,uMg}],note}], notIncluded:[…], combined:{table:[{massMg,uMg,dof,k,UMg}]}}` – calibration-side components only; a measurement adds reading noise and resolution. `validation.status` stays `not-characterized`.
-- `fit.hysteresisUse`, `reserved.loadingDirection` (`both|up|down|not-determined`), `reserved.hysteresisAnalysis {levels:[{massMg,nUp,nDown,meanUp,meanDown,diffCounts,diffMg,seMg}], maxAbsDiffMg, meanDiffMg}`
-- `environment.temperatureC / relativeHumidityPercent`, `reserved.warmUpDurationSeconds`
-- `ui-settings.json`: `bandMode`.
-- Simple weight list accepts a tolerance: `3 x 100 g ±0.5 mg`.
+## 3. Aux pipeline (separate from the load-cell state)
+- Own light ring buffer per channel: time (f64), raw (f64), id (f64), converted value (f64), capacity as the load cells (default 100,000). The load-cell pipeline and its tests stay untouched.
+- Pause / reconnect / gap detection by id and history merge behave as for load cells (reuse `ingest`, `noteGap`, `mergeSampleLists`).
+- `auxValueAt(channel, t)`: linear interpolation to a load-cell sample time; NaN if the neighbouring aux samples are further apart than `AUX_MAX_GAP_FACTOR` × the channel period (never extrapolated).
+- Graph: right-hand axis in the main chart (and optionally the navigator), one toggle per channel in Display options, hidden when a channel has no data in view; own unit label; legend entry. CSV export: trailing columns `aux_<id>` only when attached channels exist (the 11 base columns stay as tested in v13).
+- Temperature specifics: show **rate of change** (K/min over a settable window) next to the value; the sensor lags the strain gauge, the rate often matters more than the absolute value.
 
-## 4. Server assumptions (to confirm with the ESP32 firmware)
-- SSE sample: `{"id":"<sensor>","t":<device ms>,"raw":<int>,"n":<monotonic sample id>}`; the event's SSE `id:` field = id of its last sample (Last-Event-ID).
-- History: `GET <historyUrl>?sensor=<id>&from_id=a&to_id=b` (per-sensor `historyUrl` in the sensor list, or `HISTORY_URL`; both empty = off). JSON `{samples:[{n,t,raw}]}` or binary (`application/octet-stream`): `HIST` magic, u16 version 1, u16 0, u32 count, count × (u32 id, u32 device ms, i32 raw), little endian. Chunks of 5,000 ids requested; how many samples the device keeps and its maximum chunk size are open.
-- Writes (`UI_SETTINGS_URL` PUT/DELETE, `SENSOR_SETTINGS_URL` PUT, `CALIBRATION_UPLOAD_URL` PUT): 401 when a password is set and the header is missing/wrong. If the UI is not served by the ESP32, the server must answer the CORS preflight and allow `Authorization`. Basic over plain HTTP is readable: trusted home network or HTTPS only (stated in the dialog and the Settings Menu).
+## 4. `characterization` block in `calibration.json`
+```
+characterization: {
+  status: "measured" | "partly measured" | "user-estimate" | "none",
+  eccentricity: { testMassMg, centreRaw, positions:[{name, raw, devMg}], maxAbsDevMg, fractionOfLoad, source:"measured"|"user-estimate", observationIds:[…] },
+  creep:        { testMassMg, settleS, samples:[{tS, fraction}], source, observationIds },
+  zeroDrift:    { rateMgPerH, seMgPerH, durationS, source, observationIds },
+  temperature:  { referenceC, zeroMgPerK, zeroSe, spanPpmPerK, spanSe, source:"measured"|"user-estimate", channelId|null, note }
+}
+```
+Tests are recorded with the existing capture machinery (tagged observations, validity checks, include-anyway override, `removedAndReplaced` where relevant) and stored in `observations[]` with a `purpose` key (`calibration` default | `eccentricity` | `creep` | `zero-drift`). They never enter the calibration fit.
 
-## 5. Section 9 list, updated (what you can compare after some weeks)
-Spread shown in: spread card, chart band, selection, measurement, the new ± lines, and now "± U" (different things: σ = single readings, ±avg = the average's repeatability, ± U = with calibration). Three band modes; three weightings; Simple/Advanced overlap; Fit-tab model comparison vs. Simple's automatic choice; window in samples and seconds; header layout; **new:** the "object placement" component on/off; hysteresis "both/up/down"; leave-one-out column; text vs. JSON fit report.
+## 5. Wizard steps (Advanced: new tab "5 Characterization"; Simple: optional "Extra checks" after Finish, each skippable)
+1. **Eccentricity:** one weight of about a third of capacity (user chooses), centre then four edge positions (guided like the placement plan), each recorded as usual. Deviation per position `devMg = (raw_i − raw_centre) / slope`; `fractionOfLoad = max|devMg| / testMass`. Plain wording: "How much does the reading change if you put the weight off-centre?"
+2. **Creep:** place a weight, record for N minutes (default 5, up to 30); `fraction(t) = (r(t) − r(settle)) / (r(settle) − r_empty)` at t = 30 s, 1 min, 2 min, 5 min … (those that fit), settle time chosen by the user (default 10 s).
+3. **Zero drift:** record the empty platform for N minutes (default 10, up to 60); weighted linear fit of mass vs time gives rate ± standard error in mg/h (the validity checks must not flag it for a step; a flagged recording is left out unless "include anyway").
+4. **Temperature sensitivity:** (a) *with a sensor:* needs the observations to have different temperatures (warm-up or two sessions); regress the empty-platform raw and the span readings against the recorded mean temperature; refuse and say why if the temperature range is < `TEMP_FIT_MIN_RANGE_K` (default 2 K); (b) *without:* type "zero shift mg per 10 K" and "span ppm per K" (datasheet or own estimate), source = `user-estimate`.
+Every observation also stores the mean / min / max temperature of its recording for each attached temperature channel (`temperatures:{id:{mean,min,max,unit}}`), automatically.
 
-## 6. Browser checklist (never done; new items marked ★)
-Header wrap, Y-axis widths, legend spacing, navigator at a full buffer, Simple wizard with a live stream, include-anyway, collapsible manual box, settings persistence, Esc handling, auth dialog (focus, Enter, Esc, password manager behaviour), ★ the three ± lines wrapping on narrow screens, ★ band mode switch (chart is rebuilt) and the legend labels, ★ window seconds field next to the slider, ★ wizard weights table width with the two new columns, ★ direction select per observation, ★ Simple "way down" flow with a live stream, ★ uncertainty details list in the measurement card and the selection panel, ★ negative time axis labels after history is merged in front of the stream origin.
+## 6. Use conditions (`sensor_settings.json`, per load cell, additive keys)
+`useConditions: { readingDelayS, sessionSinceTareS, temperatureDeltaK, primaryTemperature }`. Defaults: reading delay 30 s, time since tare 3,600 s, temperatureDeltaK 3 (typed ±, used when no sensor). Shown in the Settings Menu, Sensor tab, in plain words, with the effect on the number.
 
-## 7. Not done / next
-Temperature, creep, off-centre loading and drift are listed as "not included" but not modelled. OIML class table postponed. CSV export has no sample-id column (would change the v13 column test). The device-side parts of §7 wait for the firmware.
+## 7. New uncertainty components (added to `computeUncertainty`; each listed in the details, each says measured / user estimate)
+All rectangular unless stated, standard uncertainty = half-width / √3, dof = ∞ for typed limits, the fit's dof for measured fractions where a standard error exists.
+- **Off-centre:** half-width `a = fractionOfLoad × m` (m = mass of the result). Correction of an earlier statement: the centre is the reference, so the largest deviation IS the half-width; there is **no extra ÷ 2**. Scales with the load (stored as a fraction, ppm-like), not one number for the whole range.
+- **Creep:** half-width `|fraction(readingDelayS)| × m`, interpolated in the stored curve (constant beyond its ends, flagged).
+- **Zero drift:** half-width `|rate| × sessionSinceTareS`, with the standard error of the rate added in quadrature to the half-width before dividing by √3.
+- **Temperature:** `ΔT` = largest |T_now − referenceC| over the measurement (sensor) or `temperatureDeltaK` (typed). Half-width `sqrt((zeroMgPerK·ΔT)² + (spanPpmPerK·1e-6·m·ΔT)²)`. Label part "(temperature: your estimate)" unless both sensitivity and ΔT come from measurement/sensor.
+- Label examples: `(estimated, repeatability, creep and zero drift measured; temperature your estimate; not traceable)`. A component not measured stays on the "not included" list exactly as today (temperature, creep, off-centre, drift are removed from that list only when included).
+- If creep/drift/eccentricity was recorded under a different calibration revision than the active one, say so in the component note.
+
+## 8. Long-term drift (format only)
+`checkweighings.json` (or server resource): `{schemaVersion:1, calibrationRevisionId, entries:[{recordedAt, weightId, referenceMassMg, readingMg, sigmaMg, neff, temperatureC|null, note}]}`. Used later for a drift-over-time chart and a "re-check due" hint; no component in the uncertainty yet.
+
+## 9. Harness tests required (in addition to the usual round-trip, validity and escaping tests)
+Conversion functions against known values (Steinhart-Hart 10 kΩ NTC at 25 °C = 25.00 °C, polynomial, beta); aux ring buffer wrap, gaps, history merge; `auxValueAt` interpolation and the max-gap rule; shared device time origin (aux and load cell aligned to the same timestamp); eccentricity / creep / drift fits against constructed data with known answers; temperature regression with known slope, refusal below the range limit; each new component against a hand calculation; label wording for all measured / estimate combinations; wizard tabs render; file round trip; old files without `characterization` still load and say "not characterized".
+
+## 10. Open points for the next session
+- Units: K vs °C for ΔT (proposal: always K for differences, °C for values).
+- Whether Simple mode shows the extra checks as one optional step or three.
+- Creep and drift recording lengths are rules of thumb (named constants); revisit after real measurements.
+- Firmware: float `raw` for aux channels, shared clock, history for aux ids, `deviceId` in the sensor list.
