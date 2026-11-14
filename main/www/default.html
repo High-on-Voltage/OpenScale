@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Sensor Node</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 54rem; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.55; }
+    code, pre { font-family: ui-monospace, monospace; }
+    pre { overflow: auto; padding: 1rem; border-radius: .5rem; background: CanvasText; color: Canvas; }
+    .muted { opacity: .7; }
+  </style>
+</head>
+<body>
+  <h1>ESP32 Sensor Node</h1>
+  <p>This is the firmware's small recovery and diagnostics page, not the final WebUI.</p>
+  <p class="muted">The separately developed interface can replace the index asset without changing the firmware's protected <code>default.html</code> and <code>default.js</code>.</p>
+  <h2>Device status</h2>
+  <pre id="status">Loading device status…</pre>
+  <script src="/default.js"></script>
+</body>
+</html>
