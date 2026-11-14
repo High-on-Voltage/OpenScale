@@ -22,6 +22,7 @@ async function load() {
     setInterval:()=>0, setTimeout:(f,ms)=>setTimeout(f,ms), clearTimeout(){}, requestAnimationFrame(){}, performance:{now:()=>ctxRef.__now||0}, console, Intl, TextEncoder, URL, Blob});
   ctx.globalThis = ctx; Object.defineProperty(ctxRef,'__now',{get:()=>ctx.__now,set:v=>{ctx.__now=v}});
   vm.runInContext(code, ctx);
+  vm.runInContext("wizMode='advanced'", ctx);   // v13: the v12 wizard tests assume the Advanced mode; Simple-mode tests switch explicitly
   for (let i=0;i<200 && vm.runInContext('state.revisionId',ctx)==='embedded-demo-v1';i++) await new Promise(r=>setTimeout(r,5));
   return src => vm.runInContext(src, ctx);
 }
@@ -478,6 +479,173 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   ok('W7 rate is fixed once samples exist', R(`sensors.get('a').state.rateHz`)===20&&R(`sensorSettingsRender(),$('ssRate').disabled`)===true);
   // W8 static: dynamic wizard ids and modals exist
   ok('W8 modals and settings-menu controls exist in the HTML', ['settingsModal','wizModal','wizBody','wizMin','wizClose','calWizardBtn','openSettingsMenuBtn','uiResetBtn','uiSaveServerBtn','uiResetServerBtn','uiExportBtn','ssSensor','ssApplyBtn','ssDownloadBtn','smTab_ui','smTab_sensor','smPane_ui','smPane_sensor','uiMessages','uiSettingsInfo'].every(i=>html.includes(`id="${i}"`)));
+
+
+  // ===== v13 =====================================================================================
+  const RNG13 = `let __s=424242;const rnd=()=>{__s=(__s*1103515245+12345)%2147483648;return __s/2147483648;};const gauss=()=>{const u=rnd()||1e-9,v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);};`;
+  R = await load();
+  // X1 navigator at a full ring buffer (v12 bug: cached bucket became the oldest bucket after part of it was evicted)
+  for (const cap of [1000, 10000]) {
+    R = await load();
+    R(`resizeBuffers(${cap}); for(let i=0;i<${cap}-10;i++) appendSample(nextSensorValue());`);
+    const bad = R(`(()=>{let bad=0;for(let s=0;s<${cap}*0.9;s++){appendSample(nextSensorValue());const d=buildMiniData(),x=d[0],y=d[1];let ok=x.length>0&&Math.abs(x[0]-oldestTime()/1000)<0.5&&Math.abs(x[x.length-1]-newestTime()/1000)<0.1;for(let i=0;i<x.length;i++){if(!Number.isFinite(x[i])||!Number.isFinite(y[i])||(i&&x[i]<x[i-1])){ok=false;break;}}if(!ok)bad++;}return bad})()`);
+    ok(`X1 navigator data stays valid while the ring buffer is full and wrapping (capacity ${cap})`, bad===0, 'bad frames '+bad);
+  }
+  R = await load();
+  ok('X1 navigator refresh interval is shorter while the buffer is small', R(`(state.count=100,miniRefreshMs())`)===50 && R(`(state.count=30000,miniRefreshMs())`)===160 && R(`(state.count=100000,miniRefreshMs())`)===250);
+  // X2 status counts only really streaming sensors
+  R = await load();
+  R(`globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0}close(){}}`);
+  R(`applySensorList([{id:'a',name:'A',sseUrl:'/s1'},{id:'b',name:'B',sseUrl:'/s1'},{id:'c',name:'C',sseUrl:'/s2'}])`);
+  ok('X2 unreachable streams are not counted as streaming (only the test signal)', /1 of 4 sensors streaming/.test(R(`$('statusText').textContent`)), R(`$('statusText').textContent`));
+  R(`sseConnections.get('/s1').status='live'; updateStatusUI()`);
+  ok('X2 a stream that opened counts for each of its sensors', /3 of 4 sensors streaming/.test(R(`$('statusText').textContent`)), R(`$('statusText').textContent`));
+  // X3 static layout contract
+  { const hdr = html.split('</header>')[0], mainHtml = html.split('</header>')[1];
+    ok('X3 header order: title, sensor selector, test-signal select ... buttons, status last (right-bound)', hdr.indexOf('class="brand"')<hdr.indexOf('id="sensorSelect"') && hdr.indexOf('id="sensorSelect"')<hdr.indexOf('id="simModeSelect"') && hdr.indexOf('id="simModeSelect"')<hdr.indexOf('id="pauseBtn"') && hdr.indexOf('id="settingsBtn"')<hdr.indexOf('id="statusText"'));
+    ok('X3 navigator is part of the main chart panel and has no title of its own', !/class="panel navigator"/.test(html) && !/Timeline navigator/.test(html) && mainHtml.indexOf('id="miniChart"')>mainHtml.indexOf('id="mainChart"') && mainHtml.indexOf('id="miniChart"')<mainHtml.indexOf('</section>', mainHtml.indexOf('id="mainChart"')));
+    ok('X3 charts have no fixed CSS height that the legend would overflow', !/#mainChart\{height:/.test(html) && !/#miniChart\{height:/.test(html));
+    ok('X3 Y axes are sized from their widest label; navigator X axis has room for its labels', (code.match(/size:axisWidthFit/g)||[]).length===2 && /size:30,grid/.test(code));
+    ok('X3 wizard mode switch exists', /id="wizMode"/.test(html)); }
+
+  // ---- weighted fitting ---------------------------------------------------------------------------------------------------
+  R = await load();
+  { const pts = `(()=>{const p=[];for(let k=0;k<9;k++){const g=k*25;for(let q=0;q<3;q++)p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+[ -1.3,0.4,0.9][q]*(0.3+0.05*g),n:400});}return p})()`;
+    const a = J(`(()=>{const p=${pts};const x=fitCalibration(p,'linear'),y=fitCalibration(p,'linear',{weighting:'equal'});return {same:JSON.stringify(x.coef)===JSON.stringify(y.coef)&&x.sdRawRes===y.sdRawRes,scheme:y.weighting.scheme,red:y.reducedChi2,std:x.residuals[0].std,w:x.residuals[0].w}})()`);
+    ok('X4 default weighting is "equal" and bit-identical to explicit equal weights (v12 behaviour)', a.same && a.scheme==='equal' && a.red===null && a.w===1); }
+  { // weighted least squares against the closed form of weighted simple regression
+    const r = J(`(()=>{const xs=[0,1,2,3],ys=[0.1,1.2,1.9,6],ws=[1,2,0.5,0.05],sw=ws.reduce((a,b)=>a+b),mx=ws.reduce((s,w,i)=>s+w*xs[i],0)/sw,my=ws.reduce((s,w,i)=>s+w*ys[i],0)/sw;
+      let sxy=0,sxx=0;ws.forEach((w,i)=>{sxy+=w*(xs[i]-mx)*(ys[i]-my);sxx+=w*(xs[i]-mx)**2});const b=sxy/sxx,a=my-b*mx;const f=fitPolynomial(xs,ys,1,ws);return {da:f.g(0)-a,db:f.g(1)-f.g(0)-b}})()`);
+    ok('X4 weighted line equals the closed-form weighted regression', near(r.da,0,1e-9,1e-9)&&near(r.db,0,1e-9,1e-9), JSON.stringify(r)); }
+  { const r = J(`(()=>{${RNG13}const rms=a=>Math.sqrt(a.reduce((x,y)=>x+y*y,0)/a.length),res={equal:[],shrinkage:[],'variance-model':[]};
+      for(let run=0;run<400;run++){const pts=[];for(let k=0;k<9;k++){const g=k*25;for(let p=0;p<4;p++)pts.push({id:'o'+k+'_'+p,massMg:g*1000,raw:5000+4*g+(0.3+0.08*g)*gauss(),n:400});}
+        for(const m of Object.keys(res)){const f=fitCalibration(pts,'linear',{weighting:m});res[m].push((f.g(200000)-f.g(0))/200-4);}}
+      return {e:rms(res.equal),s:rms(res.shrinkage),v:rms(res['variance-model'])}})()`);
+    ok('X4 heteroscedastic data (sigma grows 0.3 -> 20 counts), 400 seeded runs: both weightings estimate the slope better than equal weights', r.s<r.e && r.v<r.e, `slope RMS error equal ${r.e.toFixed(4)}, shrinkage ${r.s.toFixed(4)}, variance model ${r.v.toFixed(4)}`);
+    ok('X4 the variance model is clearly better than equal weights here (> 25 % lower error)', r.v<0.75*r.e, (100*(1-r.v/r.e)).toFixed(0)+' % lower'); }
+  { const mk=(per)=>`(()=>{const p=[];[0,50,100].forEach((g,k)=>{for(let q=0;q<${per}[k];q++)p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+q*0.7,n:400});});return p})()`;
+    const a = J(`(()=>{const p=${mk('[1,1,1]')};const f=fitCalibration(p,'linear',{weighting:'shrinkage'});return {s:f.weighting.scheme,r:f.weighting.reason}})()`);
+    ok('X4 fallback: no replicate anywhere -> equal weights, reason announced', a.s==='equal' && /No reference mass/.test(a.r), JSON.stringify(a));
+    const b = J(`(()=>{const p=[];[0,100].forEach((g,k)=>{for(let q=0;q<3;q++)p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+q,n:400});});const f=fitCalibration(p,'linear',{weighting:'shrinkage'});return {s:f.weighting.scheme,r:f.weighting.reason}})()`);
+    ok('X4 fallback: only 2 different masses -> equal weights, reason announced', b.s==='equal' && /Fewer than 3/.test(b.r), JSON.stringify(b));
+    const c = J(`(()=>{const p=${mk('[3,1,1]')};const f=fitCalibration(p,'linear',{weighting:'variance-model'});return {s:f.weighting.scheme,r:f.weighting.reason}})()`);
+    ok('X4 fallback: variance model with < 3 replicated masses -> shrinkage, reason announced', c.s==='shrinkage' && /variance model needs/.test(c.r), JSON.stringify(c));
+    const d = J(`(()=>{const p=${mk('[3,3,3]')};const f=fitCalibration(p,'anchors',{weighting:'shrinkage'});return {s:f.weighting.scheme,r:f.weighting.reason}})()`);
+    ok('X4 the piecewise-linear model is not weighted (says so)', d.s==='equal' && /do not apply/.test(d.r), JSON.stringify(d)); }
+  { // shrinkage: single-placement masses get the pooled variance; a "lucky" triple with SD ~ 0 does not get an infinite weight
+    const r = J(`(()=>{const p=[];const add=(g,vals)=>vals.forEach((v,q)=>p.push({id:'o'+g+'_'+q,massMg:g*1000,raw:5000+4*g+v,n:400}));
+      add(0,[0,0,0]);add(50,[-2,0,2]);add(100,[-3,1,2]);add(150,[0.4]);const f=fitCalibration(p,'linear',{weighting:'shrinkage'});const s=f.weighting.sigmaPerMass;
+      return {s:s.map(x=>x.sigma),pooled:f.weighting.pooledSd,floor:f.weighting.floorSigma,sp2:(0+4+ (9+1+4) -0)}})()`);
+    ok('X4 shrinkage: sigma stays above the floor for an all-equal triple and equals the pooled SD for a single placement', r.s[0]>=r.floor && r.s[0]>0.5*r.pooled && near(r.s[3],r.pooled,1e-9,1e-9), JSON.stringify(r)); }
+  { const r = J(`(()=>{${RNG13}const p=[];for(let k=0;k<5;k++){const g=k*40;for(let q=0;q<3;q++)p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+(0.5+0.05*g)*gauss(),n:400});}
+      const f=fitCalibration(p,'linear',{weighting:'shrinkage'});let chi=0;for(const x of f.residuals){chi+=x.w*x.resRaw*x.resRaw;if(Math.abs(x.std-x.resRaw*Math.sqrt(x.w))>1e-12)return {bad:true}}
+      return {d:f.chi2-chi,red:f.reducedChi2-chi/f.dof,dof:f.dof}})()`);
+    ok('X4 chi-square = sum w r^2, reduced chi-square = chi-square / dof, standardised residual = r sqrt(w)', !r.bad && near(r.d,0,1e-9,1e-9) && near(r.red,0,1e-9,1e-9) && r.dof===13, JSON.stringify(r)); }
+
+  // ---- weight groups ----------------------------------------------------------------------------------------------------------
+  R = await load();
+  R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)))`);
+  { const r = J(`(()=>({g:wiz.groups.map(g=>[g.groupId,g.massBasis,g.nominalMass,g.unit]),members:wiz.weights.filter(w=>w.groupId).length,mass:wizPoints(wiz).points.filter(p=>p.massMg===100000).length}))()`);
+    ok('X5 a v12 file (no referenceWeightGroups) is migrated: the three 100 g weights form one nominal group', r.g.length===1 && r.g[0][1]==='nominal' && r.g[0][2]===100 && r.members===3 && r.mass===3, JSON.stringify(r)); }
+  { // 3 weights x 4 placements with known weight offsets (-3, 0, +3 counts) and placement noise (+-0.5): ANOVA and relative masses are exact
+    const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.observations=[];const pat=[0.5,-0.5,0.5,-0.5],off={'ref-100-A':-3,'ref-100-B':0,'ref-100-C':3};
+      let n=1;const add=(wid,load,base)=>{for(let q=0;q<4;q++)wiz.observations.push({observationId:'x'+(n++),loadId:load,rawMean:base+(off[wid]||0)+pat[q],include:true,sampleCount:400,placementIndex:q+1,removedAndReplaced:q>0,validity:{status:'ok',flagged:[],analysis:null}});};
+      add('ref-empty','load-empty',4600);for(const l of ['A','B','C'])add('ref-100-'+l,'load-100-'+l,5000);add('ref-200-A','load-200-A',5400);
+      const {points}=wizPoints(wiz),f=fitCalibration(points,'linear');const s=weightGroupStats(wiz,f)[0];
+      return {sW:s.sW,sB:s.sB,dfW:s.dfW,dfB:s.dfB,verdict:s.verdict,rel:s.members.map(m=>m.relMassMg),slope:(f.g(200000)-f.g(0))/200000,se:s.members.map(m=>m.relMassSeMg)}})()`);
+    ok('X5 variance components: within-weight SD = sqrt(SSw/(N-a)) = sqrt(1/3), between-weight SD = sqrt((MSB-MSW)/n0) = 2.986 (hand-computed for the constructed data), verdict "differ"', near(r.sW,Math.sqrt(1/3),1e-9,1e-9) && r.dfW===9 && r.dfB===2 && r.verdict==='differ' && near(r.sB,Math.sqrt((36-1/3)/4),1e-9,1e-9), JSON.stringify(r));
+    ok('X5 relative masses = counts difference / slope: -0.75 g, 0, +0.75 g (4 counts per g); standard errors present', near(r.rel[0],-750,1e-6,1e-6)&&near(r.rel[1],0,1e-6,1e-6)&&near(r.rel[2],750,1e-6,1e-6)&&r.se.every(x=>x>0), JSON.stringify(r.rel)); }
+  { const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));const f=fitCalibration(wizPoints(wiz).points,'anchors');const s=weightGroupStats(wiz,f)[0];return {a:s.a,N:s.N,sW:s.sW,reason:s.reason,rel:s.members.map(m=>m.relMassMg)}})()`);
+    ok('X5 demo data (one placement per weight): no variance components (no repeat), relative masses still given (-0.5, 0, +0.5 g)', r.a===3&&r.N===3&&r.sW===undefined&&/placed more than once/.test(r.reason)&&near(r.rel[0],-500,1e-6,1e-6)&&near(r.rel[2],500,1e-6,1e-6), JSON.stringify(r)); }
+  { // massBasis nominal: assigned masses of the members are ignored; assigned: individual masses, different masses stay separate
+    const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));const A=wiz.weights.find(w=>w.weightId==='ref-100-A');A.assignedMass=100.2;
+      const nom=wizPoints(wiz).points.map(p=>p.massMg);wiz.groups[0].massBasis='assigned';const asg=wizPoints(wiz).points.map(p=>p.massMg);
+      const f=fitCalibration(wizPoints(wiz).points,'anchors');return {nom,asg,distinct:f.distinct}})()`);
+    ok('X5 massBasis nominal: all members at the group mass; assigned: own masses, a deviating weight becomes its own mass level', r.nom.filter(m=>m===100000).length===3 && r.asg.includes(100200) && r.distinct===4, JSON.stringify(r)); }
+  { const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='anchors';wiz.groups[0].aggregation='variance-components';
+      wiz.observations.push({observationId:'extra',loadId:'load-100-A',rawMean:5008,include:true,sampleCount:400,placementIndex:9,removedAndReplaced:true,validity:{status:'ok',flagged:[],analysis:null}});
+      const p=wizPoints(wiz).points,f=fitCalibration(p,'anchors');const a=f.anchors.find(x=>x.massMg===100000).raw;
+      wiz.groups[0].aggregation='mean-of-placements';const f2=fitCalibration(wizPoints(wiz).points,'anchors');return {vc:a,mp:f2.anchors.find(x=>x.massMg===100000).raw}})()`);
+    ok('X5 aggregation: mean of weight means ((5003+5000+5002)/3 = 5001.667) differs from mean of placements ((4998+5008+5000+5002)/4 = 5002)', near(r.vc,(5003+5000+5002)/3,1e-9,1e-9) && near(r.mp,5002,1e-9,1e-9), JSON.stringify(r)); }
+  { const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='anchors';const b=wizBuild(),c=b.cfg;
+      return {errs:b.errors,groups:c.referenceWeightGroups.map(g=>[g.groupId,g.massBasis,g.memberWeightIds.length,g.traceable,g.aggregation]),wg:c.referenceWeights.map(w=>w.groupId),rel:c.referenceWeights.filter(w=>w.relativeMassToGroupMean).length,
+        fit:{w:c.fit.weighting.scheme,warn:c.fit.warnings.length,ov:c.fit.overriddenObservations},v:validateCalibrationConfig(c).errors.length,anchorSrc:c.calibrationAnchors.find(a=>a.referenceValue===100).sourceObservationIds.length}})()`);
+    ok('X5 file: referenceWeightGroups, weights[].groupId, relative masses, fit.weighting / fit.warnings / fit.overriddenObservations written; validates; anchor lists all member observations', r.errs.length===0 && r.groups.length===1 && r.groups[0][2]===3 && r.groups[0][3]===false && r.wg.filter(x=>x).length===3 && r.rel===3 && r.fit.w==='equal' && r.fit.warn>0 && r.fit.ov.length===0 && r.v===0 && r.anchorSrc===3, JSON.stringify(r)); }
+  { const bad = x => `(()=>{const c=JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION));c.referenceWeightGroups=[{groupId:'g1',name:'g',nominalMass:100,unit:'g',memberWeightIds:['ref-100-A'],massBasis:'nominal',aggregation:'mean-of-placements'}];${x};return validateCalibrationConfig(c).errors.length})()`;
+    ok('X5 validation: unknown group id, unknown member weight and bad massBasis are rejected; a consistent group passes', R(bad(''))===0 && R(bad("c.referenceWeights[1].groupId='nope'"))>0 && R(bad("c.referenceWeightGroups[0].memberWeightIds=['zzz']"))>0 && R(bad("c.referenceWeightGroups[0].massBasis='x'"))>0); }
+
+  // ---- "include anyway" override ------------------------------------------------------------------------------------------------
+  { R = await load();
+    R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='linear';const o=wiz.observations[2];o.validity={status:'invalid',flagged:['Level step'],analysis:null};wizSetInclude(o,false);`);
+    ok('X6 an excluded invalid observation is marked excluded in the file', R(`wizBuild().cfg.observations[2].excluded`)===true);
+    R(`wizSetInclude(wiz.observations[2],true)`);
+    const r = J(`(()=>{const b=wizBuild(),o=b.cfg.observations[2];return {inc:o.included,r:o.overrideReason,at:!!o.overrideAt,list:b.cfg.fit.overriddenObservations,warn:b.warnings.some(w=>w.code==='override'),plain:b.warnings.find(w=>w.code==='override').plain}})()`);
+    ok('X6 "include anyway" is recorded: included, overrideReason, overrideAt, fit.overriddenObservations, and a warning', r.inc===true && r.r==='included anyway by user' && r.at && r.list.join()==='obs-100-B-01' && r.warn, JSON.stringify(r));
+    R(`wizSetInclude(wiz.observations[2],false)`);
+    ok('X6 excluding it again removes the override record', R(`wizBuild().cfg.observations[2].overrideReason`)===undefined && R(`wizBuild().cfg.fit.overriddenObservations.length`)===0);
+    R(`wizSetInclude(wiz.observations[2],true); wizLoadFromConfig(JSON.parse(JSON.stringify(wizBuild().cfg)))`);
+    ok('X6 a file written with an override loads it back (override survives a round trip)', R(`wiz.observations[2].override&&wiz.observations[2].override.reason`)==='included anyway by user' && R(`wiz.observations[2].include`)===true); }
+  { // a fit without degrees of freedom is allowed, with a stored warning
+    R = await load();
+    R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='anchors';wiz.observations=wiz.observations.filter(o=>o.observationId!=='obs-100-B-01'&&o.observationId!=='obs-100-C-01');`);
+    const r = J(`(()=>{const b=wizBuild();return {err:b.errors.length,dof:b.fit.dof,stored:b.cfg.fit.warnings.some(t=>/degrees of freedom/.test(t))}})()`);
+    ok('X6 a fit without degrees of freedom is allowed and the warning is stored in the file (fit.warnings)', r.err===0 && r.dof===0 && r.stored, JSON.stringify(r)); }
+
+  // ---- wizard observations list (v13 fixes) ----------------------------------------------------------------------------------
+  R = await load();
+  R(`for(let i=0;i<300;i++)appendSample(nextSensorValue()); wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wiz.captureSeconds=5; wiz.open=true; wizRecord(); for(let i=0;i<400;i++)appendSample(nextSensorValue());`);
+  { const htmlObs = R(`wizPaneObs()`);
+    ok('X7 the validity result of a recorded observation is expandable (details list with the individual checks)', /<details class="an" data-key="obs:obs-001"/.test(htmlObs) && /Autocorrelation/.test(htmlObs) && /Allan/.test(htmlObs));
+    ok('X7 the full check list is kept in the observation and written to the file (validityChecks)', R(`wiz.observations[0].validity.analysis.checks.length`)>=5);
+    ok('X7 load selector has previous / next buttons (previous disabled at the first load)', /data-wa="loadPrev"[^>]*disabled/.test(htmlObs) && /data-wa="loadNext"/.test(htmlObs));
+    ok('X7 manual entry is one collapsible box, closed by default', /<details id="wizManualBox" style="margin-top:8px">/.test(htmlObs) && !/<details id="wizManualBox"[^>]* open/.test(htmlObs));
+    R(`wiz.manualOpen=true`); ok('X7 the manual box keeps its open state across re-renders', /<details id="wizManualBox"[^>]* open>/.test(R(`wizPaneObs()`))); }
+  R(`wizNew(); wiz.weights.push({weightId:'ref-a',name:'A',nominalMass:100,assignedMass:null,unit:'g',referenceUncertainty:null,groupId:null}); wizSyncLoads(); wiz.selLoad='load-empty';`);
+  R(`wizOnClick({target:{closest:()=>({dataset:{wa:'loadNext'}})}})`); ok('X7 "next" selects the next load', R(`wiz.selLoad`)==='load-a');
+  R(`wizOnClick({target:{closest:()=>({dataset:{wa:'loadPrev'}})}})`); ok('X7 "previous" goes back', R(`wiz.selLoad`)==='load-empty');
+  { const w = JSON.parse(R(`JSON.stringify((()=>{wizNew();wiz.weights.push({weightId:'ref-a',name:'A',nominalMass:100,assignedMass:null,unit:'g',referenceUncertainty:null,groupId:null},{weightId:'ref-b',name:'B',nominalMass:100,assignedMass:null,unit:'g',referenceUncertainty:null,groupId:null});wizSyncLoads();
+      wiz.comboOpen=true;const h1=wizPaneWeights();wiz.comboPick={'ref-a':true,'ref-b':true};wizOnClick({target:{closest:()=>({dataset:{wa:'comboCreate'}})}});
+      const l=wiz.loads.find(x=>!x.auto);return {qty:/Qty/.test(wizPaneWeights())||/newQty/.test(wizPaneWeights()),dialog:/data-w="comboPick"/.test(h1),combo:l&&l.components.map(c=>c.quantity).join(),mass:l&&wizLoadMassSafe(l),open:wiz.comboOpen}})())`));
+    ok('X7 Qty column is gone; a combination is made in a dialog with one checkbox per weight (quantity 1 each)', !w.qty && w.dialog && w.combo==='1,1' && w.mass===200000 && w.open===false, JSON.stringify(w)); }
+
+  // ---- Simple mode ---------------------------------------------------------------------------------------------------------------
+  { const p = s => J(`parseWeightSpec(${JSON.stringify(s)})`);
+    const a = p('3 x 100 g, 1 x 200 g'), b = p('2×0.5 kg; 100g'), c = p('3 x 100 g, 100 g'), d = p('abc'), e = p('3 x 100 stone2'), f = p('');
+    ok('X8 weight list parser: "3 x 100 g, 1 x 200 g"; "×", ";", decimals and units; equal masses are merged', JSON.stringify(a.items)==='[{"qty":3,"value":100,"unit":"g"},{"qty":1,"value":200,"unit":"g"}]' && b.items[0].unit==='kg' && b.items[0].qty===2 && b.items[0].value===0.5 && b.items[1].unit==='g' && c.items.length===1 && c.items[0].qty===4);
+    ok('X8 weight list parser: garbage, unknown unit and empty input give readable errors', d.errors.length===1 && e.errors.length===1 && f.errors.length===1 && /3 x 100 g/.test(d.errors[0])); }
+  R = await load(); R(`wizMode='simple'; wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80;`);
+  { R(`wizSimpleSetWeights(parseWeightSpec('3 x 100 g, 1 x 200 g').items)`);
+    const r = J(`(()=>({w:wiz.weights.length,g:wiz.groups.map(g=>[g.groupId,g.massBasis,g.memberWeightIds.length]),plan:wizPlan().map(p=>[p.load.name,p.req]),sel:wiz.selLoad}))()`);
+    ok('X8 Simple: 3 x 100 g + 1 x 200 g -> empty + 4 weights, one nominal group of 3; plan: 3 placements per mass (group members take turns)', r.w===5 && r.g.length===1 && r.g[0][1]==='nominal' && r.g[0][2]===3 && JSON.stringify(r.plan)==='[["Empty platform",3],["100 g weight A",1],["100 g weight B",1],["100 g weight C",1],["200 g weight",3]]', JSON.stringify(r)); }
+  { const r = J(`(()=>{wizNew();wizSimpleSetWeights(parseWeightSpec('2 x 50 g, 4 x 10 g').items);return wizPlan().map(p=>p.req)})()`);
+    ok('X8 Simple plan: 2 members -> 2 + 1 placements, 4 members -> 1 each for the first three only', JSON.stringify(r)==='[3,1,1,1,0,2,1]', JSON.stringify(r)); }
+  { R(`wizNew();wizSimpleSetWeights(parseWeightSpec('3 x 100 g, 1 x 200 g').items);wizRender();`);
+    ok('X8 Simple: the next placement is proposed automatically (first load with missing placements)', R(`wiz.selLoad`)==='load-empty');
+    // record the full plan through the real measurement machinery (10 s fixed = 800 samples each)
+    R(`wiz.open=true; wiz.tab='observations'; for(let i=0;i<100;i++)appendSample(nextSensorValue());`);
+    R(`wizRecord()`); ok('X8 Simple: recording length is fixed at 10 s (800 samples) whatever wiz.captureSeconds says', R(`state.measurement&&state.measurement.target`)===800 && R(`wizMode`)==='simple'); }
+  { // plain verdicts
+    const v = s => R(`wizPlainVerdict(${JSON.stringify(s)})`);
+    ok('X8 plain-language verdicts: settled / still drifting / vibration / not analysed', v({status:'ok'})==='settled' && /still drifting/.test(v({status:'invalid',flagged:['Level step']})) && /vibration/.test(v({status:'suspect',flagged:['Vibration']})) && v({status:'n/a'})==='not analysed' && /not usable/.test(v({status:'invalid',flagged:['Allan deviation']}))); }
+  { // automatic model choice
+    R = await load(); R(`wizMode='simple'; wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION))); wiz.sensorId=activeSensor.id; wiz.rateHz=80;`);
+    ok('X8 Simple chooses a straight line for the (nearly linear) demo data and uses shrinkage weights', R(`wizBuild().model`)==='linear' && R(`wizBuild().fit.weighting.requested`)==='shrinkage');
+    R(`wiz.observations.find(o=>o.observationId==='obs-200-A-01').rawMean=5700`);
+    ok('X8 Simple falls back to point-to-point lines when the line misses an observation by > 0.5 % of the span', R(`wizBuild().model`)==='anchors');
+    R(`wizMode='advanced'; wiz.fitModel='poly2'`); ok('X8 Advanced uses the user\'s model choice', R(`wizBuild().model`)==='poly2'); 
+    R(`wizMode='simple'; wiz.tab='fit'; wizRender()`); ok('X8 Simple has no Fit tab (a stored "fit" tab shows the Finish step)', /Step 3 of 3/.test(R(`wq('wizBody').innerHTML`))); 
+    for (const t of ['weights','observations','review']) ok(`X8 Simple tab "${t}" renders without error`, (()=>{ try { R(`wiz.tab='${t}';wizRender();wq('wizBody').innerHTML.length`); return true; } catch(e){ console.log(e); return false; } })()); }
+  { R = await load(); R(`wizMode='simple'; wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wizSimpleSetWeights(parseWeightSpec('3 x 100 g').items);`);
+    R(`wiz.observations.push({observationId:'o1',loadId:'load-100g-A',rawMean:5000,include:false,exclusionReason:'validity check: invalid',validity:{status:'invalid',flagged:['Allan deviation'],analysis:null},placementIndex:1,removedAndReplaced:true,sampleCount:800}); wiz.tab='observations';`);
+    const h2 = R(`wizSimpleMeasure()`);
+    ok('X8 Simple: an unusable observation offers "include anyway"; the click records the override', /data-wa="inclAnyway"/.test(h2) && (R(`wizOnClick({target:{closest:()=>({dataset:{wa:'inclAnyway',i:'0'}})}})`),R(`wiz.observations[0].include&&wiz.observations[0].override.reason`)==='included anyway by user')); }
+  // ---- wizard mode in ui-settings.json ----------------------------------------------------------------------------------------------
+  R = await load();
+  ok('X9 ui settings: wizardMode defaults to "simple", accepts "advanced", rejects other values', J(`sanitizeUiSettings({schemaVersion:1}).value.wizardMode`)==='simple' && J(`sanitizeUiSettings({schemaVersion:1,wizardMode:'advanced'}).value.wizardMode`)==='advanced' && J(`sanitizeUiSettings({schemaVersion:1,wizardMode:'pro'}).errors.length`)===1);
+  R(`globalThis.__ls={};globalThis.localStorage={getItem:k=>(k in __ls?__ls[k]:null),setItem:(k,v)=>{__ls[k]=String(v)},removeItem:k=>{delete __ls[k]}};wizMode='advanced';uiLocalWrite(collectUiSettings());wizMode='simple';applyUiSettings(uiLocalRead())`);
+  ok('X9 the wizard mode is saved with the other UI settings and restored from them', R(`wizMode`)==='advanced' && J(`uiLocalRead().wizardMode`)==='advanced');
+  await R(`uiResetLocal()`); ok('X9 "Reset UI settings" returns the wizard to Simple mode', R(`wizMode`)==='simple');
+  ok('X9 changing the mode switch autosaves it (control is in the stored-controls list)', /new Set\(\['wizMode'/.test(code));
 
   console.log(fails? `\n${fails} FAILED` : '\nall passed');
   process.exitCode = fails?1:0;
