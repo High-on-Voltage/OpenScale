@@ -647,6 +647,361 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
   await R(`uiResetLocal()`); ok('X9 "Reset UI settings" returns the wizard to Simple mode', R(`wizMode`)==='simple');
   ok('X9 changing the mode switch autosaves it (control is in the stored-controls list)', /new Set\(\['wizMode'/.test(code));
 
+  // ===== v14 ======================================================================================
+  // ---- Y: uncertainty maths ----------------------------------------------------------------------
+  R = await load();
+  ok('Y1 t factor: 7 dof = 2.365 (about 2.4), 1 dof = 12.706, infinity -> 1.96, fewer than 1 dof is treated as 1', near(R(`tFactor(7)`),2.365,1e-9) && near(R(`tFactor(1)`),12.706,1e-9) && near(R(`tFactor(1e9)`),1.96,1e-3) && R(`tFactor(0.3)`)===12.706 && R(`tFactor(Infinity)`)===1.96);
+  ok('Y1 t factor: non-integer dof lies between its neighbours; more dof -> smaller factor (more placements narrow the interval)', R(`tFactor(2.5)`)<4.303 && R(`tFactor(2.5)`)>3.182 && R(`tFactor(35)`)<2.042 && R(`tFactor(35)`)>2.021 && R(`tFactor(2)`)>R(`tFactor(5)`) && R(`tFactor(5)`)>R(`tFactor(30)`));
+  { const f = s => R(`weightStdUncertaintyMg(${s})`);
+    ok('Y2 certificate: u = U / k (0.2 mg, k = 2 -> 0.1 mg); default k = 2', near(f(`{unit:'g',massUncertainty:{value:0.2,unit:'mg',basis:'certificate',coverageFactor:2}}`),0.1,1e-12) && near(f(`{unit:'g',massUncertainty:{value:0.2,unit:'mg',basis:'certificate'}}`),0.1,1e-12) && near(f(`{unit:'g',massUncertainty:{value:0.3,unit:'mg',basis:'certificate',coverageFactor:3}}`),0.1,1e-12));
+    ok('Y2 class tolerance / own estimate: rectangular, u = limit / sqrt 3 (0.0005 g = 0.5 mg -> 0.2887 mg)', near(f(`{unit:'g',massUncertainty:{value:0.0005,unit:'g',basis:'class-tolerance'}}`),0.5/Math.sqrt(3),1e-12) && near(f(`{unit:'g',massUncertainty:{value:0.5,unit:'mg',basis:'user-estimate'}}`),0.5/Math.sqrt(3),1e-12));
+    ok('Y2 nothing typed / basis none / blank / negative -> null (weight is "not traceable")', f(`{unit:'g'}`)===null && f(`{unit:'g',massUncertainty:{value:1,unit:'mg',basis:'none'}}`)===null && f(`{unit:'g',massUncertainty:{value:'',unit:'mg',basis:'class-tolerance'}}`)===null && f(`{unit:'g',massUncertainty:{value:-1,unit:'mg',basis:'class-tolerance'}}`)===null);
+    ok('Y2 a weight without its own unit uses the weight unit', near(f(`{unit:'mg',massUncertainty:{value:3,basis:'class-tolerance'}}`),3/Math.sqrt(3),1e-12)); }
+  { const r = J(`(()=>{const c=combineUncertainties([{u:3,dof:5},{u:4,dof:Infinity}]);const one=combineUncertainties([{u:2,dof:7}]);return {u:c.u,dof:c.dof,k:c.k,U:c.U,oneDof:one.dof,oneU:one.U,inf:combineUncertainties([{u:1,dof:Infinity}]).k}})()`);
+    ok('Y3 root-sum-of-squares and Welch-Satterthwaite: u = 5, dof = 5^4 / (3^4 / 5) = 38.6, k from the t table; a single component keeps its dof', near(r.u,5,1e-12) && near(r.dof,625/(81/5),1e-9) && near(r.U,r.k*5,1e-12) && r.k>1.96 && r.k<2.05 && near(r.oneDof,7,1e-9) && near(r.oneU,2*2.365,1e-9) && r.inf===1.96, JSON.stringify(r)); }
+  // fit leverage: closed form of the standard error of a regression line
+  const REPL = `(()=>{const offs=[[-0.6,0.5],[0.4,-0.7],[0.9,-0.2],[-0.3,0.8],[0.2,-0.9]],p=[];[0,50,100,150,200].forEach((g,k)=>offs[k].forEach((d,q)=>p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+d,n:400})));return p})()`;
+  { const r = J(`(()=>{const p=${REPL},f=fitCalibration(p,'linear');const xs=p.map(q=>q.massMg),n=xs.length,xb=xs.reduce((a,b)=>a+b)/n,sxx=xs.reduce((a,x)=>a+(x-xb)**2,0),s=f.sdRawRes;
+      const out=[];for(const m of [0,70000,100000,200000,260000]){out.push(f.seRawAt(m)-s*Math.sqrt(1/n+(m-xb)**2/sxx));}return {out,dof:f.dof,sd:f.sdRawAt(10000)-s}})()`);
+    ok('Y4 straight line, equal weights: standard error of the fitted curve = s sqrt(1/n + (x - xbar)^2 / Sxx) at every mass (also outside the range); placement scatter = s', r.out.every(d=>near(d,0,1e-9,1e-9)) && r.dof===8 && near(r.sd,0,1e-9,1e-9), JSON.stringify(r)); }
+  { const r = J(`(()=>{${RNG13}const p=[];for(let k=0;k<6;k++){const g=k*40;for(let q=0;q<3;q++)p.push({id:'o'+k+'_'+q,massMg:g*1000,raw:5000+4*g+(0.3+0.05*g)*gauss(),n:400});}
+      const f=fitCalibration(p,'linear',{weighting:'variance-model'});const sg=new Map(f.weighting.sigmaPerMass.map(s=>[fitKey(s.massMg),s.sigma]));
+      const w0=p.map(q=>1/sg.get(fitKey(q.massMg))**2),mw=w0.reduce((a,b)=>a+b)/w0.length,w=w0.map(v=>v/mw),sw=w.reduce((a,b)=>a+b),xb=p.reduce((s,q,i)=>s+w[i]*q.massMg,0)/sw,sxx=p.reduce((s,q,i)=>s+w[i]*(q.massMg-xb)**2,0);
+      let ss=0;f.residuals.forEach((r,i)=>{ss+=w[i]*r.resRaw**2});const s2=ss/f.dof;const o=[];for(const m of [0,90000,240000])o.push(f.seRawAt(m)-Math.sqrt(s2*(1/sw+(m-xb)**2/sxx)));return {o,scheme:f.weighting.scheme}})()`);
+    ok('Y4 weighted line (variance model): standard error = sqrt(s2 (1/sum w + (x - xbar_w)^2 / Sxx_w)) with weights normalised to mean 1', r.scheme==='variance-model' && r.o.every(d=>near(d,0,1e-9,1e-9)), JSON.stringify(r)); }
+  { const r = J(`(()=>{const p=${REPL},f=fitCalibration(p,'anchors'),rs=replicateSigmas(p,f.groups);const a=f.groups;const seA=rs.sigma[1]/Math.sqrt(2),seB=rs.sigma[2]/Math.sqrt(2);const mid=(a[1].massMg+a[2].massMg)/2;
+      return {dA:f.seRawAt(a[1].massMg)-seA,dMid:f.seRawAt(mid)-Math.sqrt((0.5*seA)**2+(0.5*seB)**2),dSd:f.sdRawAt(mid)-0.5*(rs.sigma[1]+rs.sigma[2]),dof:f.dof,pooled:rs.pooled>0}})()`);
+    ok('Y4 piecewise model: error of the replicate mean at an anchor = sigma_k / sqrt(n_k); between anchors the two independent means are mixed linearly (root-sum-of-squares)', near(r.dA,0,1e-9,1e-9) && near(r.dMid,0,1e-9,1e-9) && near(r.dSd,0,1e-9,1e-9) && r.dof===5 && r.pooled, JSON.stringify(r)); }
+  { const r = J(`(()=>{const p=[];[0,100,200].forEach((g,k)=>p.push({id:'x'+k,massMg:g*1000,raw:5000+4*g,n:400}));const f=fitCalibration(p,'anchors'),l=fitCalibration(p,'linear');return {aHas:!!f.seRawAt,lHas:!!l.seRawAt,ldof:l.dof}})()`);
+    ok('Y4 without replicates the piecewise model has no placement scatter at all; a line through single placements has a standard error only if dof > 0', r.aHas===false && r.lHas===true && r.ldof===1); }
+  // leave-one-out
+  { const r = J(`(()=>{const p=${REPL};const l=looResiduals(p,'linear'),f=fitCalibration(p,'linear');
+      // for a least-squares line: e_loo = r / (1 - h) with the leverage h = 1/n + (x-xbar)^2/Sxx
+      const xs=p.map(q=>q.massMg),n=xs.length,xb=xs.reduce((a,b)=>a+b)/n,sxx=xs.reduce((a,x)=>a+(x-xb)**2,0);
+      const d=p.map((q,i)=>{const h=1/n+(q.massMg-xb)**2/sxx;return l[i].looRaw-f.residuals[i].resRaw/(1-h)});
+      const a=looResiduals(p,'anchors');const g=p.filter(q=>q.massMg===50000);const exp0=g[0].raw-g[1].raw;
+      return {d,dA:a[2].looRaw-exp0,n:l.length,mm:l[0].looMassMg-l[0].looRaw/f.slopeAt(p[0].massMg)}})()`);
+    ok('Y5 leave-one-out residual of a least-squares line equals r / (1 - leverage) (hat-matrix identity)', r.d.every(x=>near(x,0,1e-9,1e-9)) && r.n===10, JSON.stringify(r.d.slice(0,3)));
+    ok('Y5 leave-one-out for the piecewise model with 2 placements: predicted by the other placement of the same mass', near(r.dA,0,1e-9,1e-9), String(r.dA)); }
+  { const r = J(`(()=>{const p=[{id:'a',massMg:0,raw:1,n:1},{id:'b',massMg:1000,raw:2,n:1}];return looResiduals(p,'linear')})()`);
+    ok('Y5 leave-one-out never throws: not enough masses left -> null', r.every(x=>x.looRaw===null)); }
+  // calibration-side uncertainty block
+  const WSET = (tol, extra='') => `(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.observations=[];const pat=[0.5,-0.5,0.4],off={'ref-100-A':-3,'ref-100-B':0,'ref-100-C':3};let n=1;
+      const add=(wid,load,base)=>{for(let q=0;q<3;q++)wiz.observations.push({observationId:'x'+(n++),loadId:load,rawMean:base+(off[wid]||0)+pat[q],include:true,sampleCount:400,placementIndex:q+1,removedAndReplaced:q>0,validity:{status:'ok',flagged:[],analysis:null}});};
+      add('ref-empty','load-empty',4600);for(const l of ['A','B','C'])add('ref-100-'+l,'load-100-'+l,5000);add('ref-200-A','load-200-A',5400);${tol};${extra};
+      const f=fitCalibration(wizPoints(wiz).points,'linear');return {f,p:buildUncertaintyProfile(wiz,f,null)}})()`;
+  R = await load();
+  { R(`globalThis.__u=${WSET('')}`);
+    const r = J(`(()=>{const p=__u.p;const w=p.components.find(c=>c.id==='weight-tolerance');return {st:p.status,tr:p.traceable,basis:p.basis,wInc:w.included,notInc:p.notIncluded,nt:p.combined.table.length,dof:p.dof,k:p.k.value,cov:p.coverageProbability,validationKept:true}})()`);
+    ok('Y6 no weight tolerance typed: block is "estimated", not traceable, basis repeatability; weight component left out and listed as not included', r.st==='estimated' && r.tr===false && r.basis==='repeatability' && r.wInc===false && r.notInc.includes('weight tolerance') && r.notInc.includes('hysteresis') && r.notInc.includes('temperature') && r.notInc.includes('creep') && r.notInc.includes('off-centre loading') && r.notInc.includes('drift between calibration and use') && r.nt>=21 && r.cov===0.95, JSON.stringify(r));
+    const m = J(`(()=>{const u=computeUncertainty(__u.p,{massMg:100000,sigmaMg:20,neff:25,sigmaCounts:0.1,slopeMgPerCount:250});return {st:u.status,ids:u.components.map(c=>c.id),lab:u.label,U:u.expandedMg,uc:u.combinedMg,k:u.k,dof:u.dof,rssOk:Math.abs(u.combinedMg-Math.sqrt(u.components.reduce((s,c)=>s+c.uMg**2,0)))<1e-9,noise:u.components.find(c=>c.id==='reading-noise').uMg,res:u.components.find(c=>c.id==='resolution').uMg}})()`);
+    ok('Y6 measurement: components = placement repeatability, object placement, reading noise (sigma / sqrt n_eff = 4 mg), resolution (one count = 250 mg, not dithered: 250 / sqrt 12 = 72 mg); label "estimated, repeatability only, not traceable"; U = k u_c', m.st==='ok' && m.ids.join()==='placement-repeatability,object-placement,reading-noise,resolution' && m.lab==='estimated, repeatability only, not traceable' && near(m.noise,4,1e-12) && near(m.res,250/Math.sqrt(12),1e-12) && m.rssOk && near(m.U,m.k*m.uc,1e-12) && m.dof>1 && m.dof<1e6, JSON.stringify(m));
+    const d = J(`(()=>{const u=computeUncertainty(__u.p,{massMg:100000,sigmaMg:20,neff:25,sigmaCounts:2,slopeMgPerCount:250});return u.components.find(c=>c.id==='resolution').uMg-250/Math.sqrt(12)/5})()`);
+    ok('Y6 reading noise above one count dithers the quantisation: resolution term is divided by sqrt n_eff', near(d,0,1e-9,1e-9));
+    const q = J(`(()=>{const u=computeUncertainty(__u.p,{massMg:100000,sigmaMg:20,neff:null,sigmaCounts:0.1,slopeMgPerCount:250});return {n:u.components.find(c=>c.id==='reading-noise').uMg,note:u.components.find(c=>c.id==='reading-noise').note}})()`);
+    ok('Y6 unknown n_eff (too few samples): the conservative choice n_eff = 1 is used and said so', near(q.n,20,1e-12) && /unknown/.test(q.note));
+    const lo = J(`(()=>{const a=computeUncertainty(__u.p,{massMg:100000,sigmaMg:0.001,neff:50,sigmaCounts:5,slopeMgPerCount:1});const b=computeUncertainty(__u.p,{massMg:100000,sigmaMg:0.001,neff:50,sigmaCounts:5,slopeMgPerCount:1});return a.expandedMg===b.expandedMg&&a.expandedMg>0})()`);
+    ok('Y6 deterministic and positive', lo); }
+  { const none = J(`computeUncertainty(null,{massMg:1,sigmaMg:1,neff:5})`), bad = J(`computeUncertainty({status:'not-estimable',reason:'no replicates'},{massMg:1,sigmaMg:1,neff:5})`);
+    ok('Y6 a calibration without an uncertainty block (e.g. the embedded demo) or a non-estimable block gives no number, only the reason', none.status==='unavailable' && /holds no repeatability/.test(none.reason) && bad.status==='unavailable' && bad.reason==='no replicates'); }
+  { R(`globalThis.__u=${WSET("for(const w of wiz.weights)if(w.weightId!=='ref-empty')w.massUncertainty={value:0.5,unit:'mg',basis:'class-tolerance'}")}`);
+    const r = J(`(()=>{const p=__u.p,w=p.components.find(c=>c.id==='weight-tolerance'),at=m=>w.table.find(t=>Math.abs(t.massMg-m)<1e-6);return {inc:w.included,basis:p.basis,u0:at(0).uMg,u100:at(100000).uMg,u200:at(200000).uMg,note:w.note,tab:w.table.length,lab:computeUncertainty(p,{massMg:100000,sigmaMg:5,neff:30,sigmaCounts:2,slopeMgPerCount:250}).label}})()`);
+    const u1 = 0.5/Math.sqrt(3);
+    ok('Y7 typed class tolerance 0.5 mg on every weight: empty platform 0; one 200 g weight = u = 0.2887 mg; THREE independent 100 g weights = u / sqrt 3 = 0.1667 mg (placements of the same weight do not reduce it)', r.inc && near(r.u0,0,1e-12,1e-12) && near(r.u200,u1,1e-9) && near(r.u100,u1/Math.sqrt(3),1e-9) && r.tab===3, JSON.stringify(r));
+    ok('Y7 the common-bias caveat is part of the stored note; label becomes "estimated, not traceable"; basis names the weights', /shared by ALL the weights/.test(r.note) && r.lab==='estimated, not traceable' && r.basis==='repeatability+weight-tolerances'); }
+  { R(`globalThis.__u=${WSET("for(const w of wiz.weights)if(w.weightId!=='ref-empty')w.massUncertainty={value:0.5,unit:'mg',basis:'class-tolerance'};wiz.weights.find(w=>w.weightId==='ref-100-B').massUncertainty=null")}`);
+    const r = J(`(()=>{const p=__u.p,w=p.components.find(c=>c.id==='weight-tolerance');return {inc:w.included,note:w.note,lab:computeUncertainty(p,{massMg:100000,sigmaMg:5,neff:30,sigmaCounts:2,slopeMgPerCount:250}).label,notInc:p.notIncluded.includes('weight tolerance')}})()`);
+    ok('Y7 one weight without a typed tolerance: the whole component is left out (never half-included), the label stays "repeatability only"', !r.inc && /left out/.test(r.note) && /repeatability only/.test(r.lab) && r.notInc, JSON.stringify(r)); }
+  { const r = J(`(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.observations=wiz.observations.filter(o=>o.observationId!=='obs-100-B-01'&&o.observationId!=='obs-100-C-01');const f=fitCalibration(wizPoints(wiz).points,'anchors');const p=buildUncertaintyProfile(wiz,f,null);return {st:p.status,reason:p.reason,comps:p.components.length,u:computeUncertainty(p,{massMg:1,sigmaMg:1,neff:3}).status}})()`);
+    ok('Y7 one placement per mass (piecewise model): repeatability cannot be estimated -> "not-estimable" with a reason, and no number is ever shown', r.st==='not-estimable' && /placed more than once/.test(r.reason) && r.comps===0 && r.u==='unavailable', JSON.stringify(r)); }
+  { const r = J(`(()=>{const hi=buildUncertaintyProfile(wiz,fitCalibration(wizPoints(wiz).points,'linear'),null);return 1})()`); }
+  // hysteresis maths
+  { const r = J(`(()=>{const P=[];const add=(g,dir,d)=>P.push({massMg:g*1000,raw:4600+4*g+d,direction:dir});add(0,'up',0);add(0,'down',0);add(100,'up',0);add(100,'up',0.4);add(100,'down',3);add(100,'down',3.4);add(200,'up',0);add(200,'down',5);add(150,null,9);add(150,'up',1);
+      const h=hysteresisAnalysis(P,m=>0.004);return {n:h.levels.length,d:h.levels.map(l=>l.diffMg),dc:h.levels.map(l=>l.diffCounts),max:h.maxAbsDiffMg,se:h.levels[1].seMg,none:hysteresisAnalysis([{massMg:1,raw:1,direction:'up'}],()=>1)}})()`);
+    ok('Y8 hysteresis: per mass mean(down) - mean(up) in counts and mg (3.0 counts / 0.004 per mg = 750 mg); levels without both directions and observations without direction are ignored; none -> null', r.n===3 && near(r.dc[1],3.0,1e-9) && near(r.d[1],750,1e-9) && near(r.d[2],1250,1e-9) && near(r.d[0],0,1e-9,1e-9) && near(r.max,1250,1e-9) && r.se>0 && r.none===null, JSON.stringify(r)); }
+  // ---- bands --------------------------------------------------------------------------------------
+  R = await load();
+  { const r = J(`(()=>{const v=[...Array(70).fill(100),...Array(10).fill(0)],s=bandStats(v,'mean','symmetric',{}),a=bandStats(v,'mean','asymmetric',{}),w=bandStats(v,'mean','stepaware',{});
+      const f=10/80,H=100,expUp=H*(1-f+Math.sqrt(f*(1-f)));let mx=0,mf=0;for(let k=1;k<1000;k++){const q=k/1000,y=1-q+Math.sqrt(q*(1-q));if(y>mx){mx=y;mf=q}}
+      return {symUp:s.upper,expUp,asUp:a.upper,asLo:a.lower,asVal:a.value,wStart:w.start,mx,mf}})()`);
+    ok('Y9 handout formula: after a down-step with 10 of 80 new samples the symmetric upper edge is H (1 - f + sqrt(f(1-f))) = 120.6 % of the old level; the maximum is 1.207 H at f = 0.146', near(r.symUp,r.expUp,1e-9) && r.symUp>100 && near(r.mx,1.2071,1e-3) && near(r.mf,0.146,2e-3), JSON.stringify(r));
+    ok('Y9 asymmetric band cannot exceed the old level after a down-step: upper = mean of the samples above the mean = 100 exactly, lower = 0', near(r.asUp,100,1e-12) && near(r.asLo,0,1e-12) && near(r.asVal,87.5,1e-12)); }
+  { const r = J(`(()=>{${RNG13}const noise=()=>gauss();
+      const stepV=[...Array.from({length:70},()=>noise()),...Array.from({length:10},()=>10+noise())],flat=Array.from({length:80},()=>noise()),ramp=Array.from({length:80},(_,i)=>0.25*i+noise()),down=[...Array.from({length:68},()=>10+noise()),...Array.from({length:12},()=>noise())];
+      const s=bandStats(stepV,'mean','stepaware',{}),f=bandStats(flat,'mean','stepaware',{}),rp=bandStats(ramp,'mean','stepaware',{}),d=bandStats(down,'mean','stepaware',{}),sym=bandStats(down,'mean','symmetric',{}),med=bandStats(stepV,'median','stepaware',{}),short=bandStats(stepV.slice(30,50),'mean','stepaware',{}),ema=bandStats(stepV,'ema','stepaware',{});
+      return {sStart:s.start,sVal:s.value,sUp:s.upper,fStart:f.start,rStart:rp.start,dStart:d.start,dVal:d.value,dUp:d.upper,symUp:sym.upper,mStart:med.start,mVal:med.value,shortStart:short.start,emaStart:ema.start}})()`);
+    ok('Y10 step-aware: a clean 10 sigma step is found (window restarts at about sample 70) and the band sits on the NEW level (no overshoot into the old one)', Math.abs(r.sStart-70)<=3 && Math.abs(r.sVal-10)<1 && r.sUp<10+3.5, JSON.stringify(r));
+    ok('Y10 step-aware: white noise and a slow ramp do not restart the window (a ramp is a trend, not a step)', r.fStart===0 && r.rStart===0, JSON.stringify({f:r.fStart,r:r.rStart}));
+    ok('Y10 step-aware after a DOWN-step: the symmetric band overshoots above the old level, the step-aware one stays at the new level + 3 sigma', r.symUp>10+2 && r.dUp<3.5 && Math.abs(r.dVal-0)<1 && Math.abs(r.dStart-68)<=3, JSON.stringify({sym:r.symUp,up:r.dUp,start:r.dStart}));
+    ok('Y10 step-aware works for the median too; windows shorter than the analysis minimum and EMA estimators are not restarted', Math.abs(r.mStart-70)<=3 && Math.abs(r.mVal-10)<1 && r.shortStart===0 && r.emaStart===0); }
+  // ---- authentication ---------------------------------------------------------------------------------------
+  ok('Y11 base64 matches RFC 7617 example (Aladdin:open sesame) and Node for padding lengths 0, 1, 2 and non-ASCII text', R(`basicAuthHeader('Aladdin','open sesame')`)==='Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==' && ['a:b','ab:c','abc:d','user:pässword €','']  .every(s=>{const [u,...p]=s.split(':');return R(`basicAuthHeader(${JSON.stringify(u)},${JSON.stringify(p.join(':'))})`)==='Basic '+Buffer.from(s.includes(':')?s:u+':','utf8').toString('base64')}));
+  // ---- history helpers ----------------------------------------------------------------------------------------
+  { const r = J(`(()=>{const ex={t:[],raw:[],id:[]};for(let i=1000;i<1010;i++){ex.t.push(i*12.5);ex.raw.push(5000+i%7);ex.id.push(i)}
+      const inc={t:[],raw:[],id:[]};for(let i=995;i<1005;i++){inc.t.push(i*12.5);inc.raw.push(9000);inc.id.push(i)}
+      const m=mergeSampleLists(ex,inc);const noId=mergeSampleLists({t:[0,10],raw:[1,2],id:[NaN,NaN]},{t:[10,5,20],raw:[9,3,4],id:[NaN,NaN,NaN]});
+      return {n:m.t.length,added:m.added,dup:m.duplicates,sorted:m.t.every((v,i)=>!i||v>m.t[i-1]),ids:m.id.join(),keptOld:m.raw[m.id.indexOf(1000)],newRaw:m.raw[0],noIdT:noId.t.join(),noIdDup:noId.duplicates}})()`);
+    ok('Y12 merge: ids 995..1004 into 1000..1009 -> 5 added, 5 duplicates, ascending, existing samples win; without ids duplicates are found by time', r.n===15 && r.added===5 && r.dup===5 && r.sorted && r.ids==='995,996,997,998,999,1000,1001,1002,1003,1004,1005,1006,1007,1008,1009' && r.keptOld===5000+1000%7 && r.newRaw===9000 && r.noIdT==='0,5,10,20' && r.noIdDup===1, JSON.stringify(r)); }
+  { const ids=[1,2,4000000000],ts=[10,20,4000000001],raws=[-5,2147483647,-2147483648],b=R(`encodeHistoryBinary(${JSON.stringify(ids)},${JSON.stringify(ts)},${JSON.stringify(raws)})`);
+    const dec = J(`decodeHistoryBinary(new Uint8Array(${JSON.stringify(Array.from(new Uint8Array(b)))}))`);
+    ok('Y12 proposed binary layout (HIST, v1, count, 12-byte records) round-trips including the u32 and i32 extremes; 12 bytes per sample', JSON.stringify(dec.id)===JSON.stringify(ids) && JSON.stringify(dec.t)===JSON.stringify(ts) && JSON.stringify(dec.raw)===JSON.stringify(raws) && b.byteLength===12+36);
+    const bad = s => R(`(()=>{try{${s};return 'accepted'}catch(e){return e.message}})()`);
+    ok('Y12 bad magic, unknown version and truncated chunks are rejected with a reason', /bad magic/.test(bad(`decodeHistoryBinary(new Uint8Array(20))`)) && /truncated/.test(bad(`const b=new Uint8Array(encodeHistoryBinary([1,2],[1,2],[1,2]));decodeHistoryBinary(b.slice(0,b.length-4))`)) && /version/.test(bad(`const b=new Uint8Array(encodeHistoryBinary([1],[1],[1]));b[4]=9;decodeHistoryBinary(b)`)));
+    const j1 = J(`decodeHistoryJson({samples:[{n:5,t:10,raw:1.4},{n:6,t:20,raw:2}]})`), j2 = J(`decodeHistoryJson({ids:[7,8],t:[1,2],raw:[3,4]})`), j3 = J(`decodeHistoryJson([{n:9,t:5,raw:6}])`), j4 = J(`decodeHistoryJson(null)`);
+    ok('Y12 JSON chunks: {samples:[{n,t,raw}]}, {ids,t,raw} and bare arrays are accepted; nonsense gives an empty chunk', j1.id.join()==='5,6' && j1.raw.join()==='1,2' && j2.id.join()==='7,8' && j3.id.join()==='9' && j4.id.length===0); }
+
+  // ---- Z: window seconds, ± lines, bands in the curve --------------------------------------------------------------
+  R = await load();
+  R(`state.window=state.activeWindow=80; syncWindowSeconds();`);
+  ok('Z1 window length also in seconds (samples / rate): 80 samples at 80 Hz = 1 s', R(`$('windowSeconds').value`)===1 && R(`$('windowRateText').textContent`)==='80');
+  R(`setMovingAverageWindow(40,true,false,false)`); ok('Z1 changing the samples updates the seconds', R(`$('windowSeconds').value`)===0.5);
+  R(`$('windowSeconds').value='7'; setMovingAverageWindow(Math.round(0.25*RATE_HZ),true,false,true)`); ok('Z1 typing seconds sets the samples (0.25 s = 20) without overwriting what is being typed', R(`state.window`)===20 && R(`$('windowSeconds').value`)==='7');
+  R(`RATE_HZ=10;PERIOD_MS=100;state.window=80;syncWindowSeconds()`); ok('Z1 a 10 Hz sensor: 80 samples = 8 s', R(`$('windowSeconds').value`)===8);
+  R = await load();
+  R(`state.window=state.activeWindow=80; for(let i=0;i<500;i++) appendSample(5000); for(let i=0;i<40;i++) appendSample(5100); updateMetrics();`);
+  { const b = J(`(()=>{const L=state.count-1,lo=L-79;let mn=Infinity,mx=-Infinity;for(let i=lo;i<=L;i++){const v=getMassMA(i);mn=Math.min(mn,v);mx=Math.max(mx,v);}return {range:mx-mn,text:$('pmStab').textContent,sig:$('pmSigma').textContent,mean:$('pmMean').textContent,st:windowStability(false,0).range}})()`);
+    ok('Z2 stability = max - min of the DISPLAYED value over the last window: 40 samples at +100 counts = +50 counts = 12.5 g (250 mg per count) while the window slides', near(b.range,12500,1e-9,1e-6) && near(b.st,b.range,1e-9,1e-6) && /moved/.test(b.text) && /moved 1[23] g/.test(b.text), JSON.stringify(b));
+    ok('Z2 three "±" lines exist: spread σ, σ/√n_eff of the average, stability; n_eff is shown with n', /^σ /.test(b.sig) && /±avg/.test(b.mean) && /n_eff ≈ [\d.]+ of 80/.test(b.mean), b.mean); }
+  { R = await load();
+    R(`state.simMode='quiet';state.window=state.activeWindow=200; for(let i=0;i<1000;i++) appendSample(nextSensorValue()); updateMetrics();`);
+    const a = J(`(()=>{const L=state.count-1,x=new Float64Array(200);for(let j=0;j<200;j++)x[j]=getNetMg(L-199+j);const ac=analysisAutocorr(x,50),sd=getMassSD(L);return {neff:ac.neff,txt:$('pmMean').textContent,sd,exp:sd/Math.sqrt(ac.neff)}})()`);
+    const mm = a.txt.match(/±avg ([\d.,]+) (\w+)/);
+    ok('Z2 ±avg = σ / sqrt(n_eff) with n_eff from the autocorrelation of the window (quiet signal: n_eff close to n)', a.neff>100 && !!mm && Math.abs(Number(mm[1].replace(',','.'))*1000-a.exp)/a.exp<0.2, a.txt+' expected '+a.exp.toFixed(2)+' mg');
+    R(`state.window=state.activeWindow=30; updateMetrics()`); ok('Z2 a window shorter than the analysis minimum says what it needs', /needs ≥ 64 samples/.test(R(`$('pmMean').textContent`))); }
+  { R = await load();
+    R(`state.window=state.activeWindow=80; for(let i=0;i<300;i++) appendSample(5100); for(let i=0;i<10;i++) appendSample(5000);`);
+    const r = J(`(()=>{const L=state.count-1,v=[];for(let j=L-79;j<=L;j++)v.push(getNetMg(j));const o={};
+      for(const m of ['symmetric','asymmetric','stepaware']){bandMode=m;state.curveCache={key:'',map:new Map()};const c=buildEstimatorCurve(L,L,false),d=bandStats(v,'mean',m,{});o[m]={u:c.upper(L)-d.upper,l:c.lower(L)-d.lower,c:c.center(L)-d.value,up:c.upper(L)};}
+      bandMode='symmetric';const base=getMassMA(L)+getMassSD(L);return {o,base,old:getNetMg(0)}})()`);
+    ok('Z3 chart curve = bandStats of the window for every mode (and the default is still centre ± SD from the O(1) rolling values)', ['symmetric','asymmetric','stepaware'].every(m=>near(r.o[m].u,0,1e-9,1e-6)&&near(r.o[m].l,0,1e-9,1e-6)&&near(r.o[m].c,0,1e-9,1e-6)) && near(r.o.symmetric.up,r.base,1e-9,1e-6), JSON.stringify(r.o));
+    ok('Z3 after a down-step of 100 counts the symmetric band overshoots the old level; asymmetric stays at the old level (upper = old level)', r.o.symmetric.up>r.old+1 && near(r.o.asymmetric.up,r.old,1e-9,1e-6), `old ${r.old} sym ${r.o.symmetric.up} asym ${r.o.asymmetric.up}`); }
+  { R = await load();
+    R(`state.window=state.activeWindow=80; for(let i=0;i<400;i++) appendSample(5000+(i%5)-2); state.live=false; state.viewMin=getTime(0); state.viewMax=newestTime();`);
+    const r = J(`(()=>{const o={};for(const m of ['symmetric','asymmetric','stepaware']){setBandMode(m);const d=buildVisibleData();o[m]={n:d[0].length,fin:Array.from(d[3]).every(Number.isFinite)&&Array.from(d[4]).every(Number.isFinite),ordered:Array.from(d[3]).every((v,i)=>v>=d[4][i]-1e-9),stride:state.curveStride};}
+      setBandMode('bogus');return {o,back:bandMode,lab:[setBandMode('asymmetric'),bandLabels()][1]}})()`);
+    ok('Z3 every band mode produces finite, ordered upper/lower series over a whole view; an unknown mode falls back to symmetric; labels follow the mode', ['symmetric','asymmetric','stepaware'].every(m=>r.o[m].fin&&r.o[m].ordered&&r.o[m].n>300) && r.back==='symmetric' && /mean of samples above/.test(r.lab[0]), JSON.stringify(r)); }
+  { const s = x => J(`sanitizeUiSettings(${x})`);
+    ok('Z4 UI settings: bandMode default symmetric, accepts the three modes, rejects others (additive key, schemaVersion stays 1)', s(`{schemaVersion:1}`).value.bandMode==='symmetric' && s(`{schemaVersion:1,bandMode:'stepaware'}`).value.bandMode==='stepaware' && s(`{schemaVersion:1,bandMode:'x'}`).errors.length===1 && J(`UI_DEFAULTS.schemaVersion`)===1);
+    R(`globalThis.__ls={};globalThis.localStorage={getItem:k=>(k in __ls?__ls[k]:null),setItem:(k,v)=>{__ls[k]=String(v)},removeItem:k=>{delete __ls[k]}};setBandMode('asymmetric');uiLocalWrite(collectUiSettings());setBandMode('symmetric');applyUiSettings(uiLocalRead())`);
+    ok('Z4 the band mode is stored with the UI settings, restored from them and reset by "Reset UI settings"', R(`bandMode`)==='asymmetric' && (await R(`uiResetLocal().then(()=>bandMode)`))==='symmetric'); }
+  // ---- Z: spans ------------------------------------------------------------------------------------------------------
+  ok('Z5 duration text: 0.3 s, 12.5 s, 3.0 min', R(`fmtSpan(0.3)`)==='0.30 s' && R(`fmtSpan(12.5)`)==='12.5 s' && R(`fmtSpan(180)`)==='3.0 min' && R(`fmtSpan(NaN)`)==='—');
+  R = await load(); R(`state.window=state.activeWindow=80; for(let i=0;i<300;i++) appendSample(5000); state.nextTime+=5000; for(let i=0;i<200;i++) appendSample(5000); updateMetrics()`);
+  { R(`selectInterval(getTime(250),getTime(349))`); const t = R(`$('selectionSummary').innerHTML`); R(`state.measurement=null`);
+    ok('Z5 with a gap the duration shown is the real time span, not samples / rate', /selected samples<\/strong> · [\d.]+ s/.test(t) && J(`(()=>{const s=state.selection;return (s.t1-s.t0+PERIOD_MS)/1000})()`)>5, t.slice(0,120)); }
+  // ---- Z: wizard end to end with uncertainty -------------------------------------------------------------------------------------
+  const WIZ_FILL = (tol, dirs) => `(()=>{wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='linear';wiz.observations=[];const pat=[0.5,-0.5,0.4],off={'ref-100-A':-3,'ref-100-B':0,'ref-100-C':3};let n=1;
+      const add=(wid,load,base,dir,dd)=>{for(let q=0;q<3;q++)wiz.observations.push({observationId:'x'+(n++),loadId:load,rawMean:base+(off[wid]||0)+pat[q]+(dir==='down'?dd:0),include:true,sampleCount:400,durationMs:5000,placementIndex:q+1,removedAndReplaced:q>0,loadingDirection:dir,validity:{status:'ok',flagged:[],analysis:null}});};
+      for(const dir of ${dirs}){add('ref-empty','load-empty',4600,dir,0);for(const l of ['A','B','C'])add('ref-100-'+l,'load-100-'+l,5000,dir,3);add('ref-200-A','load-200-A',5400,dir,5);}${tol};})()`;
+  R = await load();
+  R(WIZ_FILL(`for(const w of wiz.weights)if(w.weightId!=='ref-empty')w.massUncertainty={value:0.5,unit:'mg',basis:'class-tolerance'}`,`[null]`));
+  { const r = J(`(()=>{const b=wizBuild(),c=b.cfg;return {err:b.errors,unc:c.uncertainty.status,basis:c.uncertainty.basis,trace:c.uncertainty.traceable,val:c.validation.status,mu:c.referenceWeights.filter(w=>w.massUncertainty).map(w=>[w.weightId,w.massUncertainty.basis,w.massUncertainty.unit,w.massUncertainty.standardUncertaintyMg,w.massUncertainty.distribution]),v:validateCalibrationConfig(c).errors.length,warn:b.warnings.map(w=>w.code)}})()`);
+    ok('Z6 file: separate "uncertainty" block (estimated, not traceable, basis incl. weight tolerances) next to validation.status "not-characterized"; typed tolerances written per weight with the standard uncertainty; file validates', r.err.length===0 && r.unc==='estimated' && r.basis==='repeatability+weight-tolerances' && r.trace===false && r.val==='not-characterized' && r.mu.length===4 && r.mu[0][1]==='class-tolerance' && near(r.mu[0][3],0.5/Math.sqrt(3),1e-9) && r.mu[0][4]==='rectangular' && r.v===0 && !r.warn.includes('noTolerance'), JSON.stringify(r));
+    const act = await R(`wizActivate().then(()=>JSON.stringify({msg:wiz.message,hasUnc:!!state.calConfig.uncertainty,prep:!!calibration.uncertainty,st:calibration.uncertainty&&calibration.uncertainty.status}))`);
+    ok('Z6 activation carries the uncertainty block into the active (prepared) calibration', JSON.parse(act).hasUnc && JSON.parse(act).prep && JSON.parse(act).st==='estimated', act);
+    R(`state.simMode='quiet'; state.window=state.activeWindow=400; resizeBuffers(20000); for(let i=0;i<50;i++)appendSample(5000); $('measSamples').value=400; startMeasurement(); for(let i=0;i<400;i++)appendSample(5000+((i*7)%5)-2);`);
+    const m = J(`(()=>{const e=state.lastMeasurement,u=e.uncertainty;return {st:u&&u.status,lab:u&&u.label,U:u&&u.expandedMg,ids:u&&u.components.map(c=>c.id).join(),txt:$('measUnc').innerHTML,line:state.logs.find(l=>l.type==='measurement')&&uncertaintyLineText(state.logs.find(l=>l.type==='measurement').uncertainty),mass:u&&u.massMg,tip:describeEventHTML(e)}})()`);
+    ok('Z6 a finished measurement carries "± U (estimated, not traceable)" with the 5 components (placement, object, reading noise, resolution, weight tolerance); shown in the card, the log row and the event tooltip', m.st==='ok' && m.lab==='estimated, not traceable' && m.U>0 && m.ids==='placement-repeatability,object-placement,reading-noise,resolution,weight-tolerance' && /±/.test(m.txt) && /not traceable/.test(m.txt) && /±/.test(m.line) && /not traceable/.test(m.tip), JSON.stringify({st:m.st,lab:m.lab,U:m.U,ids:m.ids}));
+    ok('Z6 absolute mass of the result is used for the table lookup (5000 counts = 100 g)', near(m.mass,100000,1e-3,50), String(m.mass));
+    ok('Z6 the status line under the cards describes the estimated uncertainty and what is not included', /estimated from this calibration/.test(R(`(updateMetrics(),$('uncertaintyStatus').textContent)`)) && /creep/.test(R(`$('uncertaintyStatus').textContent`))); }
+  { R = await load(); R(WIZ_FILL(`0`,`[null]`));
+    const r = J(`(()=>{const b=wizBuild();return {basis:b.cfg.uncertainty.basis,warn:b.warnings.map(w=>w.code),plain:b.warnings.find(w=>w.code==='noTolerance').plain}})()`);
+    ok('Z6 no tolerance typed: warning "noTolerance" (plain wording) and basis "repeatability"', r.basis==='repeatability' && r.warn.includes('noTolerance') && /Type the weights’ tolerance/.test(r.plain), JSON.stringify(r)); }
+  { R = await load(); R(`wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)));wiz.sensorId=activeSensor.id;wiz.rateHz=80;wiz.fitModel='anchors';wiz.observations=wiz.observations.filter(o=>o.observationId!=='obs-100-B-01'&&o.observationId!=='obs-100-C-01')`);
+    const r = J(`(()=>{const b=wizBuild();return {err:b.errors.length,st:b.cfg.uncertainty.status,w:b.warnings.some(w=>w.code==='uncertainty'),v:validateCalibrationConfig(b.cfg).errors.length}})()`);
+    ok('Z6 a calibration whose repeatability cannot be estimated is still written (valid), marked "not-estimable", with a warning', r.err===0 && r.st==='not-estimable' && r.w && r.v===0, JSON.stringify(r)); }
+  // old / imported files keep working
+  { R = await load(); const u = J(`computeUncertainty(calibration.uncertainty,{massMg:1,sigmaMg:1,neff:5})`);
+    ok('Z6 the embedded demo calibration has no uncertainty block: results say why there is no ± instead of inventing one', u.status==='unavailable'); 
+    R(`for(let i=0;i<300;i++)appendSample(5000);selectInterval(getTime(50),getTime(250))`); ok('Z6 a selection under such a calibration shows the reason, no number', /not estimated/.test(R(`$('selectionSummary').innerHTML`)) && !/ ± [\d.]+ g/.test(R(`$('selectionSummary').innerHTML`))); }
+  // ---- Z: hysteresis through the wizard ------------------------------------------------------------------------------------------------
+  R = await load(); R(WIZ_FILL(`0`,`['up','down']`));
+  { const r = J(`(()=>{const b=wizBuild(),c=b.cfg,h=c.reserved.hysteresisAnalysis;return {err:b.errors,dir:c.reserved.loadingDirection,use:c.fit.hysteresisUse,levels:h.levels.map(l=>[l.massMg,l.nUp,l.nDown,l.diffCounts]),dMg:h.levels.map(l=>l.diffMg),obsDir:c.observations.map(o=>o.loadingDirection).filter((v,i,a)=>a.indexOf(v)===i),n:b.fit.n,hc:c.uncertainty.components.find(x=>x.id==='hysteresis'),basis:c.uncertainty.basis,notInc:c.uncertainty.notIncluded.includes('hysteresis')}})()`);
+    ok('Z7 observations carry loadingDirection; the file reports reserved.loadingDirection "both" and a hysteresisAnalysis (mean down - mean up per mass); the fit uses all 30 observations (mean path)', r.err.length===0 && r.dir==='both' && r.use==='both' && r.obsDir.join()==='up,down' && r.n===30 && r.levels.length===3, JSON.stringify(r));
+    ok('Z7 differences: 0 counts at the empty platform, 3 counts at 100 g and 5 counts at 200 g (and 750 mg / 1250 mg with 4 counts per g)', near(r.levels[0][3],0,1e-9,1e-9) && near(r.levels[1][3],3,1e-9) && near(r.levels[2][3],5,1e-9) && r.levels[1][1]===9 && near(r.dMg[1],750,0.01) && near(r.dMg[2],1250,0.01), JSON.stringify(r.levels));
+    ok('Z7 hysteresis enters the uncertainty as its own component (rectangular, |diff| / 2 / sqrt 3), is no longer in the not-included list, and the label says so', r.hc.included && r.basis==='repeatability+hysteresis' && !r.notInc, JSON.stringify(r.hc && r.hc.included));
+    R(`wiz.hysteresisUse='up'`);
+    const u = J(`(()=>{const b=wizBuild();return {n:b.fit.n,dir:b.cfg.reserved.loadingDirection,inc:b.cfg.uncertainty.components.find(x=>x.id==='hysteresis').included,w:b.warnings.some(w=>w.code==='hystOne'),hy:!!b.cfg.reserved.hysteresisAnalysis}})()`);
+    ok('Z7 "up only": the fit uses just the 15 up observations, the hysteresis is still reported but not included in the uncertainty (warning)', u.n===15 && u.dir==='up' && !u.inc && u.w && u.hy, JSON.stringify(u));
+    R(`wiz.hysteresisUse='both'; wizLoadFromConfig(JSON.parse(JSON.stringify(wizBuild().cfg)))`);
+    ok('Z7 round trip: directions survive writing and loading the file', R(`wiz.observations.filter(o=>o.loadingDirection==='down').length`)===15 && R(`wiz.hysteresisUse`)==='both'); }
+  { R = await load(); R(WIZ_FILL(`0`,`[null]`)); const r = J(`(()=>{const b=wizBuild();return {dir:b.cfg.reserved.loadingDirection,h:b.cfg.reserved.hysteresisAnalysis}})()`);
+    ok('Z7 without any direction the file keeps "not-determined" and no analysis', r.dir==='not-determined' && r.h===null); }
+  // ---- Z: simple mode: placements, return run, tolerance ----------------------------------------------------------------------
+  R = await load(); R(`wizMode='simple'; wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wizSimpleSetWeights(parseWeightSpec('3 x 100 g, 1 x 200 g').items);`);
+  { const pl = n => { R(`wiz.placements=${n}`); return J(`wizPlan().map(p=>p.req)`); };
+    ok('Z8 placements per mass: default 3; 5 -> empty 5, 100 g weights 2+2+1, 200 g 5; limited to 2..10', JSON.stringify(pl(3))==='[3,1,1,1,3]' && JSON.stringify(pl(5))==='[5,2,2,1,5]' && R(`(wiz.placements=1,wizPlacements())`)===2 && R(`(wiz.placements=99,wizPlacements())`)===10 && R(`(wiz.placements='x',wizPlacements())`)===3); 
+    R(`wiz.placements=3`); R(`wizOnChange({target:{dataset:{w:'placements'},type:'number',value:'7'}})`); ok('Z8 the setting is a wizard setting, not a UI setting (not in ui-settings, not in the file)', R(`wiz.placements`)===7 && !('placements' in J(`collectUiSettings()`)) && !JSON.stringify(J(`wizBuild().cfg||{}`)).includes('placements'));
+    const hint = R(`wizPlacementsHint()`); ok('Z8 hint teaches the t factor: more placements -> smaller k', /k = \d\.\d\d \(2 placements: \d\.\d\d, 5 placements: \d\.\d\d, 10 placements: \d\.\d\d\)/.test(hint) && Number(hint.match(/2 placements: (\d\.\d\d)/)[1])>Number(hint.match(/10 placements: (\d\.\d\d)/)[1]), hint);
+    R(`wiz.placements=3`); }
+  { R(`wiz.returnRun=true`); const down = J(`wizPlanDown().map(p=>[p.load.name,p.req,p.direction])`);
+    ok('Z8 return run: one placement per mass level, heaviest first, ending with the empty platform; the 100 g level uses one of its weights', down.length===3 && down[0][0]==='200 g weight' && /^100 g weight/.test(down[1][0]) && down[2][0]==='Empty platform' && down.every(d=>d[1]===1&&d[2]==='down'), JSON.stringify(down));
+    R(`wiz.open=true;wiz.tab='observations';for(let i=0;i<100;i++)appendSample(nextSensorValue());`);
+    // fill the way up directly, then record the first "down" through the capture machinery
+    R(`for(const p of wizPlan())for(let k=0;k<p.req;k++)wiz.observations.push({observationId:'u'+wiz.observations.length,loadId:p.load.loadId,rawMean:5000,include:true,sampleCount:800,loadingDirection:'up',validity:{status:'ok',flagged:[],analysis:null},placementIndex:1})`);
+    const nx = J(`(()=>{const n=wizFullPlan().find(r=>r.done<r.req);return [n.load.name,n.direction]})()`); ok('Z8 after the way up the next placement is the first one on the way down (200 g)', nx[0]==='200 g weight' && nx[1]==='down', JSON.stringify(nx));
+    R(`wizRecord(); for(let i=0;i<800;i++)appendSample(nextSensorValue());`);
+    const last = J(`(()=>{const o=wiz.observations[wiz.observations.length-1];return [o.loadingDirection,o.loadId]})()`); ok('Z8 the recording gets direction "down" from the plan', last[0]==='down' && last[1]==='load-200g', JSON.stringify(last));
+    R(`wiz.returnRun=false;wiz.observations=[];`); R(`wizRecord(); for(let i=0;i<800;i++)appendSample(nextSensorValue());`); ok('Z8 without a return run no direction is invented', R(`wiz.observations[0].loadingDirection`)===null); }
+  { const p = s => J(`parseWeightSpec(${JSON.stringify(s)})`), a = p('3 x 100 g ±0.5 mg, 1 x 200 g +-1 mg, 2 x 50 g ± 0.001'), b = p('3 x 100 g ±0.5 mg, 100 g ±0.5 mg, 100 g'), c = p('100 g ±1 furlong');
+    ok('Z9 tolerance syntax: "3 x 100 g ±0.5 mg" (also +- and a bare number in the weight unit); equal masses merge only with equal tolerance; unknown tolerance unit is an error', JSON.stringify(a.items[0])==='{"qty":3,"value":100,"unit":"g","tol":{"value":0.5,"unit":"mg"}}' && a.items[1].tol.unit==='mg' && a.items[2].tol.unit==='g' && a.items[2].tol.value===0.001 && b.items.length===2 && b.items[0].qty===4 && c.errors.length===1, JSON.stringify(a.items)); 
+    R = await load(); R(`wizMode='simple'; wizNew(); wizSimpleSetWeights(parseWeightSpec('3 x 100 g ±0.5 mg, 1 x 200 g').items)`);
+    const w = J(`wiz.weights.map(x=>[x.name,x.massUncertainty&&x.massUncertainty.value,x.massUncertainty&&x.massUncertainty.unit])`);
+    ok('Z9 Simple weights get the typed tolerance (class tolerance); untoleranced ones stay untyped; a group with a tolerance has its own group id', w.filter(x=>x[1]===0.5&&x[2]==='mg').length===3 && w.filter(x=>x[1]===null||x[1]===undefined).length===2 && R(`wiz.groups[0].groupId`).includes('-t0p5mg'), JSON.stringify(w)); }
+  // ---- Z: Advanced inputs, report, panes --------------------------------------------------------------------------------------
+  R = await load(); R(WIZ_FILL(`wiz.weights[1].massUncertainty={value:0.3,basis:'certificate'}`,`['up','down']`)); R(`wizMode='advanced'`);
+  { R(`wizOnChange({target:{dataset:{w:'weight',i:'2',f:'uncValue'},type:'number',value:'0.5'}})`); R(`wizOnChange({target:{dataset:{w:'weight',i:'2',f:'uncBasis'},type:'select-one',value:'user-estimate'}})`);
+    const a = J(`wiz.weights[2].massUncertainty`); R(`wizOnChange({target:{dataset:{w:'weight',i:'2',f:'uncBasis'},type:'select-one',value:'none'}})`);
+    ok('Z10 Advanced inputs: typing a tolerance defaults the basis to class tolerance; the basis can be changed; "none" removes it', a.basis==='user-estimate' && a.value===0.5 && R(`wiz.weights[2].massUncertainty`)===null);
+    R(`wizOnChange({target:{dataset:{w:'profile',i:'0',f:'temperatureC'},type:'number',value:'21.5'}});wizOnChange({target:{dataset:{w:'profile',i:'0',f:'humidityPercent'},type:'number',value:'45'}});wizOnChange({target:{dataset:{w:'profile',i:'0',f:'warmUpMinutes'},type:'number',value:'15'}})`);
+    const c = J(`(()=>{const b=wizBuild().cfg;return [b.environment.temperatureC,b.environment.relativeHumidityPercent,b.reserved.warmUpDurationSeconds]})()`);
+    ok('Z10 environment fields: temperature, humidity and warm-up (min -> s) are written to the file; empty means null', c[0]===21.5 && c[1]===45 && c[2]===900 && J(`(()=>{wiz.profile.temperatureC='';return wizBuild().cfg.environment.temperatureC})()`)===null);
+    R(`wizLoadFromConfig(JSON.parse(JSON.stringify(wizBuild().cfg)))`);
+    ok('Z10 environment and tolerances survive a round trip through the file', R(`wiz.profile.humidityPercent`)===45 && R(`wiz.profile.warmUpMinutes`)===15 && R(`wiz.weights[1].massUncertainty.basis`)==='certificate' && R(`wiz.weights[1].massUncertainty.value`)===0.3); }
+  { const rep = J(`wizFitReport()`), txt = R(`wizFitReportText(wizFitReport())`);
+    ok('Z11 full fit report: model comparison, residuals with leave-one-out, weight groups, hysteresis, uncertainty, warnings; text version with the same sections', rep.comparison.length===4 && rep.residuals.length===30 && rep.residuals.every(r=>r.looResidualCounts!==null) && rep.hysteresis.levels.length===3 && rep.uncertainty.status==='estimated' && Array.isArray(rep.warnings) && /# Fit report/.test(txt) && /## Model comparison/.test(txt) && /leave-one-out/.test(txt) && /## Hysteresis/.test(txt) && /## Uncertainty \(estimated/.test(txt), Object.keys(rep).join());
+    R(`globalThis.__dl=[];downloadBlob=(b,n)=>__dl.push([n,b.parts?b.parts.join(''):'']);Blob=class{constructor(p){this.parts=p}};wizOnClick({target:{closest:()=>({dataset:{wa:'exportReport'}})}});wizOnClick({target:{closest:()=>({dataset:{wa:'exportReportText'}})}})`);
+    const dl = J(`__dl.map(d=>d[0])`); ok('Z11 export buttons download fit-report-….json and .md', dl.length===2 && /fit-report-.*\.json$/.test(dl[0]) && /\.md$/.test(dl[1]) && JSON.parse(R(`__dl[0][1]`)).residuals.length===30); }
+  for (const mode of ['advanced','simple']) for (const t of ['weights','observations','fit','review'])
+    ok(`Z12 ${mode} tab "${t}" renders (uncertainty, hysteresis, leave-one-out, direction, tolerance columns)`, (()=>{ try { R(`wizMode='${mode}';wiz.tab='${t}';wizRender();wq('wizBody').innerHTML.length`); return true; } catch(e){ console.log(e); return false; } })());
+  { R(`wizMode='advanced';wiz.tab='fit';wizRender()`); const h = R(`wq('wizBody').innerHTML`);
+    ok('Z12 fit pane shows loading-direction choice, hysteresis table, uncertainty table with k and U, leave-one-out columns and the export buttons', /Loading directions used/.test(h) && /Hysteresis: mean\(down\)/.test(h) && /Estimated uncertainty \(/.test(h) && /U = k u/.test(h) && /Leave-one-out/.test(h) && /exportReport/.test(h));
+    R(`wiz.tab='weights';wizRender()`); const w = R(`wq('wizBody').innerHTML`); ok('Z12 weights pane has tolerance / basis columns and environment fields', /± U \/ tolerance/.test(w) && /Warm-up before measuring/.test(w) && /certificate \(± U, coverage factor k\)/.test(w));
+    R(`wizMode='simple';wiz.tab='observations';wizRender()`); }
+  { R = await load(); R(WIZ_FILL(`0`,`[null]`)); R(`wizMode='simple';wiz.tab='review';wizRender()`);
+    ok('Z12 Simple finish: one plain sentence with the typical ± and the "repeatability only, not traceable" label', /Typical uncertainty of a weighing/.test(R(`wq('wizBody').innerHTML`)) && /repeatability only, not traceable/.test(R(`wq('wizBody').innerHTML`))); }
+
+  // ===== v14: sample ids, history, gaps ==========================================================================================
+  const HSETUP = async (opts='') => { const r = await load();
+    r(`globalThis.__es=[];globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0;this.closed=false;__es.push(this)}close(){this.closed=true}};
+       globalThis.__calls=[];globalThis.__hist={min:1,max:100000,type:'application/json'};
+       globalThis.fetch=async(url,init)=>{__calls.push([url,init]);const a=+/from_id=(\\d+)/.exec(url)[1],b=+/to_id=(\\d+)/.exec(url)[1];if(__hist.fail)throw new Error('boom');const ids=[];for(let n=Math.max(a,__hist.min);n<=Math.min(b,__hist.max);n++)ids.push(n);
+         if(__hist.type==='bin')return{ok:true,status:200,headers:{get:()=>'application/octet-stream'},arrayBuffer:async()=>encodeHistoryBinary(ids,ids.map(n=>1e9+n*12.5),ids.map(n=>5000+n%7))};
+         return{ok:true,status:200,headers:{get:()=>'application/json'},json:async()=>({samples:ids.map(n=>({n,t:1e9+n*12.5,raw:5000+n%7}))})};};
+       globalThis.msgN=(id,n0,cnt)=>JSON.stringify(Array.from({length:cnt},(_,k)=>({id,t:1e9+(n0+k)*12.5,raw:5000+((n0+k)%7),n:n0+k})));
+       applySensorList([{id:'a',name:'A',sseUrl:'/s1'${opts}}]);`);
+    return r; };
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  { R = await HSETUP();
+    R(`handleSseMessage('/s1',msgN('a',1000,100))`);
+    ok('H1 live samples keep their id n; the first live id is remembered; ids are stored per sample', R(`sensors.get('a').firstLiveId`)===1000 && R(`sensors.get('a').state.count`)===100 && R(`withState(sensors.get('a').state,()=>[getId(0),getId(99),lastStoredId(state)])`).join()==='1000,1099,1099');
+    R(`handleSseMessage('/s1',msgN('a',1050,10))`); ok('H1 a resent id (not newer than the last stored) is rejected, counted', R(`sensors.get('a').state.count`)===100 && R(`sensors.get('a').state.rejected`)===10);
+    R(`handleSseMessage('/s1',msgN('a',1110,5))`);
+    ok('H1 a jump in the ids (1100..1109 missing) is noticed as a gap; without a history server it stays what it is: a gap in the timestamps', R(`sensors.get('a').gapCount`)===10 && R(`sensors.get('a').gaps[0].status`)==='no history server' && R(`sensors.get('a').state.count`)===105);
+    R(`setSensorPaused(sensors.get('a'),true); setSensorPaused(sensors.get('a'),false); handleSseMessage('/s1',msgN('a',1300,5))`);
+    ok('H1 data thrown away while paused is not a gap to refill: the first sample after resume is the new baseline', R(`sensors.get('a').gapCount`)===10 && R(`sensors.get('a').state.count`)===110);
+    ok('H1 samples without ids (old format) keep working: no gaps, NaN ids', (()=>{R(`handleSseMessage('/s1',JSON.stringify([{id:'a',t:1e9+1400*12.5,raw:5000},{id:'a',t:1e9+1401*12.5,raw:5000}]))`);return R(`sensors.get('a').state.count`)===112 && Number.isNaN(R(`lastStoredId(sensors.get('a').state)`))})()); }
+  { R = await HSETUP();   // merge into a SHOWN sensor
+    R(`handleSseMessage('/s1',msgN('a',1000,100)); activateSensor('a'); state.window=state.activeWindow=80; rebuildDerived(); state.live=false; state.viewMin=oldestTime(); state.viewMax=newestTime();`);
+    const hist = (a,b) => `{id:${JSON.stringify(Array.from({length:b-a+1},(_,k)=>a+k))},t:${JSON.stringify(Array.from({length:b-a+1},(_,k)=>1e9+(a+k)*12.5))},raw:${JSON.stringify(Array.from({length:b-a+1},(_,k)=>5000+((a+k)%7)))}}`;
+    const r1 = J(`mergeHistory(sensors.get('a'),${hist(900,999)})`);
+    const chk = J(`withState(sensors.get('a').state,()=>{const s=[];let sorted=true,contig=true,cal=true;for(let i=0;i<state.count;i++){if(i&&getTime(i)<=getTime(i-1))sorted=false;if(getId(i)!==900+i)contig=false;if(getMassMg(i)!==calibrateAbsolute(getRaw(i)).valueMg)cal=false;}
+      const L=state.count-1,probe=[0,40,79,80,120,L];let worst=0;for(const i of probe){const a=Math.max(0,i-79);let sm=0,n=0;for(let j=a;j<=i;j++){sm+=getNetMg(j);n++}worst=Math.max(worst,Math.abs(getMassMA(i)-sm/n));}
+      const m=buildMiniData();return {count:state.count,sorted,contig,cal,worst,t0:getTime(0),tl:getTime(99),mini:m[0].length>0&&Array.from(m[0]).every((v,i)=>!i||v>=m[0][i-1]),old:oldestTime()}})`);
+    ok('H2 prepending 100 older samples: 200 samples, ids 900..1099 contiguous, time ascending (the older ones before the stream origin have negative times), calibrated like new samples', r1.added===100 && r1.dropped===0 && chk.count===200 && chk.sorted && chk.contig && chk.cal && chk.t0<0 && Math.abs(chk.tl-(-12.5))<1e-9, JSON.stringify({r1,chk:{count:chk.count,t0:chk.t0}}));
+    ok('H2 after the merge the rolling mean (window 80) is exact at the very first, the boundary and the newest samples (derived arrays rebuilt), and the navigator data is valid', chk.worst<1e-6 && chk.mini, 'worst '+chk.worst);
+    const r2 = J(`mergeHistory(sensors.get('a'),${hist(950,1010)})`); ok('H2 an overlapping chunk is deduplicated by id: nothing added, 61 duplicates', r2.added===0 && r2.duplicates===61 && R(`sensors.get('a').state.count`)===200);
+    R(`state.selection=null;state.live=true;`); R(`handleSseMessage('/s1',msgN('a',1100,20))`); ok('H2 live samples keep flowing into the merged buffer (ids continue, 220 samples)', R(`withState(sensors.get('a').state,()=>[state.count,getId(state.count-1)])`).join()==='220,1119');
+    ok('H2 the caches were reset: the chart curve can be built over the whole merged range', (()=>{try{R(`state.live=false;state.viewMin=oldestTime();state.viewMax=newestTime();buildVisibleData()[0].length`);return R(`buildVisibleData()[0].length`)>=200}catch(e){console.log(e);return false}})()); }
+  { R = await HSETUP();   // buffer limit
+    R(`handleSseMessage('/s1',msgN('a',1000,950)); withState(sensors.get('a').state,()=>resizeBuffers(1000));`);
+    const h = (a,b) => `{id:${JSON.stringify(Array.from({length:b-a+1},(_,k)=>a+k))},t:${JSON.stringify(Array.from({length:b-a+1},(_,k)=>1e9+(a+k)*12.5))},raw:${JSON.stringify(Array.from({length:b-a+1},()=>5000))}}`;
+    const r = J(`mergeHistory(sensors.get('a'),${h(900,999)})`);
+    ok('H3 buffer limit 1000: 950 live + 100 history -> the newest 1000 samples are kept, the 50 oldest history samples are dropped', r.dropped===50 && r.count===1000 && R(`withState(sensors.get('a').state,()=>[getId(0),getId(999)])`).join()==='950,1949');
+    R(`withState(sensors.get('a').state,()=>{state.unlimited=true;})`); const u = J(`mergeHistory(sensors.get('a'),${h(800,899)})`);
+    ok('H3 unlimited buffer: it grows in 100,000-sample steps instead of dropping', u.dropped===0 && u.count===1100 && R(`sensors.get('a').state.capacity`)===100000, JSON.stringify(u)); }
+  { R = await HSETUP(`,historyUrl:'/hist'`);   // gap filling through the server
+    R(`handleSseMessage('/s1',msgN('a',1,50)); handleSseMessage('/s1',msgN('a',70,51)); __hist.min=1;`); await sleep(40);
+    const g = J(`(()=>{const s=sensors.get('a');return {status:s.gaps.map(x=>x.status),ids:withState(s.state,()=>{const o=[];for(let i=0;i<state.count;i++)o.push(getId(i));return o}),req:__calls.map(c=>c[0]),hdr:__calls.map(c=>c[1]&&c[1].headers)}})()`);
+    const wanted = Array.from({length:120},(_,k)=>k+1);
+    ok('H4 gap 51..69 is requested as an id range and merged into the middle of the buffer: 120 contiguous samples, gap status "filled"', g.status.join()==='filled' && JSON.stringify(g.ids.filter(v=>v>=1))===JSON.stringify(wanted.filter(v=>v>=1)) && g.req.some(u=>/sensor=a&from_id=51&to_id=69/.test(u)), JSON.stringify({s:g.status,n:g.ids.length,req:g.req}));
+    ok('H4 a history request is a READ: no Authorization header, no password in the URL', g.hdr.every(h=>!h||!('Authorization' in h)) && g.req.every(u=>!/password|Authorization/i.test(u)));
+    const t = J(`withState(sensors.get('a').state,()=>{let sorted=true;for(let i=1;i<state.count;i++)if(!(getTime(i)>getTime(i-1)))sorted=false;const a=analyzeInterval(0,state.count);return {sorted,gaps:a.checks.find(c=>c.id==='gaps').verdict,detail:a.checks.find(c=>c.id==='gaps').detail}})`);
+    ok('H4 after filling, time is strictly ascending and the gap check (timestamps AND the id counter) finds nothing', t.sorted && t.gaps==='ok', JSON.stringify(t)); }
+  { R = await HSETUP(`,historyUrl:'/hist'`);   // server only has part of the gap / nothing
+    R(`__hist.min=1; __hist.max=60; handleSseMessage('/s1',msgN('a',1,50)); handleSseMessage('/s1',msgN('a',70,10));`); await sleep(40);
+    ok('H4 a gap the server can only partly fill: "partly filled", the rest stays an explicit gap', R(`sensors.get('a').gaps[0].status`)==='partly filled' && R(`sensors.get('a').gaps[0].got`)===10);
+    R(`__hist.max=0; handleSseMessage('/s1',msgN('a',90,10));`); await sleep(40);
+    const s2 = J(`(()=>{const s=sensors.get('a');return {st:s.gaps[s.gaps.length-1].status,gaps:withState(s.state,()=>analyzeInterval(0,state.count)).checks.find(c=>c.id==='gaps')}})()`);
+    ok('H4 ids the server no longer has: the gap stays, status says so, and the validity checks report it (timestamps + id counter)', /not available/.test(s2.st) && s2.gaps.verdict!=='ok' && /jump/.test(s2.gaps.detail), JSON.stringify(s2)); }
+  { R = await HSETUP(`,historyUrl:'/hist'`);   // initial history: chunked, backwards, stops at the server start
+    R(`__hist.min=1; handleSseMessage('/s1',msgN('a',12000,100));`); await sleep(120);
+    const r = J(`(()=>{const s=sensors.get('a');return {st:s.history.status,loaded:s.history.loaded,count:s.state.count,req:__calls.map(c=>/from_id=(\\d+)&to_id=(\\d+)/.exec(c[0]).slice(1).join('-')),first:withState(s.state,()=>getId(0))}})()`);
+    ok('H5 on the first live sample the UI loads the older history by itself: chunks of 5,000 going backwards (7000-11999, 2000-6999, 0-1999), then stops', r.req.slice(0,3).join()==='7000-11999,2000-6999,0-1999' && r.count===12099 && r.first===1 && /^complete/.test(r.st) && r.loaded===11999, JSON.stringify(r));
+    R(`__calls.length=0`); const again = await R(`historyLoadOlder(sensors.get('a')).then(h=>h.status)`); ok('H5 loading again finds nothing older and stops without looping', /^complete/.test(again) && R(`__calls.length`)<=1, again); }
+  { R = await HSETUP(`,historyUrl:'/hist'`); R(`__hist.type='bin'; sensors.get('a').history.autoStarted=true; handleSseMessage('/s1',msgN('a',500,20));`);
+    const st = await R(`historyLoadOlder(sensors.get('a')).then(h=>h.status+'|'+h.loaded)`);
+    ok('H5 binary chunks (application/octet-stream, HIST layout) are decoded and merged exactly like JSON', /^complete/.test(st) && R(`sensors.get('a').state.count`)===519, st);
+    R = await HSETUP(`,historyUrl:'/hist'`); R(`sensors.get('a').history.autoStarted=true; __hist.fail=true; handleSseMessage('/s1',msgN('a',500,20));`);
+    ok('H5 a failing server gives status "error" with the message and does not break the sensor', (await R(`historyLoadOlder(sensors.get('a')).then(h=>h.status+'|'+h.error)`))==='error|boom' && R(`sensors.get('a').state.count`)===20);
+    R = await HSETUP(); ok('H5 without a history URL nothing is requested and the status says so', (await R(`historyLoadOlder(sensors.get('a')).then(h=>h.status)`))==='not configured' && R(`historyStatusText(sensors.get('a'))`)==='no history server configured' && R(`__calls.length`)===0);
+    R = await HSETUP(`,historyUrl:'/hist'`); R(`sensors.get('a').history.autoStarted=true; handleSseMessage('/s1',msgN('a',5000,600)); withState(sensors.get('a').state,()=>resizeBuffers(1000));`);
+    const full = await R(`historyLoadOlder(sensors.get('a')).then(h=>h.status)`);
+    ok('H5 history stops when the buffer is full (request sized to the room that is left: 400 samples), nothing is thrown away', full==='buffer full' && R(`sensors.get('a').state.count`)===1000 && /from_id=4600&to_id=4999/.test(R(`__calls[0][0]`)), full + ' ' + R(`__calls[0][0]`)); }
+  { R = await HSETUP(); R(`handleSseMessage('/s1',msgN('a',1000,50)); activateSensor('a'); autoTare(); for(let i=0;i<10;i++)appendSample(5000,1e9*0+ (1050+i)*12.5 - 1000*12.5 + 1000*12.5 - 1e9*0 ,1050+i);`);
+    // hidden sensor with unprocessed samples + lazy sensor: merge must keep per-sample calibration and not crash
+    R(`applySensorList([{id:'b',name:'B',sseUrl:'/s1'}]); handleSseMessage('/s1',msgN('b',200,30));`);
+    const hh = J(`(()=>{const s=sensors.get('b');const r=mergeHistory(s,{id:[190,191],t:[1e9+190*12.5,1e9+191*12.5],raw:[5100,5101]});return {r,count:s.state.count,ready:s.state.derivedReady,un:s.state.unprocessed}})()`);
+    ok('H6 a sensor that was never shown (raw only) accepts history too; its samples are calibrated when it is shown', hh.r.added===2 && hh.count===32 && !hh.ready && (R(`activateSensor('b'); withState(sensors.get('b').state,()=>{let ok1=true;for(let i=0;i<state.count;i++)if(getMassMg(i)!==calibrateAbsolute(getRaw(i)).valueMg)ok1=false;return ok1})`)===true)); 
+    R(`activateSensor('a')`); R(`handleSseMessage('/s1',msgN('b',230,10))`); const hid = J(`(()=>{const s=sensors.get('b');const r=mergeHistory(s,{id:[150],t:[1e9+150*12.5],raw:[5000]});return {added:r.added,un:s.state.unprocessed,ok:withState(s.state,()=>{for(let i=0;i<state.count;i++)if(getMassMg(i)!==calibrateAbsolute(getRaw(i)).valueMg)return false;return true})}})()`);
+    ok('H6 a hidden sensor that already has processed data and unprocessed new samples: the merge finishes them and keeps every sample calibrated', hid.added===1 && hid.un===0 && hid.ok, JSON.stringify(hid)); }
+  { R = await HSETUP(); R(`handleSseMessage('/s1',msgN('a',1000,100)); activateSensor('a'); $('measSamples').value=200; startMeasurement(); handleSseMessage('/s1',msgN('a',1100,10));`);
+    const hist = `{id:[900,901],t:[${1e9}+900*12.5,${1e9}+901*12.5],raw:[5000,5000]}`;
+    R(`mergeHistory(sensors.get('a'),${hist})`); ok('H7 history older than a running measurement does not disturb it', R(`state.measurement!==null&&state.measurement.collected===10`));
+    R(`mergeHistory(sensors.get('a'),{id:[1105.5],t:[1e9+1105.5*12.5],raw:[5000]})`); ok('H7 a sample inserted INTO the measured interval cancels the measurement (it would change the sample count) and says why', R(`state.measurement===null&&state.logs.some(e=>e.type==='note'&&/history was inserted/.test(e.text))`)); }
+  { R = await HSETUP(); R(`handleSseMessage('/s1',msgN('a',1,100)); activateSensor('a'); resizeBuffers(1000); for(let i=0;i<2500;i++)appendSample(5000,(200+i)*12.5,101+i);`);
+    ok('H8 ids survive the ring buffer: wrapping and resizing keep them aligned with their samples', R(`[getId(0),getId(state.count-1),state.count].join()`)==='1601,2600,1000' && R(`(()=>{for(let i=1;i<state.count;i++)if(getId(i)!==getId(i-1)+1)return false;return true})()`));
+    const c = J(`(()=>{const ok1=analyzeInterval(0,state.count).checks.find(x=>x.id==='gaps');return {v:ok1.verdict,d:ok1.detail}})()`);
+    ok('H8 the device counter is passed to the validity checks: contiguous ids -> "counter: 0 jumps"', c.v==='ok' && /counter: 0 jumps/.test(c.d), JSON.stringify(c));
+    R(`resizeBuffers(5000);for(let i=0;i<30;i++)appendSample(5000,(2700+i)*12.5,2700+i)`); const d = J(`(()=>{const x=analyzeInterval(state.count-60,state.count).checks.find(y=>y.id==='gaps');return {v:x.verdict,d:x.detail}})()`);
+    ok('H8 dropped frames with uninterrupted timestamps (ids jump by 100) are caught through the counter alone', d.v==='suspect' && /counter: 1 jump/.test(d.d), JSON.stringify(d)); }
+
+  // ===== v14: authentication ===========================================================================================================
+  const ASETUP = async (status) => { const r = await load();
+    r(`globalThis.__ss={};globalThis.__ls={};globalThis.sessionStorage={getItem:k=>(k in __ss?__ss[k]:null),setItem:(k,v)=>{__ss[k]=String(v)},removeItem:k=>{delete __ss[k]}};
+       globalThis.localStorage={getItem:k=>(k in __ls?__ls[k]:null),setItem:(k,v)=>{__ls[k]=String(v)},removeItem:k=>{delete __ls[k]}};
+       globalThis.__w=[];globalThis.__prompts=0;globalThis.__answer={user:'admin',password:'s3cret',remember:false};globalThis.__need='s3cret';
+       authPromptImpl=async(msg)=>{__prompts++;globalThis.__lastMsg=msg;return __answer;};
+       globalThis.fetch=async(url,init)=>{__w.push([url,init]);const h=(init&&init.headers)||{};const need=__need;const ok1=!need||h['Authorization']===basicAuthHeader('admin',need);return{ok:ok1,status:ok1?200:401,headers:{get:()=>''}};};authInit();`);
+    return r; };
+  { R = await ASETUP(); R(`__need=null`);
+    const a = await R(`serverWrite('/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)`);
+    ok('A1 server without a password: the write goes through with no Authorization header and no dialog', a===200 && R(`__w.length`)===1 && !('Authorization' in R(`__w[0][1].headers`)) && R(`__prompts`)===0 && R(`__w[0][1].headers['Content-Type']`)==='application/json'); }
+  { R = await ASETUP();
+    const a = await R(`serverWrite('/settings',{method:'PUT',body:'{"x":1}'}).then(r=>r.status)`);
+    ok('A2 401 -> our dialog asks ONCE -> the write is retried with Authorization: Basic base64(user:password) -> success', a===200 && R(`__prompts`)===2-1 && R(`__w.length`)===2 && R(`__w[1][1].headers['Authorization']`)==='Basic '+Buffer.from('admin:s3cret').toString('base64') && R(`__w[1][1].body`)==='{"x":1}' && R(`__w[1][0]`)==='/settings');
+    ok('A2 the first attempt carried no credentials; the URL never contains the password', !('Authorization' in R(`__w[0][1].headers`)) && R(`__w.every(c=>!/s3cret|admin/.test(c[0]))`));
+    ok('A2 by default the password is kept for this tab only (sessionStorage), NOT on the device (localStorage)', /s3cret/.test(R(`__ss['massTelemetryWorkbench.auth.session']`)) && !('massTelemetryWorkbench.auth.remembered' in J(`__ls`)) && /this tab only/.test(R(`$('authInfo').textContent`)));
+    await R(`serverWrite('/settings2',{method:'PUT',body:'{}'}).then(r=>r.status)`); ok('A2 later writes send the header at once: no second dialog', R(`__prompts`)===1 && R(`__w[2][1].headers['Authorization']`)!==undefined && R(`__w.length`)===4-1);
+    R(`globalThis.__lastMsg=''`); R(`authInit()`); ok('A2 a reload of the tab (sessionStorage still there) restores the password', R(`authCred.password`)==='s3cret'); }
+  { R = await ASETUP(); R(`__answer={user:'admin',password:'wrong',remember:true}`);
+    const a = await R(`serverWrite('/settings',{method:'PUT',body:'{}'}).then(r=>r.status)`);
+    ok('A3 a wrong password: asked once, retried once, the 401 is handed back (no loop), and the wrong password is forgotten everywhere (even with "remember")', a===401 && R(`__prompts`)===1 && R(`__w.length`)===2 && R(`authCred`)===null && Object.keys(J(`__ss`)).length===0 && Object.keys(J(`__ls`)).length===0); }
+  { R = await ASETUP(); R(`__answer=null`);
+    const a = await R(`serverWrite('/settings',{method:'PUT',body:'{}'}).then(r=>r.status)`);
+    ok('A4 cancelling the dialog: no retry, the 401 comes back, nothing is stored', a===401 && R(`__w.length`)===1 && R(`authCred`)===null && Object.keys(J(`__ss`)).length===0);
+    R(`__answer={user:'admin',password:'',remember:false}`); const b = await R(`serverWrite('/settings',{method:'PUT',body:'{}'}).then(r=>r.status)`); ok('A4 an empty password counts as cancel', b===401 && R(`authCred`)===null); }
+  { R = await ASETUP(); R(`__answer={user:'admin',password:'s3cret',remember:true}`);
+    await R(`serverWrite('/s',{method:'PUT'}).then(r=>r.status)`);
+    ok('A5 "remember on this device" is opt-in: it additionally writes localStorage', /s3cret/.test(R(`__ls['massTelemetryWorkbench.auth.remembered']`)) && /remembered on this device/.test(R(`$('authInfo').textContent`)));
+    R(`__ss={};authCred=null;authInit()`); ok('A5 a new tab (no sessionStorage) uses the remembered password', R(`authCred&&authCred.password`)==='s3cret');
+    R(`authForget()`); ok('A5 "Forget password" clears memory, sessionStorage and localStorage', R(`authCred`)===null && Object.keys(J(`__ss`)).length===0 && Object.keys(J(`__ls`)).length===0 && /none known/.test(R(`$('authInfo').textContent`))); }
+  { R = await ASETUP(); R(`globalThis.__resolve=[];authPromptImpl=(m)=>{__prompts++;return new Promise(r=>__resolve.push(r))}`);
+    const p1 = R(`serverWrite('/a',{method:'PUT'}).then(r=>r.status)`), p2 = R(`serverWrite('/b',{method:'DELETE'}).then(r=>r.status)`); await sleep(10);
+    ok('A6 two writes that both get a 401 share ONE dialog', R(`__prompts`)===1); R(`__resolve[0]({user:'admin',password:'s3cret',remember:false})`);
+    const [a,b] = await Promise.all([p1,p2]); ok('A6 both are retried with the new credentials and succeed', a===200 && b===200 && R(`__w.filter(c=>c[1].headers['Authorization']).length`)===2); }
+  { ok('A7 only ONE place in the code ever sets an Authorization header (serverWrite); every PUT / DELETE / POST goes through it; reads (GET, SSE, history) never do', (code.match(/\['Authorization'\]/g)||[]).length===1 && !/fetch\([^)]*method:\s*'(PUT|POST|DELETE)'/.test(code) && (code.match(/serverWrite\(/g)||[]).length>=5);
+    R = await ASETUP(); R(`authStore({user:'admin',password:'s3cret'},true)`);
+    ok('A7 the password is in no exported document: UI settings, sensor settings, calibration, CSV', !/s3cret/.test(R(`JSON.stringify(collectUiSettings())+JSON.stringify(sensorSettingsDoc())+JSON.stringify(CALIBRATION)`)) && !/s3cret/.test(R(`(()=>{let o='';downloadBlob=(b)=>{o=b.parts.join('')};Blob=class{constructor(p){this.parts=p}};for(let i=0;i<5;i++)appendSample(5000);exportCSV();return o})()`))); }
+  { R = await ASETUP(); R(`authPromptImpl=null`);
+    const p = R(`authDialogPrompt('The server asks for a password.')`); 
+    ok('A8 the dialog opens with the reason, user name and password fields', R(`$('authModal').hidden`)===false && R(`$('authMsg').textContent`)==='The server asks for a password.');
+    R(`$('authUser').value='admin';$('authPass').value='pw';$('authRemember').checked=true;$('authOk').onclick()`);
+    const v = await p; ok('A8 "Continue" resolves with user, password and the remember choice; the dialog closes and the password field is wiped', v.user==='admin' && v.password==='pw' && v.remember===true && R(`$('authModal').hidden`)===true && R(`$('authPass').value`)==='');
+    const p2 = R(`authDialogPrompt('x')`); R(`$('authCancel').onclick()`); ok('A8 "Cancel" resolves null', (await p2)===null && R(`$('authModal').hidden`)===true);
+    const p3 = R(`authDialogPrompt('x')`); R(`$('authModal').onkeydown({key:'Escape'})`); ok('A8 Esc cancels', (await p3)===null); }
+  ok('A9 static: the modal, the forget button, the info line and the history controls exist in the HTML', ['authModal','authUser','authPass','authRemember','authOk','authCancel','authForgetBtn','authInfo','calUploadBtn','ssHistoryBtn','ssHistoryInfo','bandModeSelect','windowSeconds','pmLines','measUnc'].every(i=>html.includes(`id="${i}"`)) && /Trusted home network|trusted home network/.test(html));
+
   console.log(fails? `\n${fails} FAILED` : '\nall passed');
   process.exitCode = fails?1:0;
 })();

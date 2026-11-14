@@ -1,68 +1,53 @@
-# Mass Telemetry Workbench: handout v13.2 (read after v13; this overrides earlier handouts where they differ)
+# Mass Telemetry Workbench: handout v14 (read after v13.2; this overrides earlier handouts where they differ)
 
-Baseline: `telemetry_workbench_v13.html` + `.js`, `audit_harness_v13.js` (250 checks pass), `sensors_example.json`. Not browser-tested so far. Keep the rule: every new behaviour gets a harness test; do not weaken existing ones.
-User profile for design decisions: enthusiast, not a metrologist, cannot verify standards (e.g. OIML). Claude manages and implements everything below. Wording must be honest and short, and should teach lightly (e.g. "repeatability" vs "uncertainty").
+Baseline: `telemetry_workbench_v14.html` + `.js`, `audit_harness_v14.js` (all checks pass; run `node audit_harness_v14.js telemetry_workbench_v14.html`), `sensors_example.json` (unchanged). **Still not browser-tested.** Rule kept: every new behaviour has a harness test; no v13 check was weakened (the 250 v13 checks run unchanged).
 
-## 1. Decisions taken
-- **OIML class table: postponed.** Tolerances are typed in by the user. The input has a `basis` field (certificate | class-tolerance | user-estimate | none) so a verified table can be added later for professional users.
-- **Placements per mass** (Simple mode, default 3, allowed 2 to 10): a wizard setting, not stored in `ui-settings.json`. More placements narrow the uncertainty because the t-factor shrinks.
-- **Show more rather than less for now.** The user will decide after weeks of use which displays stay. Section 8 lists every duplicate or variant so nothing is forgotten.
-- **Writes need a password if one is set** (section 6). Reads stay open.
+## 1. What v14 implements (handout v13.2 sections)
+| § | Feature | Where |
+|---|---|---|
+| 8 | Estimator length also in seconds (linked, samples ÷ rate); real time span next to sample counts (current value, selection, measurement, log, wizard) | window field, `fmtSpan` |
+| 5 | Band modes: symmetric (default) / asymmetric / step-aware, Display options, stored in `ui-settings.json` as `bandMode` | `bandStats`, `buildEstimatorCurve` |
+| 4 | Three "±" lines under the current value: σ, σ/√n_eff of the average, stability (max−min of the displayed value over the last window) | `updatePlusMinus` |
+| 3 | Uncertainty (stage 1 typed weight tolerance/certificate, stage 2 components, stage 3 "± U (label)" on measurements, selections, log, tooltip; `uncertainty` block in the calibration file) | `computeUncertainty`, `buildUncertaintyProfile` |
+| 2 | Hysteresis: `loadingDirection` per observation, mean(down)−mean(up) per mass, fit on both/up/down, optional return run in Simple mode, `reserved.loadingDirection` / `hysteresisAnalysis` filled | `hysteresisAnalysis` |
+| 6 | Password (HTTP Basic, own dialog, writes only) | `serverWrite`, `authDialogPrompt` |
+| 7 | History by independent range requests; sample ids; gap filling; merge into the ring buffer | `mergeHistory`, `historyLoadOlder` |
+| 1 | Placements per mass (Simple, 2–10, default 3, wizard setting only); `basis` field of the weight tolerance | wizard |
+| 8 | Advanced extras: leave-one-out residuals, environment fields (temperature, humidity, warm-up), full fit report export (JSON + text) | Fit tab |
 
-## 2. Hysteresis / reverse order (old section 9)
-Guided run up (empty, light ... heavy) then down; each observation gets `loadingDirection: "up" | "down"`; per mass the report is mean(down) - mean(up); the fit may use both directions (default; the curve is the mean path, hysteresis listed as a separate component) or one only. Optional "return run" in Simple mode. Fill `reserved.loadingDirection` / `hysteresisAnalysis`.
+## 2. Decisions I took that you should know about (please check)
+1. **Extra uncertainty component "placement of the weighed object".** The handout lists (a) curve error from the fit, (b) reading noise, (c) resolution, (d) weight tolerance. A single weighing also puts the object down only once, so one more placement's scatter belongs in. It is a separate, switchable line (`UNC_INCLUDE_OBJECT_PLACEMENT`, shown in the component list). Without it the numbers would be lower and too optimistic.
+2. **Resolution:** one count / √12; if the reading noise is ≥ 1 count it dithers the rounding and the term is divided by √n_eff (`UNC_DITHER_SIGMA_COUNTS`).
+3. **Unknown n_eff** (interval shorter than 64 samples): n_eff = 1 is used (conservative: σ itself) and the component says so.
+4. **Weight tolerance is all-or-nothing.** If any weight used has no typed value, the component is left out and the label stays "repeatability only" (a half-included tolerance would look more complete than it is). Independent weights give u/√n per mass level; a bias shared by all weights is stated as not reduced and not detectable.
+5. **Labels:** `± U (estimated, repeatability only, not traceable)`; with typed tolerances for every weight `(estimated, not traceable)`; with hysteresis `(estimated, repeatability and hysteresis only, not traceable)`. The embedded demo calibration (and any older file) has no block: the app says why and shows no number.
+6. **No repeats → no number.** If repeatability cannot be estimated (no reference mass placed twice for the piecewise model, no degrees of freedom), the block is `not-estimable` with a reason.
+7. **Asymmetric band** is the literal definition (upper = mean of the samples above the centre value): after a down-step it equals the old level exactly; in steady noise it sits at about ±0.8 σ (narrower than the symmetric band). Not applied to EMA estimators.
+8. **Step-aware band** restarts the *whole* estimator window (centre line and band, so the band stays centred) at a step found by the existing CUSUM statistic (step-like, ≥ 2 σ, Q ≥ 1.36). Needs ≥ 64 samples in the window; a ramp is a trend and does not restart.
+9. **History: merge instead of "buffer live, then prepend".** Prepending while live samples keep flowing is valid at any moment, so live data is not held back. Merge is by time, duplicates by id (or by time if there is no id). Samples that no longer fit the buffer are dropped from the *oldest* end; a running measurement is cancelled if a sample is inserted into its interval. Data thrown away by **Pause** is never refilled (the first sample after resume is a new baseline); only real gaps (reconnect) are.
+10. **Observations without a loading direction count as "up"** when "up only" is chosen.
+11. **Hysteresis in the uncertainty:** half-width |down−up|/2, rectangular, only while the fit uses both directions.
+12. The ± stability line uses T = estimator window (adjustable later, as planned).
 
-## 3. Uncertainty (old section 10), built as a repeatability-based estimate
-Principle: the app can estimate **random** error from its own data. It cannot see a bias shared by all weights, temperature, creep, hysteresis (until section 2), off-centre loading, or drift between calibration and use. So the number is a lower bound and is always labelled, e.g. **"± 0.04 g (estimated, repeatability only, not traceable)"**. Never call it "uncertainty" without that qualifier unless a typed weight tolerance is included (then "estimated, not traceable").
-- **Stage 1, inputs:** per weight `massUncertainty {value, unit, basis, coverageFactor, distribution}`. Certificate: u = U/k. Limits only (class tolerance, "±x mg"): rectangular, u = limit/sqrt 3. Weights without it: visible "not traceable" warning, `traceable: false` (already written for nominal groups).
-- **Stage 2, components at mass m:** (a) placement repeatability propagated through the fit (standard error of the fitted curve at m from the residual SD and leverage; replicate-mean scatter for the anchors model); (b) reading noise = SD / sqrt(n_eff) of the measurement (n_eff already computed by the validity checks); (c) resolution; (d) typed weight uncertainty, group mean of n independent weights u/sqrt n, **common bias is NOT reduced and this is stated**. Combine root-sum-of-squares; expanded U = k u_c with k from the t-distribution for the effective degrees of freedom (about 2.4 for 95 % with 7 dof; wider with fewer). Listed as not included: temperature, creep, hysteresis, off-centre, drift.
-- **Stage 3, display:** a measurement shows result ± U with the label above. File: separate block `uncertainty {status: "estimated", traceable: false, components: [...], combined, k, basis}`; `validation.status` stays `not-characterized`.
-- Optional hint to the user: weight-group between-weight SD captures the random part of weight errors only.
+## 3. File keys (all additive; `schemaVersion` stays 1)
+- `referenceWeights[].massUncertainty {value, unit, basis: certificate|class-tolerance|user-estimate, coverageFactor, distribution, standardUncertaintyMg}`
+- `observations[].loadingDirection` (`up|down|null`)
+- `uncertainty {status: estimated|not-estimable, traceable:false, basis, coverageProbability:0.95, dof, k:{dof,value}, components:[{id,label,included,dof,table:[{massMg,uMg}],note}], notIncluded:[…], combined:{table:[{massMg,uMg,dof,k,UMg}]}}` – calibration-side components only; a measurement adds reading noise and resolution. `validation.status` stays `not-characterized`.
+- `fit.hysteresisUse`, `reserved.loadingDirection` (`both|up|down|not-determined`), `reserved.hysteresisAnalysis {levels:[{massMg,nUp,nDown,meanUp,meanDown,diffCounts,diffMg,seMg}], maxAbsDiffMg, meanDiffMg}`
+- `environment.temperatureC / relativeHumidityPercent`, `reserved.warmUpDurationSeconds`
+- `ui-settings.json`: `bandMode`.
+- Simple weight list accepts a tolerance: `3 x 100 g ±0.5 mg`.
 
-## 4. "±" next to "Current measured mass" (small, under the value)
-Three lines, each with a tooltip, to be compared over time:
-1. spread σ of the estimator window (already in its own card);
-2. uncertainty of the window average, about σ / sqrt(n_eff) (what a longer window improves);
-3. **stability:** how much the displayed value itself changed during the last T seconds (max - min of the displayed estimator value over T; start with T = estimator window, make T adjustable later). This answers "is it still moving?" and is not repeatability.
+## 4. Server assumptions (to confirm with the ESP32 firmware)
+- SSE sample: `{"id":"<sensor>","t":<device ms>,"raw":<int>,"n":<monotonic sample id>}`; the event's SSE `id:` field = id of its last sample (Last-Event-ID).
+- History: `GET <historyUrl>?sensor=<id>&from_id=a&to_id=b` (per-sensor `historyUrl` in the sensor list, or `HISTORY_URL`; both empty = off). JSON `{samples:[{n,t,raw}]}` or binary (`application/octet-stream`): `HIST` magic, u16 version 1, u16 0, u32 count, count × (u32 id, u32 device ms, i32 raw), little endian. Chunks of 5,000 ids requested; how many samples the device keeps and its maximum chunk size are open.
+- Writes (`UI_SETTINGS_URL` PUT/DELETE, `SENSOR_SETTINGS_URL` PUT, `CALIBRATION_UPLOAD_URL` PUT): 401 when a password is set and the header is missing/wrong. If the UI is not served by the ESP32, the server must answer the CORS preflight and allow `Authorization`. Basic over plain HTTP is readable: trusted home network or HTTPS only (stated in the dialog and the Settings Menu).
 
-## 5. Spread band modes (toggle in Display options; keep all)
-Cause of the observed overshoot (not a bug): band = window mean +/- window SD; after a step the window mixes old and new samples. For a clean step of height H with fraction f of new samples the upper edge is H(1 - f + sqrt(f(1-f))); maximum 1.207 H at f = 0.146, i.e. about 21 % above the old level.
-1. **Symmetric sigma** (current).
-2. **Asymmetric:** upper line = mean of the samples above the window mean (upper semi-deviation), lower line likewise; cannot exceed the old level after a down-step.
-3. **Step-aware:** restart the band window after a change detected by the existing CUSUM step statistic (like a tare starts a new window); works for median-type estimators too.
-Default stays 1 until the user decides.
+## 5. Section 9 list, updated (what you can compare after some weeks)
+Spread shown in: spread card, chart band, selection, measurement, the new ± lines, and now "± U" (different things: σ = single readings, ±avg = the average's repeatability, ± U = with calibration). Three band modes; three weightings; Simple/Advanced overlap; Fit-tab model comparison vs. Simple's automatic choice; window in samples and seconds; header layout; **new:** the "object placement" component on/off; hysteresis "both/up/down"; leave-one-out column; text vs. JSON fit report.
 
-## 6. Authentication (HTTP Basic, handled in our code)
-- Server demands Basic auth **only when a password is set, and only for writes** (settings files, calibration files, other file changes). GET, SSE and history stay open (EventSource cannot send headers).
-- Do not rely on the browser's native pop-up (not controllable, cannot be forgotten, behaves differently for streams). Own dialog: send `Authorization: Basic base64(user:password)` on write requests; on 401 ask once and retry; keep the password in memory for the tab (sessionStorage); optional "remember on this device" (localStorage, off by default); "forget password" button; never log it, never put it in URLs or exported files.
-- Cross-origin note: if the UI is not served from the ESP32 itself, the server must allow the `Authorization` header (CORS preflight).
-- Basic auth over plain HTTP sends the password readably; document "trusted home network or HTTPS only".
-- Apply to: `UI_SETTINGS_URL` PUT/DELETE, `SENSOR_SETTINGS_URL` PUT, any future calibration upload/save.
+## 6. Browser checklist (never done; new items marked ★)
+Header wrap, Y-axis widths, legend spacing, navigator at a full buffer, Simple wizard with a live stream, include-anyway, collapsible manual box, settings persistence, Esc handling, auth dialog (focus, Enter, Esc, password manager behaviour), ★ the three ± lines wrapping on narrow screens, ★ band mode switch (chart is rebuilt) and the legend labels, ★ window seconds field next to the slider, ★ wizard weights table width with the two new columns, ★ direction select per observation, ★ Simple "way down" flow with a live stream, ★ uncertainty details list in the measurement card and the selection panel, ★ negative time axis labels after history is merged in front of the stream origin.
 
-## 7. History load of samples (design decision)
-Chosen: **independent range request by the web UI**, not history inside the SSE stream.
-- Live SSE: every sample carries `id` (monotonic sample ID) and device timestamp; use the SSE `id:` field so EventSource reconnects with `Last-Event-ID`.
-- `GET /history?sensor=<id>&from_id=a&to_id=b` returns compact chunks (binary preferred; JSON acceptable at first) with id, t, raw. The server needs no notion of "new user".
-- UI procedure: connect live and **buffer** live samples; learn the first live id; fetch the older range in chunks; **prepend** history, then append buffered live samples; deduplicate by id. The current ring buffer only appends, so prepending (and the derived arrays, tare epochs, navigator cache, rolling sums) needs new code and tests, including buffer limits.
-- The same mechanism fills gaps after a reconnect (request the missing id range); a missing id range becomes an explicit timestamp gap in the data.
-- Server assumptions to confirm during ESP32 firmware work: how many samples it can retain, chunk size limits, binary layout.
-
-## 8. Small and medium items
-- **Estimator length as time:** a time field (s) next to the sample count in the estimator settings, linked like in "Measurement" (one line, linear); duration = samples / rate.
-- **Sampling time next to sample counts everywhere applicable** (current value detail, selection, log, measurement, wizard). With gaps show the actual time span, not samples / rate.
-- Remaining Advanced extras: leave-one-out residuals, environment fields (temperature, humidity, warm-up), export of the full fit report.
-
-## 9. To be checked by the user after some weeks of use (duplicates / variants)
-- Spread shown in several places: spread card, chart band, selection result, measurement result, the new "±" lines under the current value (sections 4 and 5).
-- Three band modes (section 5) and three weighting options (equal | shrinkage | variance model).
-- Simple and Advanced wizard overlap (model choice, weights, warnings); "include anyway".
-- Fit tab model comparison vs. the model Simple picks automatically.
-- Estimator length in samples and in seconds (section 8).
-- Header: sensor selector left, status right (position was a guess).
-Decide which of these stay, which become the default, and which are removed.
-
-## 10. Browser checklist (never done)
-Header wrap on narrow screens, Y-axis widths with real numbers, legend spacing, navigator at a full buffer, wizard Simple flow with a live stream, include-anyway button, collapsible manual box, settings persistence across reload, Esc handling, auth dialog.
-
-## 11. Working conventions
-Pure functions stay DOM-free and are tested in the harness; thresholds are named constants at the top of the relevant section and are echoed in the UI; all new file keys are additive (`schemaVersion` stays 1, unknown keys are ignored); the app never claims an uncertainty it cannot support.
+## 7. Not done / next
+Temperature, creep, off-centre loading and drift are listed as "not included" but not modelled. OIML class table postponed. CSV export has no sample-id column (would change the v13 column test). The device-side parts of §7 wait for the firmware.

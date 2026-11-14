@@ -19,6 +19,7 @@ const UNIT_CONFIG = JSON.parse($('unitConfig').textContent);
 const EMBEDDED_CALIBRATION = JSON.parse($('calibrationConfig').textContent);
 let CALIBRATION = EMBEDDED_CALIBRATION;   // the ACTIVE calibration (switchable since v8)
 const MAX_ROBUST_WINDOW = 4096;
+let bandMode = 'symmetric';   // v14 display option: see BAND_MODES
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function fmtNumber(value, digits) {
@@ -109,7 +110,7 @@ function createSensorState(opts = {}) {
   const N0 = 100000, D0 = opts.lazy ? 0 : N0;
   return {
   capacity: N0, unlimited: false, count: 0, head: 0,
-  times: new Float64Array(N0), raw: new Int32Array(N0), massMg: new Float64Array(D0),
+  times: new Float64Array(N0), raw: new Int32Array(N0), massMg: new Float64Array(D0), ids: new Float64Array(N0).fill(NaN),   // v14: ids = device sample counter (NaN if unknown)
   rawMA: new Float64Array(D0), rawSD: new Float64Array(D0),
   massMA: new Float64Array(D0), massSD: new Float64Array(D0),
   derivedReady: !opts.lazy, unprocessed: 0,          // samples stored but not yet calibrated / averaged
@@ -163,7 +164,8 @@ let state = null;
 function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
-  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
+  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
+    firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
   return sensor;
@@ -175,6 +177,7 @@ activeSensor = testSensor; state = testSensor.state;
 function physicalIndex(i) { return (state.head + i) % state.capacity; }
 function getTime(i) { return state.times[physicalIndex(i)]; }
 function getRaw(i) { return state.raw[physicalIndex(i)]; }
+function getId(i) { return state.ids[physicalIndex(i)]; }
 function getMassMg(i) { return state.massMg[physicalIndex(i)]; }
 function getRawMA(i) { return state.rawMA[physicalIndex(i)]; }
 function getRawSD(i) { return state.rawSD[physicalIndex(i)]; }
@@ -247,7 +250,7 @@ function nextSensorValue(st = state) {
 // timeMs (optional): the device timestamp (ms, relative to the sensor's time origin). The caller
 // (ingestSample) guarantees it is later than the newest stored sample, because the binary searches
 // (lowerBoundTime, tareEventAt) assume sorted time. Without it the simulator clock is used.
-function appendSample(rawValue, timeMs) {
+function appendSample(rawValue, timeMs, sampleId) {
   if (state.unlimited && state.count === state.capacity) resizeBuffers(state.capacity + 100000);
   const sampleTime = timeMs == null ? state.nextTime : timeMs;
   if (state.measurement && state.count && sampleTime - newestTime() > ANALYSIS_THRESHOLDS.gapFactor * PERIOD_MS) cancelMeasurement('sampling gap');
@@ -292,6 +295,7 @@ function appendSample(rawValue, timeMs) {
   const netMass = calibrated.valueMg - tareMass;
   state.times[writeIndex] = sampleTime;
   state.raw[writeIndex] = rawValue;
+  state.ids[writeIndex] = Number.isFinite(sampleId) ? sampleId : NaN;
   state.massMg[writeIndex] = calibrated.valueMg;
 
   // Shifted sliding sums (v7). Var = E[d^2] - E[d]^2 with d = x - ref. The unshifted form
@@ -424,18 +428,18 @@ function resizeBuffers(requested) {
   const start = state.count - keep;
   const oldCapacity = state.capacity;
   const D = state.derivedReady, dn = D ? capacity : 0;   // derived arrays exist only for sensors that have been shown
-  const times = new Float64Array(capacity), raw = new Int32Array(capacity), mass = new Float64Array(dn);
+  const times = new Float64Array(capacity), raw = new Int32Array(capacity), mass = new Float64Array(dn), ids = new Float64Array(capacity).fill(NaN);
   const rawMA = new Float64Array(dn), rawSD = new Float64Array(dn), massMA = new Float64Array(dn), massSD = new Float64Array(dn);
   for (let i = 0; i < keep; i++) {
     const oldIndex = start + i;
-    times[i] = getTime(oldIndex); raw[i] = getRaw(oldIndex);
+    times[i] = getTime(oldIndex); raw[i] = getRaw(oldIndex); ids[i] = getId(oldIndex);
     if (D) {
       mass[i] = getMassMg(oldIndex);
       rawMA[i] = getRawMA(oldIndex); rawSD[i] = getRawSD(oldIndex);
       massMA[i] = getMassMA(oldIndex); massSD[i] = getMassSD(oldIndex);
     }
   }
-  state.capacity = capacity; state.times = times; state.raw = raw; state.massMg = mass;
+  state.capacity = capacity; state.times = times; state.raw = raw; state.massMg = mass; state.ids = ids;
   state.rawMA = rawMA; state.rawSD = rawSD; state.massMA = massMA; state.massSD = massSD;
   state.count = keep; state.head = 0;
   state.window = Math.min(state.window, capacity);
@@ -491,12 +495,12 @@ function buildVisibleData() {
   const curve = buildEstimatorCurve(lo, hi, diagnostic); state.curveStride = curve.stride;
   let out = 0;
   const write = i => {
-    const value = chartValueAt(i, diagnostic), ma = curve.center(i), sd = curve.sigma(i);
+    const value = chartValueAt(i, diagnostic), ma = curve.center(i), up = curve.upper(i), lw = curve.lower(i);
     buf.x[out] = getTime(i) / 1000;
     buf.value[out] = diagnostic ? value : mgToUnit(value, state.unitId);
     buf.ma[out] = diagnostic ? ma : mgToUnit(ma, state.unitId);
-    buf.upper[out] = diagnostic ? ma + sd : mgToUnit(ma + sd, state.unitId);
-    buf.lower[out] = diagnostic ? ma - sd : mgToUnit(ma - sd, state.unitId);
+    buf.upper[out] = diagnostic ? up : mgToUnit(up, state.unitId);
+    buf.lower[out] = diagnostic ? lw : mgToUnit(lw, state.unitId);
     out++;
   };
   if (!useDownsample) {
@@ -626,7 +630,7 @@ function describeEventHTML(e){
   if(e.type==='calibration')return `<strong>Calibration change</strong><br>${esc(e.profileName)} · revision ${esc(e.revisionId)}<br>Effective from ${tt(e.effectiveFromTime)}`;
   if(e.type==='measuring')return `<strong>Measurement in progress</strong><br>${e.collected.toLocaleString()} / ${e.target.toLocaleString()} samples`;
   const val=raw?`${fmtNumber(e.rawEstimatorValue,0)} counts`:formatMass(e.originalValueMg),sig=raw?`${fmtNumber(e.rawSpread,2)} counts`:formatMass(e.spreadMg);
-  return `<strong>${e.type==='measurement'?'Measurement':'Selection'} · ${e.totalSamples.toLocaleString()} samples</strong><br>${tt(e.t0)} – ${tt(e.t1)} (${((e.t1-e.t0)/1000).toFixed(2)} s)<br>Result ${val} · σ ${sig}<br>${esc(estimatorLabel(e.estimator))}`+analysisBadgeHTML(e.analysis,'<br>')+(e.crossesTare?'<br><span class="warning">spans a tare event</span>':'')+(e.crossesCalibration?'<br><span class="warning">spans a calibration change</span>':'');
+  return `<strong>${e.type==='measurement'?'Measurement':'Selection'} · ${e.totalSamples.toLocaleString()} samples</strong><br>${tt(e.t0)} – ${tt(e.t1)} (${((e.t1-e.t0)/1000).toFixed(2)} s)<br>Result ${val} · σ ${sig}${e.uncertainty&&e.uncertainty.status==='ok'&&!raw?'<br>'+uncertaintyLineText(e.uncertainty):''}<br>${esc(estimatorLabel(e.estimator))}`+analysisBadgeHTML(e.analysis,'<br>')+(e.crossesTare?'<br><span class="warning">spans a tare event</span>':'')+(e.crossesCalibration?'<br><span class="warning">spans a calibration change</span>':'');
 }
 function hitTestEvents(u,x,y){
   const t=u.posToVal(x,'x')*1000,tol=6*Math.abs(u.posToVal(1,'x')-u.posToVal(0,'x'))*1000,lane=(u===state.miniPlot?10:14),hits=[],seen=new Set();
@@ -717,6 +721,7 @@ function axisWidthFit(self,values,axisIdx,cycleNum){
   if(longest&&axis.font&&axis.font[0]){self.ctx.font=axis.font[0];size+=self.ctx.measureText(longest).width/(window.devicePixelRatio||1);}
   return Math.ceil(Math.max(size,30));
 }
+function bandLabels(){const s=spreadShort(state.estimator),on=!isEmaMethod(state.estimator);if(bandMode==='asymmetric'&&on)return['Upper (mean of samples above)','Lower (mean of samples below)'];const t=bandMode==='stepaware'&&on?`${s}, step-aware`:s;return[`Upper +1σ (${t})`,`Lower −1σ (${t})`];}
 function makeMainOptions() {
   const c=colors();
   return {
@@ -742,8 +747,8 @@ function makeMainOptions() {
       {label:'Time',value:(u,v)=>v==null?'—':`${v.toFixed(2)} s`},
       {label:state.unitId==='raw'?'Raw sensor counts':'Measured mass',stroke:c.raw,width:1.25,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
       {label:centerLabel(),stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
-      {label:`Upper +1σ (${spreadShort(state.estimator)})`,stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
-      {label:`Lower −1σ (${spreadShort(state.estimator)})`,stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
+      {label:bandLabels()[0],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
+      {label:bandLabels()[1],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
     ],
     bands:[{series:[3,4],fill:'rgba(190,112,220,.16)'}],
     hooks:{drawAxes:[u=>{
@@ -963,7 +968,7 @@ function epochBounds(diagnostic){const b=[0];if(!diagnostic)for(const e of state
 function epochStartFor(i,bounds){for(let k=bounds.length-1;k>=0;k--)if(bounds[k]<=i)return bounds[k];return 0;}
 function buildEstimatorCurve(lo,hi,diagnostic){
   const method=state.estimator;
-  if(method==='mean')return{stride:1,center:i=>chartMAAt(i,diagnostic),sigma:i=>chartSDAt(i,diagnostic)};
+  if(method==='mean'&&bandMode==='symmetric')return{stride:1,center:i=>chartMAAt(i,diagnostic),sigma:i=>chartSDAt(i,diagnostic),upper:i=>chartMAAt(i,diagnostic)+chartSDAt(i,diagnostic),lower:i=>chartMAAt(i,diagnostic)-chartSDAt(i,diagnostic)};
   const get=i=>diagnostic?getRaw(i):getNetMg(i),bounds=epochBounds(diagnostic);
   if(isEmaMethod(method)){
     const norm=method==='emaNorm',tau=Math.max(.025,state.emaTau),s0=Math.max(0,lo-Math.ceil(CURVE_EMA_WARMUP*tau*RATE_HZ)),starts=new Set(bounds);
@@ -979,21 +984,21 @@ function buildEstimatorCurve(lo,hi,diagnostic){
       else{const a=Math.exp(-Math.max(0,(t-prevT)/1000)/tau),d=x-m;m+=(1-a)*d;v=a*(v+(1-a)*d*d);}
       prevT=t;if(i>=lo){C[i-lo]=m;S[i-lo]=Math.sqrt(Math.max(0,v));}
     }
-    return{stride:1,center:i=>C[i-lo],sigma:i=>S[i-lo]};
+    return{stride:1,center:i=>C[i-lo],sigma:i=>S[i-lo],upper:i=>C[i-lo]+S[i-lo],lower:i=>C[i-lo]-S[i-lo]};
   }
   const w=Math.max(2,Math.min(state.window,MAX_ROBUST_WINDOW)),count=hi-lo+1;
-  const costW=method==='hampelLocal'?w*(2*state.hampelHalf+2):w;   // the local Hampel test costs ~(2k+1) small sorts per sample
+  let costW=method==='hampelLocal'?w*(2*state.hampelHalf+2):w;if(bandMode==='stepaware')costW=Math.max(costW,w*40);   // the step test runs an autocorrelation per node   // the local Hampel test costs ~(2k+1) small sorts per sample
   const stride=Math.max(1,Math.ceil(count/Math.max(64,Math.floor(CURVE_BUDGET/Math.max(16,costW)))));
   const nodes=[];
   if(stride===1){for(let i=lo;i<=hi;i++)nodes.push(i);}
   else{nodes.push(lo);const a0=absIndex(lo);for(let i=lo+((stride-(a0%stride))%stride);i<hi;i+=stride)if(i>lo)nodes.push(i);if(nodes[nodes.length-1]!==hi)nodes.push(hi);}
-  const key=`${diagnostic?'r':'m'}|${method}|${w}|${state.trimPercent}|${state.hampelHalf}|${state.hampelSigma}`;
+  const key=`${diagnostic?'r':'m'}|${method}|${w}|${state.trimPercent}|${state.hampelHalf}|${state.hampelSigma}|${bandMode}`;
   if(state.curveCache.key!==key||state.curveCache.map.size>60000)state.curveCache={key,map:new Map()};
-  const cache=state.curveCache.map,NC=new Float64Array(nodes.length),NS=new Float64Array(nodes.length);
+  const cache=state.curveCache.map,NC=new Float64Array(nodes.length),NS=new Float64Array(nodes.length),NU=new Float64Array(nodes.length),NL=new Float64Array(nodes.length);
   for(let k=0;k<nodes.length;k++){
     const i=nodes[k],id=absIndex(i);let hit=cache.get(id);
-    if(!hit){const a=Math.max(i-w+1,epochStartFor(i,bounds)),vals=new Array(i-a+1);for(let j=a;j<=i;j++)vals[j-a]=get(j);const r=estimate(vals,[],method,estimatorOptions());hit=[r.value,r.sigma];cache.set(id,hit);}
-    NC[k]=hit[0];NS[k]=hit[1];
+    if(!hit){const a=Math.max(i-w+1,epochStartFor(i,bounds)),vals=new Array(i-a+1);for(let j=a;j<=i;j++)vals[j-a]=get(j);const r=bandStats(vals,method,bandMode,estimatorOptions());hit=[r.value,r.sigma,r.upper,r.lower];cache.set(id,hit);}
+    NC[k]=hit[0];NS[k]=hit[1];NU[k]=hit[2];NL[k]=hit[3];
   }
   const at=(i,arr)=>{
     if(stride===1)return arr[i-lo];
@@ -1001,7 +1006,7 @@ function buildEstimatorCurve(lo,hi,diagnostic){
     if(nodes[l]>=i||l===nodes.length-1)return arr[l];
     return arr[l]+(i-nodes[l])/(nodes[l+1]-nodes[l])*(arr[l+1]-arr[l]);
   };
-  return{stride,center:i=>at(i,NC),sigma:i=>at(i,NS)};
+  return{stride,center:i=>at(i,NC),sigma:i=>at(i,NS),upper:i=>at(i,NU),lower:i=>at(i,NL)};
 }
 function collectCurrentWindow(n){ // newest n samples; the caller limits n to the current tare epoch
   n=Math.min(state.count,n);const start=state.count-n,values=new Array(n),times=new Array(n),raws=new Array(n);
@@ -1013,6 +1018,58 @@ function collectCurrentWindow(n){ // newest n samples; the caller limits n to th
 // dividing by sqrt(n) without estimating effective independent sample count is unsafe.
 // Welford's one-pass update (population SD, divisor n): numerically stable for any offset.
 function calculateStd(values){if(!values.length)return NaN;let n=0,mean=0,m2=0;for(const v of values){n++;const d=v-mean;mean+=d/n;m2+=d*(v-mean);}return Math.sqrt(m2/n);}
+function fmtSpan(s){if(!Number.isFinite(s))return'—';return s>=60?`${(s/60).toFixed(1)} min`:s>=10?`${s.toFixed(1)} s`:`${s.toFixed(2)} s`;}
+// two significant digits, for small "±" values (the unit's normal decimals would show 0.000 g)
+function formatMassSig(valueMg,unitId=state.unitId){
+  const unit=unitById(unitId);if(unit.id==='raw')return`${fmtNumber(valueMg,Math.abs(valueMg)<10?2:1)} counts`;
+  const v=mgToUnit(valueMg,unit.id);if(!Number.isFinite(v))return'—';const a=Math.abs(v);
+  return`${fmtNumber(v,a===0?unit.decimals:clamp(1-Math.floor(Math.log10(a)),0,8))} ${unit.symbol}`;
+}
+// ---- the "±" lines under the current value (v14) -------------------------------------------------------------------------------
+// 1 spread σ of the estimator window, 2 σ / sqrt(n_eff) of the window average, 3 stability = how much the displayed value itself moved
+// (max - min of the estimator curve) during the last T = estimator window. All three are cached for a short time (the n_eff needs an
+// autocorrelation; the stability a pass over the curve).
+const PM_NEFF_MS=400,PM_STAB_MS=250,PM_NEFF_MAX=4096;
+function windowNeff(diagnostic,n){
+  const k=Math.min(n,PM_NEFF_MAX),now=performance.now(),c=state.pmNeff;
+  if(c&&c.k===k&&c.diag===diagnostic&&now-c.t<PM_NEFF_MS)return c.v;
+  let v=null;
+  if(k>=ANALYSIS_THRESHOLDS.minSamples){const x=new Float64Array(k),last=state.count-1;for(let j=0;j<k;j++)x[j]=diagnostic?getRaw(last-k+1+j):getNetMg(last-k+1+j);const a=analysisAutocorr(x,Math.min(100,Math.floor(k/4)));v={neff:a.neff,n:k};}
+  state.pmNeff={k,diag:diagnostic,t:now,v};return v;
+}
+function stabilityOver(centerFn,lo,hi){let mn=Infinity,mx=-Infinity;for(let i=lo;i<=hi;i++){const v=centerFn(i);if(v<mn)mn=v;if(v>mx)mx=v;}return{min:mn,max:mx,range:mx-mn};}
+function windowStability(diagnostic,epochStart){
+  const last=state.count-1,T=Math.min(state.window,state.count),lo=Math.max(last-T+1,diagnostic?0:epochStart);if(lo>=last)return null;
+  const now=performance.now(),c=state.pmStab,key=`${state.estimator}|${bandMode}|${state.window}|${diagnostic}`;
+  if(c&&c.key===key&&state.estimator!=='mean'&&now-c.t<PM_STAB_MS)return c.v;
+  const cur=buildEstimatorCurve(lo,last,diagnostic),r=stabilityOver(cur.center,lo,last),v={range:r.range,spanS:(getTime(last)-getTime(lo))/1000,samples:last-lo+1};
+  state.pmStab={key,t:now,v};return v;
+}
+function updatePlusMinus(diagnostic,n,spread,epochStart){
+  const f=v=>diagnostic?`${fmtNumber(v,Math.abs(v)<10?2:1)} counts`:formatMassSig(v);
+  $('pmSigma').textContent=`σ ${f(spread)}`;
+  const ne=windowNeff(diagnostic,n);
+  $('pmMean').textContent=ne?`±avg ${f(spread/Math.sqrt(ne.neff))} (n_eff ≈ ${ne.neff.toFixed(1)} of ${ne.n})`:`±avg needs ≥ ${ANALYSIS_THRESHOLDS.minSamples} samples`;
+  const st=windowStability(diagnostic,epochStart);
+  $('pmStab').textContent=st?`moved ${f(st.range)} in ${fmtSpan(st.spanS)}`:'moved —';
+}
+function uncertaintyLineText(u){
+  if(!u||state.unitId==='raw')return'';
+  if(u.status!=='ok')return`<span class="small">Uncertainty: not estimated (${esc(u.reason)})</span>`;
+  return`<strong>± ${esc(formatMassSig(u.expandedMg))}</strong> <span class="small">(${esc(u.label)}; 95 %)</span>`;
+}
+function uncertaintyHTML(u,key){
+  if(!u||state.unitId==='raw')return'';if(u.status!=='ok')return uncertaintyLineText(u);
+  const stored=state.detailsOpen&&Object.prototype.hasOwnProperty.call(state.detailsOpen,key),open=stored?state.detailsOpen[key]:false;
+  const rows=u.components.map(c=>`<div class="an-row ok"><strong>${esc(c.label)}</strong>: ${esc(formatMassSig(c.uMg))} <span class="small">(dof ${Number.isFinite(c.dof)?c.dof.toFixed(1):'∞'})${c.note?' · '+esc(c.note):''}</span></div>`).join('');
+  return`<details class="an" data-key="${esc(key)}"${open?' open':''}><summary>${uncertaintyLineText(u)}</summary>${rows}<div class="small">Combined u<sub>c</sub> = ${esc(formatMassSig(u.combinedMg))} (root-sum-of-squares) · effective degrees of freedom ${Number.isFinite(u.dof)?u.dof.toFixed(1):'∞'} · k = ${u.k.toFixed(2)} (t-distribution, 95 %) · U = k · u<sub>c</sub></div><div class="small">Not included: ${esc((u.notIncluded||[]).join(', '))}. A bias shared by all reference weights is not reduced by averaging and cannot be seen by this tool. This is an estimate for an enthusiast, not a traceable uncertainty.</div></details>`;
+}
+// absolute mass and local slope of the result, then the stage-2 components (computeUncertainty)
+function intervalUncertainty(cal,o){
+  if(!cal||!cal.config||!Number.isFinite(o.rawEstimatorValue))return null;
+  const conf=cal.config,m=calibrateAbsolute(o.rawEstimatorValue,conf).valueMg,slope=Math.abs(calibrateAbsolute(o.rawEstimatorValue+.5,conf).valueMg-calibrateAbsolute(o.rawEstimatorValue-.5,conf).valueMg);
+  return computeUncertainty(conf.uncertainty,{massMg:m,sigmaMg:o.spreadMg,neff:o.neff,sigmaCounts:o.rawSpread,slopeMgPerCount:slope});
+}
 function updateMetrics(){
   if(!state.count)return;
   const diagnostic=state.unitId==='raw',last=state.count-1,raw=getRaw(last),tare=currentTareEvent();
@@ -1029,10 +1086,11 @@ function updateMetrics(){
   const spread=method==='mean'?(diagnostic?getRawSD(last):getMassSD(last)):sig;
   $('currentValueLabel').textContent=diagnostic?'Raw sensor estimator':'Current measured mass';
   $('currentValue').textContent=diagnostic?fmtNumber(value,0):formatMass(value);
-  $('currentValueDetail').textContent=isEmaMethod(method)?`${method==='emaNorm'?'EMA (seed-normalised)':'EMA (seeded)'} · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)}${method==='hampelLocal'?` (k=${state.hampelHalf}, ${state.hampelSigma}σ)`:''} · ${used} samples${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
+  $('currentValueDetail').textContent=isEmaMethod(method)?`${method==='emaNorm'?'EMA (seed-normalised)':'EMA (seeded)'} · τ ${state.emaTau.toFixed(3)} s${diagnostic?' · counts':''}`:`${estimatorLabel(method)}${method==='hampelLocal'?` (k=${state.hampelHalf}, ${state.hampelSigma}σ)`:''} · ${used} samples · ${fmtSpan((getTime(last)-getTime(Math.max(0,last-used+1))+PERIOD_MS)/1000)}${robust&&n>MAX_ROBUST_WINDOW?' (newest 4,096 of window)':''}${rejected?` · ${rejected} excluded`:''}${diagnostic?' · counts':''}`;
   $('currentValue').title=`Raw latest: ${raw} counts\nAbsolute calibrated mass: ${fmtNumber(getMassMg(last),3)} mg\nNet calibrated mass: ${fmtNumber(getNetMg(last),3)} mg\nCalibration: ${state.revisionId}`;
   const outside=calibrateAbsolute(raw).outOfRange&&!diagnostic;
   $('rangeStatus').hidden=!outside;if(outside)$('rangeStatus').textContent='Latest sample is outside the calibrated range (extrapolated).';
+  updatePlusMinus(diagnostic,n,spread,epochStart);
   $('spreadLabel').textContent=diagnostic?'Raw sensor spread (σ)':'Sensor spread (σ)';
   $('currentSpread').textContent=diagnostic?`${fmtNumber(spread,2)} counts`:formatMass(spread);
   $('spreadDetail').textContent=`${spreadDescription(method)} · repeatability only, not an uncertainty`;
@@ -1042,7 +1100,10 @@ function updateMetrics(){
   $('tareUnitLabel').textContent=displayUnitSymbol();
   $('manualTareBtn').disabled=diagnostic;
   $('manualTareInput').disabled=diagnostic;
-  $('uncertaintyStatus').textContent=calibration.validation?.status==='validated'?'Measurement uncertainty: see calibration validation metadata.':'Measurement uncertainty: not characterized by the embedded demonstration calibration. Sensor spread is repeatability information, not a complete uncertainty statement.';
+  { const up=calibration.uncertainty;
+    $('uncertaintyStatus').textContent=up&&up.status==='estimated'?`Measurement uncertainty: estimated from this calibration (${up.basis}) and shown as ± U (95 %) with measurements. Not traceable, not validated. Not included: ${(up.notIncluded||[]).join(', ')}.`
+      :up&&up.status==='not-estimable'?`Measurement uncertainty: not estimated. ${up.reason||''}`
+      :calibration.validation?.status==='validated'?'Measurement uncertainty: see calibration validation metadata.':'Measurement uncertainty: not characterized by the embedded demonstration calibration. Sensor spread is repeatability information, not a complete uncertainty statement.'; }
 }
 function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Global MAD filter + mean',hampelLocal:'Sliding Hampel filter + mean',ema:'Exponential moving average (EMA, seeded)',emaNorm:'EMA, seed-normalised'})[method]||'Arithmetic mean';}
 
@@ -1144,6 +1205,8 @@ function calculateSelection(first,end,settings={}){
     usedSamples=indices.length;rejectedSamples=recalculated.rejected;
   }
   const calFirst=calibrationAt(getTime(first)),calLast=calibrationAt(getTime(end-1));
+  const analysis=analyzeInterval(first,end),acf=(analysis.checks||[]).find(c=>c.id==='autocorrelation');
+  const uncertainty=intervalUncertainty(calLast,{rawEstimatorValue,spreadMg,rawSpread,neff:acf&&Number.isFinite(acf.neff)?acf.neff:null});
   return {
     originalValueMg,currentValueMg,rawEstimatorValue,spreadMg,rawSpread,usedSamples,totalSamples:total,rawMean,
     firstIndex:first,lastIndex:end-1,t0:getTime(first),t1:getTime(end-1),
@@ -1154,7 +1217,7 @@ function calculateSelection(first,end,settings={}){
     tareEventId:currentTareEvent()?.eventId||null,
     crossesTare:(tareEventAt(getTime(first))?.eventId||null)!==(tareEventAt(getTime(end-1))?.eventId||null),
     contextChanged:(currentTareEvent()?.eventId||null)!==(tareEventAt(getTime(first))?.eventId||null),
-    analysis:analyzeInterval(first,end)
+    analysis,uncertainty
   };
 }
 function selectInterval(t0,t1,log=true){
@@ -1171,7 +1234,7 @@ function updateSelectionReadout(){
   const changed=s.contextChanged?'<br><span class="warning">Tare context differs from the current tare. Both original and current interpretations are shown.</span>':'';
   const calibrationChanged=(s.calibrationChanged?'<br><span class="warning">Samples were recorded under a different calibration revision than the active one. “Original” uses the recorded calibration; “current” re-calibrates with the active one.</span>':'')+(s.crossesTare?'<br><span class="warning">The interval spans a tare event: the original result mixes values relative to different zero references.</span>':'')+(s.crossesCalibration?'<br><span class="warning">The interval spans a calibration change.</span>':'')+'<br>'+analysisHTML(s.analysis,true,'sel');
   const subsampled=s.usedSamples<s.totalSamples?` · bounded analysis used ${s.usedSamples.toLocaleString()} of ${s.totalSamples.toLocaleString()} samples`:'';
-  setHTML($('selectionSummary'),`<strong>${s.totalSamples.toLocaleString()} selected samples</strong><br>`+
+  setHTML($('selectionSummary'),`<strong>${s.totalSamples.toLocaleString()} selected samples</strong> · ${fmtSpan((s.t1-s.t0+PERIOD_MS)/1000)}<br>`+
     `Time: <strong>${(s.t0/1000).toFixed(2)}–${(s.t1/1000).toFixed(2)} s</strong><br>`+
     `Estimator: <strong>${estimatorLabel(s.estimator)}</strong>`+
     // The selection EMA is seeded with the first selected sample, which keeps weight exp(-T/tau)
@@ -1181,7 +1244,7 @@ function updateSelectionReadout(){
     (state.unitId==='raw'?`Raw estimator result: <strong>${fmtNumber(s.rawEstimatorValue,0)} counts</strong><br>`:`Original result: <strong>${formatMass(s.originalValueMg)}</strong><br>`+
     `Current calibration + latest tare: <strong>${formatMass(s.currentValueMg)}</strong><br>`)+
     `Current spread (σ, ${spreadDescription(s.estimator)}): <strong>${state.unitId==='raw'?fmtNumber(s.rawSpread,2)+' counts':formatMass(s.spreadMg)}</strong><br>`+
-    `Raw average: <strong>${fmtNumber(s.rawMean,2)} counts</strong><br>`+
+    (s.uncertainty?uncertaintyHTML(s.uncertainty,'sel-unc')+'<br>':'')+`Raw average: <strong>${fmtNumber(s.rawMean,2)} counts</strong><br>`+
     (s.rejectedSamples?`Excluded by estimator: <strong>${s.rejectedSamples}</strong><br>`:'')+`Out-of-range samples in analysis: <strong>${s.outOfRangeCount}</strong>${subsampled}${changed}${calibrationChanged}`);
 }
 function appendLogEntry(entry){state.logs.unshift(entry);renderLog();}
@@ -1541,9 +1604,9 @@ function analyzeSeries(values, times, opts = {}) {
 // analysisGaps) so dropped or repeated frames are detected independently of the timestamps.
 function analyzeInterval(first,end){
   const n=end-first;if(n<=0)return{status:'n/a',checks:[],note:'empty interval'};
-  const raws=new Float64Array(n),times=new Float64Array(n);let oor=0;
-  for(let j=0;j<n;j++){const i=first+j,t=getTime(i),r=getRaw(i);raws[j]=r;times[j]=t;if(calibrateAbsolute(r,calibrationAt(t).config).outOfRange)oor++;}
-  return analyzeSeries(raws,times,{nominalMs:PERIOD_MS,counters:null,outOfRangeCount:oor});
+  const raws=new Float64Array(n),times=new Float64Array(n),ids=new Float64Array(n);let oor=0,haveIds=true;
+  for(let j=0;j<n;j++){const i=first+j,t=getTime(i),r=getRaw(i),id=getId(i);raws[j]=r;times[j]=t;ids[j]=id;if(!Number.isFinite(id))haveIds=false;if(calibrateAbsolute(r,calibrationAt(t).config).outOfRange)oor++;}
+  return analyzeSeries(raws,times,{nominalMs:PERIOD_MS,counters:haveIds?ids:null,outOfRangeCount:oor});   // the device counter is a second witness for dropped / repeated frames
 }
 const VERDICT_ICON={ok:'✓',suspect:'⚠',invalid:'✖','n/a':'–',insufficient:'…'};
 const STATUS_TEXT={ok:'no problem detected',suspect:'suspect',invalid:'invalid','n/a':'not analysed',insufficient:'insufficient data'};
@@ -1632,10 +1695,11 @@ function updateMeasurementUI(){
   $('measureBtn').textContent=m?'Cancel measurement':'Start measurement';$('measureBtn').classList.toggle('primary',!m);
   $('measBar').hidden=!m;if(m)$('measBar').value=m.collected/m.target;
   $('measDuration').disabled=!!m;$('measSamples').disabled=!!m;$('measSlider').disabled=!!m;
-  if(m){$('measValue').textContent='…';$('measDetail').textContent=`Measuring: ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;$('measNote').textContent='';return;}
-  if(!last){$('measValue').textContent='—';$('measDetail').textContent='No measurement yet';$('measNote').textContent='';return;}
+  if(m){$('measValue').textContent='…';$('measDetail').textContent=`Measuring: ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;$('measNote').textContent='';$('measUnc').textContent='';return;}
+  if(!last){$('measValue').textContent='—';$('measDetail').textContent='No measurement yet';$('measNote').textContent='';$('measUnc').textContent='';return;}
   $('measValue').textContent=raw?`${fmtNumber(last.rawEstimatorValue,0)} counts`:formatMass(last.originalValueMg);
-  $('measDetail').textContent=`σ ${raw?fmtNumber(last.rawSpread,2)+' counts':formatMass(last.spreadMg)} · ${last.totalSamples.toLocaleString()} samples (${(last.totalSamples/RATE_HZ).toFixed(2)} s) · ${estimatorLabel(last.estimator)}`;
+  $('measDetail').textContent=`σ ${raw?fmtNumber(last.rawSpread,2)+' counts':formatMass(last.spreadMg)} · ${last.totalSamples.toLocaleString()} samples (${fmtSpan((last.t1-last.t0+PERIOD_MS)/1000)}) · ${estimatorLabel(last.estimator)}`;
+  setHTML($('measUnc'),uncertaintyHTML(last.uncertainty,'meas-unc'));
   const notes=[];
   if(last.outOfRangeCount)notes.push(`<span class="warning">${last.outOfRangeCount} samples outside the calibrated range</span>`);
   // The EMA is seeded with the first sample, which keeps weight exp(-T/tau): see updateSelectionReadout().
@@ -1658,8 +1722,8 @@ function renderLog(){
     if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
     if(entry.type==='note')return row('note','note',esc(entry.text));
     const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
-    const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal)${entry.tag?' · '+esc(entry.tag):''}`:`Selection · ${entry.totalSamples.toLocaleString()} samples`;
-    return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}${entry.analysis?'<br>'+analysisHTML(entry.analysis,false,'log:'+entry.entryId):''}<br><span class="small">${detail(entry)}</span>`);
+    const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal${Math.abs((entry.t1-entry.t0+PERIOD_MS)/1000-entry.nominalDurationS)>.02*entry.nominalDurationS?`, ${fmtSpan((entry.t1-entry.t0+PERIOD_MS)/1000)} actual`:''})${entry.tag?' · '+esc(entry.tag):''}`:`Selection · ${entry.totalSamples.toLocaleString()} samples (${fmtSpan((entry.t1-entry.t0+PERIOD_MS)/1000)})`;
+    return row(entry.type,entry.type,`<strong>${title}</strong><br>${result}${entry.uncertainty&&entry.uncertainty.status==='ok'&&state.unitId!=='raw'?'<br>'+uncertaintyLineText(entry.uncertainty):''}${entry.analysis?'<br>'+analysisHTML(entry.analysis,false,'log:'+entry.entryId):''}<br><span class="small">${detail(entry)}</span>`);
   }).join('');
 }
 function jumpToLogEntry(id,type){
@@ -1699,10 +1763,11 @@ function exportCSV(){
   downloadBlob(new Blob(parts,{type:'text/csv;charset=utf-8'}),`mass-telemetry-${String(activeSensor.id).replace(/[^\w.-]+/g,'_')}-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`);
 }
 
-function setMovingAverageWindow(rawValue,immediate=false,preserveInput=false){
+function syncWindowSeconds(){const e=$('windowSeconds');if(e)e.value=Number((state.window/RATE_HZ).toFixed(3));const r=$('windowRateText');if(r)r.textContent=String(RATE_HZ);}
+function setMovingAverageWindow(rawValue,immediate=false,preserveInput=false,preserveSeconds=false){
   if(rawValue===''||!Number.isFinite(Number(rawValue)))return;
   const value=clamp(Math.floor(Number(rawValue)),2,10000);state.window=Math.min(value,state.capacity);
-  if(!preserveInput)$('windowInput').value=state.window;$('windowRange').value=state.window;
+  if(!preserveInput)$('windowInput').value=state.window;$('windowRange').value=state.window;if(!preserveSeconds)syncWindowSeconds();
   if(state.maRebuildTimer)clearTimeout(state.maRebuildTimer);
   state.maRebuildTimer=setTimeout(()=>{state.maRebuildTimer=null;rebuildDerived();scheduleRender();},immediate?0:70);
 }
@@ -1713,7 +1778,7 @@ function applyBufferSize(){
     const cap=clamp(Math.floor(Number(choice)||100000),1000,2000000);
     if(cap!==state.capacity){if(state.measurement&&state.measurement.target>cap)cancelMeasurement('buffer limit reduced below the measurement size');resizeBuffers(cap);}
   }
-  $('windowInput').value=state.window;$('windowRange').value=state.window;
+  $('windowInput').value=state.window;$('windowRange').value=state.window;syncWindowSeconds();
   if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;}rebuildDerived();scheduleRender();
 }
 function addTestSamples(){
@@ -1832,10 +1897,12 @@ function initEvents(){
   $('calImportBtn').addEventListener('click',()=>$('calFile').click());$('calFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)importCalibrationFile(f);});
   $('calExportBtn').addEventListener('click',exportCalibration);$('calDemoBtn').addEventListener('click',restoreDemoCalibration);
   $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
+  $('windowSeconds').addEventListener('input',e=>{const s=Number(e.target.value);if(s>0)setMovingAverageWindow(Math.max(2,Math.round(s*RATE_HZ)),false,false,true);});$('windowSeconds').addEventListener('change',e=>{const s=Number(e.target.value);if(s>0)setMovingAverageWindow(Math.max(2,Math.round(s*RATE_HZ)),true,false,false);else syncWindowSeconds();});
   $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();recreateMainChart();scheduleRender();});
   $('hampelHalf').addEventListener('change',e=>{state.hampelHalf=clamp(Math.round(Number(e.target.value)||HAMPEL_DEFAULT_HALF),2,50);e.target.value=state.hampelHalf;scheduleRender();});
   $('hampelSigma').addEventListener('change',e=>{state.hampelSigma=clamp(Number(e.target.value)||HAMPEL_DEFAULT_SIGMA,1,10);e.target.value=state.hampelSigma;scheduleRender();});
   $('simModeSelect').addEventListener('change',e=>{state.simMode=e.target.value;state.simOffset=0;});
+  $('bandModeSelect').addEventListener('change',e=>setBandMode(e.target.value));
   $('trimPercent').addEventListener('input',e=>{state.trimPercent=Number(e.target.value);$('trimPercentText').textContent=`${state.trimPercent}%`;scheduleRender();});
   $('emaTau').addEventListener('change',e=>{state.emaTau=clamp(Number(e.target.value)||.5,.025,120);e.target.value=state.emaTau;rebuildEMA();scheduleRender();});
   $('unitSelect').addEventListener('change',e=>{state.unitId=e.target.value;state.autoYMin=null;state.autoYMax=null;const raw=state.unitId==='raw';$('rawModeToggle').checked=raw;$('mainChartTitle').textContent=raw?'Raw sensor diagnostics':'Measured mass';$('zeroFillToggle').disabled=raw;$('zeroRawFillToggle').disabled=raw;$('zeroLineToggle').disabled=raw;$('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';if(state.mainPlot){destroyCharts();createCharts();}scheduleRender();});
@@ -1889,19 +1956,26 @@ function simulateSensor(sensor){
 // (counted in state.dropped). Only the shown sensor is processed; the others just store time + raw counts.
 // timeMs: device time relative to the sensor's origin (undefined for the simulator). Non-monotonic or
 // duplicate times are rejected (state.rejected) because the binary searches assume sorted time.
-function ingestSample(sensor,raw,timeMs,force=false){
+function lastStoredId(st){return st.count?st.ids[(st.head+st.count-1)%st.capacity]:NaN;}
+function ingestSample(sensor,raw,timeMs,force=false,sampleId){
   const st=sensor.state;
   if(st.paused&&!force){st.dropped++;return false;}
   if(timeMs!=null&&st.count&&timeMs<=st.times[(st.head+st.count-1)%st.capacity]){st.rejected++;return false;}
-  if(sensor===activeSensor)appendSample(raw,timeMs);else appendRawOnly(st,raw,timeMs);
+  if(Number.isFinite(sampleId)){
+    // v14: the device's monotonic sample id. A repeat is rejected; a jump is a gap (filled from the history server if there is one).
+    const last=lastStoredId(st);
+    if(Number.isFinite(last)){if(sampleId<=last){st.rejected++;return false;}if(sampleId>last+1&&!sensor.skipNextGap)noteGap(sensor,last+1,sampleId-1);}
+    sensor.skipNextGap=false;if(sensor.firstLiveId==null){sensor.firstLiveId=sampleId;historyScheduleInitial(sensor);}
+  }
+  if(sensor===activeSensor)appendSample(raw,timeMs,sampleId);else appendRawOnly(st,raw,timeMs,sampleId);
   return true;
 }
-function appendRawOnly(st,raw,timeMs){
+function appendRawOnly(st,raw,timeMs,sampleId){
   withState(st,()=>{
     if(state.unlimited&&state.count===state.capacity)resizeBuffers(state.capacity+100000);
     const t=timeMs==null?state.nextTime:timeMs;
     let w;if(state.count<state.capacity){w=physicalIndex(state.count);state.count++;}else{state.head=(state.head+1)%state.capacity;w=physicalIndex(state.count-1);}
-    state.times[w]=t;state.raw[w]=raw;state.nextTime=t+1000/state.rateHz;state.appended++;
+    state.times[w]=t;state.raw[w]=raw;state.ids[w]=Number.isFinite(sampleId)?sampleId:NaN;state.nextTime=t+1000/state.rateHz;state.appended++;
     state.unprocessed=Math.min(state.count,state.unprocessed+1);
   });
 }
@@ -1944,17 +2018,18 @@ function syncUIFromState(){
   $('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';$('precisionSelect').value=state.precision;
   $('estimatorSelect').value=state.estimator;$('trimPercent').value=state.trimPercent;$('trimPercentText').textContent=`${state.trimPercent}%`;
   $('emaTau').value=state.emaTau;$('hampelHalf').value=state.hampelHalf;$('hampelSigma').value=state.hampelSigma;updateEstimatorFields();
-  $('windowRange').value=state.window;$('windowInput').value=state.window;$('bufferInput').value=state.unlimited?'unlimited':String(state.capacity);
+  $('windowRange').value=state.window;$('windowInput').value=state.window;syncWindowSeconds();$('bufferInput').value=state.unlimited?'unlimited':String(state.capacity);
   $('yControlsToggle').checked=state.manualY;$('yControls').hidden=!state.manualY;
   if(state.manualY){$('yMinRange').value=state.yMin;$('yMaxRange').value=state.yMax;$('yMinText').textContent=fmtNumber(state.yMin,3);$('yMaxText').textContent=fmtNumber(state.yMax,3);}
-  $('simModeSelect').value=state.simMode;$('simControls').hidden=!sim;$('testSamplesBtn').hidden=!sim;
+  $('bandModeSelect').value=bandMode;$('simModeSelect').value=state.simMode;$('simControls').hidden=!sim;$('testSamplesBtn').hidden=!sim;
   $('headerSub').textContent=`${RATE_HZ} Hz sensor stream · calibrated mass · local-only session`;
-  $('sourceNote').textContent=sim?'Test signal: bounded marching randomness':`Server sensor · ${activeSensor.sseUrl||'no SSE URL'}`;
+  if(sim)$('sourceNote').textContent='Test signal: bounded marching randomness';else updateSourceNote();
   $('measRateText').textContent=String(RATE_HZ);syncMeasurementInputs('samples');
   setSelectMode(false);
   if(state.selection)updateSelectionReadout();else $('selectionSummary').innerHTML=SELECTION_DEFAULT_HTML;
   renderLog();updateCalibrationInfo();updateStatusUI();renderSensorSelect();updateViewLabel();updateMeasurementUI();
 }
+function setBandMode(m){bandMode=BAND_MODES[m]?m:'symmetric';if(state){state.curveCache={key:'',map:new Map()};recreateMainChart();}const s=$('bandModeSelect');if(s)s.value=bandMode;scheduleRender();}
 function setNavPanelVisible(on){$('navPanel').hidden=!on;$('sidePanels').classList.toggle('nav-hidden',!on);$('navPanelToggle').checked=on;}
 
 // ---- pause, links, status -----------------------------------------------------------------------
@@ -1984,7 +2059,7 @@ function renderSensorSelect(){
   sel.value=activeSensor.id;
 }
 function setSensorPaused(s,paused,quiet=false){
-  s.state.paused=paused;s.state.simBase=null;
+  s.state.paused=paused;s.state.simBase=null;if(!paused)s.skipNextGap=true;   // data thrown away while paused is not a gap to be refilled
   if(!quiet){syncConnections();renderSensorSelect();updateStatusUI();}
 }
 // Pause all / resume all. If anything is recording, everything is paused; otherwise everything resumes.
@@ -2000,7 +2075,8 @@ function pauseAllToggle(){
 // listed and not paused; pausing the last such sensor closes it, resuming reopens it.
 // ASSUMED message format (nothing is specified yet - adapt here): every 'message' event carries JSON,
 // either one sample, an array of samples, or {"samples":[...]}; a sample is {"id":"<sensor id>","t":<device
-// time in ms>,"raw":<integer counts>}. Timestamps are authoritative; the first accepted timestamp of a
+// time in ms>,"raw":<integer counts>,"n":<monotonic sample id, optional but needed for history and gap filling>}. The server should also put
+// the id of the LAST sample of an event into the SSE 'id:' field, so that EventSource reconnects with Last-Event-ID. Timestamps are authoritative; the first accepted timestamp of a
 // sensor becomes its time origin (so the chart starts at 0 s).
 const sseConnections=new Map();
 const sseStats={unknown:0,bad:0};
@@ -2021,7 +2097,7 @@ function syncConnections(){
       c.es=new EventSource(url);
       c.es.onopen=()=>{c.status='live';renderSensorSelect();updateStatusUI();};
       c.es.onerror=()=>{c.status=c.es.readyState===2?'error':'connecting';renderSensorSelect();updateStatusUI();};
-      c.es.onmessage=e=>handleSseMessage(url,e.data);
+      c.es.onmessage=e=>{c.lastEventId=e.lastEventId||c.lastEventId;handleSseMessage(url,e.data);};
     }catch(_){c.status='error';}
   }
 }
@@ -2036,7 +2112,8 @@ function handleSseMessage(url,data){
     if(!Number.isFinite(raw)||!Number.isFinite(t)){s.state.rejected++;continue;}
     if(s.state.paused){s.state.dropped++;continue;}
     if(s.state.timeOrigin==null)s.state.timeOrigin=t;
-    if(ingestSample(s,raw,t-s.state.timeOrigin)&&s===activeSensor)touched=true;
+    const sid=it.n==null?undefined:Number(it.n);
+    if(ingestSample(s,raw,t-s.state.timeOrigin,false,sid)&&s===activeSensor)touched=true;
   }
   if(touched)scheduleRender();
 }
@@ -2060,12 +2137,12 @@ function applySensorList(list){
     seen.add(id);
     const name=typeof e.name==='string'&&e.name.trim()?e.name.trim():id;
     const known=sensors.get(id);
-    if(known){known.name=name;known.sseUrl=url||null;known.details={...known.details,...(e.details||{})};known.unlisted=false;result.updated.push(id);}
-    else{const s=makeSensor({id,name,kind:'server',sseUrl:url||null,details:e.details,rateHz:Number(e.rateHz)});if(embeddedFp)initSensorCalibration(s.state,embeddedFp);result.added.push(id);}
+    if(known){known.name=name;known.sseUrl=url||null;if(typeof e.historyUrl==='string'&&e.historyUrl.trim())known.historyUrl=e.historyUrl.trim();known.details={...known.details,...(e.details||{})};known.unlisted=false;result.updated.push(id);}
+    else{const s=makeSensor({id,name,kind:'server',sseUrl:url||null,historyUrl:typeof e.historyUrl==='string'&&e.historyUrl.trim()?e.historyUrl.trim():null,details:e.details,rateHz:Number(e.rateHz)});if(embeddedFp)initSensorCalibration(s.state,embeddedFp);result.added.push(id);}
   }
   for(const s of sensors.values())if(s.kind==='server'&&!seen.has(s.id)&&!s.unlisted){s.unlisted=true;result.unlisted.push(s.id);}
   syncConnections();renderSensorSelect();updateStatusUI();
-  if(activeSensor.kind==='server')$('sourceNote').textContent=`Server sensor · ${activeSensor.sseUrl||'no SSE URL'}`;
+  updateSourceNote();
   return result;
 }
 function setSensorListInfo(text){$('sensorListInfo').textContent=text;}
@@ -2093,8 +2170,8 @@ function initSensorCalibration(st,fp){
 const UI_SETTINGS_URL = null;
 const SENSOR_SETTINGS_URL = null;
 const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
-const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple' });
-const UI_CONTROL_IDS = new Set(['wizMode', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
+const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric' });
+const UI_CONTROL_IDS = new Set(['wizMode', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
 let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = UI_SETTINGS_URL ? 'not loaded yet' : 'not configured';
 const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
 
@@ -2107,12 +2184,13 @@ function sanitizeUiSettings(o) {
   for (const k of ['navPanelVisible', 'downsample', 'zeroFill', 'zeroRawFill', 'zeroLine'])
     if (o[k] !== undefined) { if (typeof o[k] === 'boolean') out[k] = o[k]; else errors.push(`${k} must be true or false.`); }
   if (o.wizardMode !== undefined) { if (o.wizardMode === 'simple' || o.wizardMode === 'advanced') out.wizardMode = o.wizardMode; else errors.push('wizardMode must be "simple" or "advanced".'); }
+  if (o.bandMode !== undefined) { if (BAND_MODES[o.bandMode]) out.bandMode = o.bandMode; else errors.push('bandMode must be "symmetric", "asymmetric" or "stepaware".'); }
   if (o.yResponsePercent !== undefined) { if (Number.isFinite(o.yResponsePercent)) out.yResponsePercent = clamp(Math.round(o.yResponsePercent), 1, 100); else errors.push('yResponsePercent must be a number.'); }
   return { value: errors.length ? null : out, errors };
 }
 function collectUiSettings() {
   return { schemaVersion: 1, theme: uiTheme, navPanelVisible: !$('navPanel').hidden, yResponsePercent: clamp(Math.round(Number($('yResponseRange').value) || 5), 1, 100),
-    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode };
+    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode };
 }
 function setTheme(light) {
   uiTheme = light ? 'light' : 'dark';
@@ -2127,6 +2205,7 @@ function applyUiSettings(s) {
   $('downsampleToggle').checked = !!s.downsample; $('zeroFillToggle').checked = !!s.zeroFill; $('zeroRawFillToggle').checked = !!s.zeroRawFill; $('zeroLineToggle').checked = !!s.zeroLine;
   wizMode = s.wizardMode === 'advanced' ? 'advanced' : 'simple'; if (wiz.open) wizRender(); else { const m = wq('wizMode'); if (m) m.value = wizMode; }
   if (state) { state.autoYMin = null; state.autoYMax = null; }
+  setBandMode(s.bandMode || 'symmetric');
   scheduleRender();
 }
 function uiLocalRead() { try { if (typeof localStorage === 'undefined') return null; const t = localStorage.getItem(UI_LOCAL_KEY); return t ? sanitizeUiSettings(JSON.parse(t)).value : null; } catch (_) { return null; } }
@@ -2136,7 +2215,7 @@ function uiSaveSoon() { clearTimeout(uiSaveTimer); uiSaveTimer = setTimeout(() =
 function uiMsg(t) { $('uiMessages').textContent = t; }
 function updateUiSettingsInfo() {
   const local = uiLocalRead();
-  $('uiSettingsInfo').innerHTML = `This browser: <strong>${local ? 'own settings stored' : 'nothing stored (server default or built-in values apply)'}</strong><br>Server default: <strong>${esc(uiServerState)}</strong><br><span class="small">Stored items: theme, navigation panel, Y-axis response, downsampling, zero fills, zero line, wizard mode (simple / advanced).</span>`;
+  $('uiSettingsInfo').innerHTML = `This browser: <strong>${local ? 'own settings stored' : 'nothing stored (server default or built-in values apply)'}</strong><br>Server default: <strong>${esc(uiServerState)}</strong><br><span class="small">Stored items: theme, navigation panel, Y-axis response, downsampling, zero fills, zero line, spread band mode, wizard mode (simple / advanced).</span>`;
   $('uiSaveServerBtn').disabled = !UI_SETTINGS_URL; $('uiResetServerBtn').disabled = !UI_SETTINGS_URL;
 }
 async function uiFetchServerDefault() {
@@ -2152,8 +2231,8 @@ async function uiFetchServerDefault() {
 async function uiSaveAsServerDefault() {
   if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
   try {
-    const body = collectUiSettings(), r = await fetch(UI_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body, null, 2) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const body = collectUiSettings(), r = await serverWrite(UI_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body, null, 2) });
+    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
     uiServerDefault = body; uiServerState = 'default available'; uiMsg('The current UI settings are now the server default.');
   } catch (e) { uiMsg(`Could not save the server default: ${e.message}`); }
   updateUiSettingsInfo();
@@ -2161,8 +2240,8 @@ async function uiSaveAsServerDefault() {
 async function uiResetServerDefault() {
   if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
   try {
-    const r = await fetch(UI_SETTINGS_URL, { method: 'DELETE' });
-    if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+    const r = await serverWrite(UI_SETTINGS_URL, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
     uiServerDefault = null; uiServerState = 'no default stored'; uiMsg('The server default was removed. Browsers without their own settings use the built-in values.');
   } catch (e) { uiMsg(`Could not reset the server default: ${e.message}`); }
   updateUiSettingsInfo();
@@ -2204,6 +2283,7 @@ function sensorSettingsRender() {
   $('ssForm').hidden = none; $('ssNone').hidden = !none;
   if (none) return;
   $('ssName').value = s.name; $('ssRate').value = s.state.rateHz; $('ssNotes').value = s.settings.notes || '';
+  $('ssHistoryInfo').textContent = historyStatusText(s); $('ssHistoryBtn').disabled = !historyUrlFor(s);
   $('ssRate').disabled = s.state.count > 0; $('ssRateNote').textContent = s.state.count > 0 ? 'Fixed: this sensor already holds samples.' : 'Can still be changed: no samples yet.';
 }
 function ssMsg(t) { $('ssMessages').textContent = t; }
@@ -2219,8 +2299,8 @@ async function sensorSettingsApply() {
   renderSensorSelect(); sensorSettingsRender();
   if (!SENSOR_SETTINGS_URL) { ssMsg('Applied in this session. Nothing was sent: no sensor server is configured (SENSOR_SETTINGS_URL is empty). “Download” saves sensor_settings.json.'); return; }
   try {
-    const r = await fetch(SENSOR_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sensorSettingsDoc(), null, 2) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const r = await serverWrite(SENSOR_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sensorSettingsDoc(), null, 2) });
+    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
     ssMsg('Applied and sent sensor_settings.json to the server.');
   } catch (e) { ssMsg(`Applied locally, but the server did not accept sensor_settings.json: ${e.message}`); }
 }
@@ -2232,6 +2312,8 @@ function settingsMenuTab(tab) {
   for (const t of ['ui', 'sensor']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); }
 }
 function initSettingsMenu() {
+  authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); $('calUploadBtn').disabled = !CALIBRATION_UPLOAD_URL;
+  $('ssHistoryBtn').addEventListener('click', () => { const s = ssSelectedId && sensors.get(ssSelectedId); if (s) historyLoadOlder(s).then(sensorSettingsRender); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
   $('settingsModal').addEventListener('pointerdown', e => { if (e.target === $('settingsModal')) $('settingsModal').hidden = true; });
@@ -2239,7 +2321,7 @@ function initSettingsMenu() {
   $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
   $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
   $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorSettingsDoc(), null, 2)], { type: 'application/json' }), 'sensor_settings.json'));
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('authModal').hidden) $('authCancel').click(); else if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
 }
 
 // ===== v12: CALIBRATION FITTING (pure functions: no DOM, no state) ===========================================
@@ -2286,7 +2368,9 @@ function fitPolynomial(xs, ys, degree, ws) {   // ws (optional): weights, normal
     for (let r = 0; r < p; r++) { b[r] += w * ys[i] * pw[r]; for (let k = 0; k < p; k++) A[r][k] += w * pw[r + k]; }
   }
   const coef = fitSolve(A, b); if (!coef) return null;
+  const inv = []; for (let j = 0; j < p; j++) { const e = new Array(p).fill(0); e[j] = 1; const col = fitSolve(A, e); if (!col) return null; inv.push(col); }   // columns of (Phi' W Phi)^-1
   return { coef, center: c, half: h, degree,
+    varAt: m => { const u = (m - c) / h, phi = [1]; for (let k = 1; k < p; k++) phi.push(phi[k - 1] * u); let s = 0; for (let r = 0; r < p; r++) for (let k = 0; k < p; k++) s += phi[r] * phi[k] * inv[k][r]; return s; },
     g: m => { const u = (m - c) / h; let s = 0; for (let k = p - 1; k >= 0; k--) s = s * u + coef[k]; return s; },
     dg: m => { const u = (m - c) / h; let s = 0; for (let k = p - 1; k >= 1; k--) s = s * u + k * coef[k]; return s / h; } };
 }
@@ -2354,6 +2438,22 @@ function fitWeights(points, groups, requested) {
   const idx = new Map(groups.map((g, i) => [fitKey(g.massMg), i])); info.w = points.map(p => 1 / (sig[idx.get(fitKey(p.massMg))] ** 2));
   return info;
 }
+// Replicate scatter per reference mass for the uncertainty tables (same shrinkage rule as the weighting). null if no mass has 2 or more placements.
+function replicateSigmas(points, groups) {
+  let ss = 0, nu = 0; for (const g of groups) if (g.raws.length >= 2) { ss += (g.raws.length - 1) * g.rawSD * g.rawSD; nu += g.raws.length - 1; }
+  if (!nu) return null;
+  const sp2 = ss / nu, ns = points.map(p => p.n).filter(v => Number.isFinite(v) && v >= 1), medN = ns.length ? anMedian(ns) : 1, fl = Math.max(1 / Math.sqrt(12) / Math.sqrt(medN), 1e-9);
+  return { pooled: Math.sqrt(sp2), dof: nu, sigma: groups.map(g => { const v = g.raws.length - 1, s2 = v > 0 ? g.rawSD * g.rawSD : 0; return Math.sqrt(Math.max((v * s2 + FIT_NU0 * sp2) / (v + FIT_NU0), fl * fl)); }) };
+}
+// Leave-one-out residuals: every observation is predicted by the fit WITHOUT it (brute force, so it is right for every model and weighting).
+function looResiduals(points, model, opts = {}) {
+  return points.map((p, i) => {
+    const f = fitCalibration(points.filter((_, j) => j !== i), model, { ...opts, skipNodes: true });
+    if (!f.ok) return { id: p.id, looRaw: null, looMassMg: null };
+    const r = p.raw - f.g(p.massMg), sl = f.slopeAt ? f.slopeAt(p.massMg) : NaN;
+    return { id: p.id, looRaw: r, looMassMg: Number.isFinite(sl) && sl ? r / sl : null };
+  });
+}
 // points: [{id, massMg, raw, n?, aggUnit?}] (one per included observation). Never throws; problems are in .errors, cautions in .warnings.
 // opts.weighting: 'equal' (default, exactly the v12 result) | 'shrinkage' | 'variance-model'. Weights apply to the polynomial / line fits only:
 // the piecewise-linear model passes through the replicate means, so there is nothing to weight.
@@ -2389,7 +2489,14 @@ function fitCalibration(points, model, opts = {}) {
       const gi = index.get(fitKey(p.massMg)), s = Math.min(gi, groups.length - 2), a = groups[s], b = groups[s + 1], slope = (b.rawMean - a.rawMean) / (b.massMg - a.massMg), res = p.raw - groups[gi].rawMean;
       return { id: p.id, massMg: p.massMg, raw: p.raw, fitRaw: groups[gi].rawMean, resRaw: res, resMassMg: res / slope };
     });
-    stats(null); out.slopeAt = m => { const h = 0.01 * (mHi - mLo); return (out.g(m + h) - out.g(m - h)) / (2 * h); }; warn(); out.ok = true; return out;
+    stats(null); out.slopeAt = m => { const h = 0.01 * (mHi - mLo); return (out.g(m + h) - out.g(m - h)) / (2 * h); }; warn();
+    const rs = replicateSigmas(points, groups);   // v14: placement scatter for the uncertainty tables
+    if (rs) {
+      const seg = m => { let i = 0; while (i < groups.length - 2 && m > groups[i + 1].massMg) i++; const a = groups[i], b = groups[i + 1]; return { i, t: clamp((m - a.massMg) / (b.massMg - a.massMg), 0, 1) }; };
+      out.seRawAt = m => { const { i, t } = seg(m), a = rs.sigma[i] / Math.sqrt(groups[i].raws.length), b = rs.sigma[i + 1] / Math.sqrt(groups[i + 1].raws.length); return Math.sqrt(((1 - t) * a) ** 2 + (t * b) ** 2); };
+      out.sdRawAt = m => { const { i, t } = seg(m); return (1 - t) * rs.sigma[i] + t * rs.sigma[i + 1]; };
+    }
+    out.ok = true; return out;
   }
   const need = spec.degree + 1;
   if (groups.length < need) { out.errors.push(`${spec.label} needs at least ${need} different reference masses; there are ${groups.length}.`); return out; }
@@ -2403,6 +2510,13 @@ function fitCalibration(points, model, opts = {}) {
   let sign = 0; out.monotone = true;
   for (let k = 0; k <= 400; k++) { const s = Math.sign(fit.dg(mLo + (mHi - mLo) * k / 400)); if (s === 0 || (sign && s !== sign)) { out.monotone = false; break; } sign = s; }
   if (!out.monotone) { out.errors.push('The fitted curve is not monotonic over the range of the reference masses. Use a lower degree or exclude an observation.'); return out; }
+  { // v14: standard error of the fitted curve (residual scatter x leverage) and the placement scatter at a mass, for the uncertainty tables
+    const wn = wt.w ? wt.w.map(v => v / mean1) : null; let ssn = 0; out.residuals.forEach((r, i) => { ssn += (wn ? wn[i] : 1) * r.resRaw * r.resRaw; });
+    const s2n = out.dof > 0 ? ssn / out.dof : NaN, sg = (wt.sigmaPerMass || []).map(s => ({ massMg: s.massMg, uMg: s.sigma }));
+    out.seRawAt = m => Math.sqrt(Math.max(0, s2n * fit.varAt(m)));
+    out.sdRawAt = m => (wt.scheme === 'equal' || !sg.length) ? Math.sqrt(s2n) : interpTable(sg, m);
+  }
+  if (opts.skipNodes) { out.nodes = 0; out.maxInterpErrMg = 0; out.ok = true; return out; }
   let N = spec.degree > 1 ? 17 : 2, nodes;
   const build = () => { nodes = Array.from({ length: N }, (_, k) => { const m = mLo + (mHi - mLo) * k / (N - 1); return { massMg: m, raw: fit.g(m) }; }); nodes.g = fit.g; return fitInterpError(nodes); };
   let err = build();
@@ -2439,16 +2553,19 @@ function wizLoadMassMg(W, load) {
   return s;
 }
 function wizObsWeightId(load) { return load.weightRef || (load.components.length === 1 && Number(load.components[0].quantity) === 1 ? load.components[0].weightId : null); }
-function wizPoints(W) {
-  const points = [], errors = [];
+// opts.all: every included observation whatever its loading direction (used by the hysteresis analysis). Otherwise W.hysteresisUse decides:
+// 'both' (default: the fit follows the mean path of up and down), or 'up' / 'down' only. An observation without a direction counts as 'up'.
+function wizPoints(W, opts = {}) {
+  const points = [], errors = [], use = opts.all ? 'both' : (W.hysteresisUse || 'both');
   for (const o of W.observations) {
     if (!o.include) continue;
+    if (use !== 'both' && (o.loadingDirection || 'up') !== use) continue;
     const load = W.loads.find(l => l.loadId === o.loadId);
     if (!load) { errors.push(`Observation ${o.observationId} refers to a missing load.`); continue; }
     if (!Number.isFinite(o.rawMean)) { errors.push(`Observation ${o.observationId} has no valid raw mean.`); continue; }
     try {
       const wid = wizObsWeightId(load), w = wid && W.weights.find(x => x.weightId === wid), g = wizGroupOf(W, w);
-      points.push({ id: o.observationId, massMg: wizLoadMassMg(W, load), raw: o.rawMean, n: o.sampleCount, aggUnit: g && g.aggregation === 'variance-components' ? wid : null });
+      points.push({ id: o.observationId, massMg: wizLoadMassMg(W, load), raw: o.rawMean, n: o.sampleCount, aggUnit: g && g.aggregation === 'variance-components' ? wid : null, direction: o.loadingDirection || null });
     } catch (e) { errors.push(e.message); }
   }
   return { points, errors };
@@ -2492,20 +2609,28 @@ function parseWeightSpec(text) {
   const raw = [], errors = [];
   for (const part of String(text == null ? '' : text).split(/[;,\n]+/)) {
     const t = part.trim(); if (!t) continue;
-    const m = t.match(/^(?:(\d+)\s*(?:x|×|\*)\s*)?(\d+(?:[.,]\d+)?)\s*([a-zA-Zµ]*)$/i);
-    if (!m) { errors.push(`Cannot read “${t}”. Write it like 3 x 100 g.`); continue; }
+    const m = t.match(/^(?:(\d+)\s*(?:x|×|\*)\s*)?(\d+(?:[.,]\d+)?)\s*([a-zA-Zµ]*)(?:\s*(?:±|\+-|\+\/-)\s*(\d+(?:[.,]\d+)?)\s*([a-zA-Zµ]*))?$/i);
+    if (!m) { errors.push(`Cannot read “${t}”. Write it like 3 x 100 g, or with a tolerance: 3 x 100 g ±0.5 mg.`); continue; }
     const qty = m[1] ? parseInt(m[1], 10) : 1, value = Number(m[2].replace(',', '.')), unit = SIMPLE_UNIT_ALIASES[(m[3] || 'g').toLowerCase()];
     if (!unit) { errors.push(`Unknown unit “${m[3]}” in “${t}”. Use mg, g, kg, oz or lb.`); continue; }
     if (!(value > 0)) { errors.push(`The mass in “${t}” must be greater than 0.`); continue; }
     if (qty < 1 || qty > 10) { errors.push(`The number of pieces in “${t}” must be between 1 and 10.`); continue; }
-    raw.push({ qty, value, unit });
+    const it = { qty, value, unit };
+    if (m[4] != null) {
+      const tu = m[5] ? SIMPLE_UNIT_ALIASES[m[5].toLowerCase()] : unit, tv = Number(m[4].replace(',', '.'));
+      if (!tu) { errors.push(`Unknown unit “${m[5]}” for the tolerance in “${t}”.`); continue; }
+      it.tol = { value: tv, unit: tu };
+    }
+    raw.push(it);
   }
   const items = [];
-  for (const it of raw) { const e = items.find(x => x.value === it.value && x.unit === it.unit); if (e) e.qty += it.qty; else items.push({ ...it }); }
+  const sameTol = (a, b) => (!a && !b) || (a && b && a.value === b.value && a.unit === b.unit);
+  for (const it of raw) { const e = items.find(x => x.value === it.value && x.unit === it.unit && sameTol(x.tol, it.tol)); if (e) e.qty += it.qty; else items.push({ ...it }); }
   if (!items.length && !errors.length) errors.push('Enter at least one weight, e.g. 3 x 100 g, 1 x 200 g.');
   if (items.reduce((s, x) => s + x.qty, 0) > 30) errors.push('At most 30 weights in total.');
   return { items, errors };
 }
+const numOrNull = v => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
   const unit = W.profile.unit, pad = (n, w) => String(n).padStart(w, '0'), stats = extra.groupStats || [];
   const included = W.observations.filter(o => o.include), groups = W.groups || [];
@@ -2520,8 +2645,9 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
     schemaVersion: 1, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '13.0-wizard',
     calibrationUnit: unit, calibrationMethod: 'piecewise-linear',
     sensor: { model: W.profile.sensorModel || '', hardwareId: W.sensorId || '', adcResolutionBits: null, samplingRateHz: W.rateHz || null },
-    environment: { temperatureC: null, relativeHumidityPercent: null, notes: W.profile.notes || '' },
-    referenceWeights: W.weights.map(w => ({ weightId: w.weightId, name: w.name, nominalMass: Number(w.nominalMass), assignedMass: w.assignedMass == null ? null : Number(w.assignedMass), unit: w.unit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty, groupId: w.groupId || null, relativeMassToGroupMean: rel(w.weightId) })),
+    environment: { temperatureC: numOrNull(W.profile.temperatureC), relativeHumidityPercent: numOrNull(W.profile.humidityPercent), notes: W.profile.notes || '' },
+    referenceWeights: W.weights.map(w => ({ weightId: w.weightId, name: w.name, nominalMass: Number(w.nominalMass), assignedMass: w.assignedMass == null ? null : Number(w.assignedMass), unit: w.unit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty, groupId: w.groupId || null, relativeMassToGroupMean: rel(w.weightId),
+      massUncertainty: weightStdUncertaintyMg(w) == null ? null : { value: Number(w.massUncertainty.value), unit: w.massUncertainty.unit || w.unit, basis: w.massUncertainty.basis, coverageFactor: w.massUncertainty.basis === 'certificate' ? (Number(w.massUncertainty.coverageFactor) > 0 ? Number(w.massUncertainty.coverageFactor) : 2) : null, distribution: w.massUncertainty.distribution || (w.massUncertainty.basis === 'certificate' ? 'normal' : 'rectangular'), standardUncertaintyMg: weightStdUncertaintyMg(w) } })),
     referenceWeightGroups: groups.map(g => { const s = stats.find(x => x.groupId === g.groupId);
       return { groupId: g.groupId, name: g.name, nominalMass: Number(g.nominalMass), unit: g.unit, memberWeightIds: W.weights.filter(w => w.groupId === g.groupId).map(w => w.weightId), massBasis: g.massBasis, aggregation: g.aggregation,
         traceable: g.massBasis === 'nominal' ? false : null, massBasisNote: g.massBasis === 'nominal' ? 'nominal, uncertified: the mass scale rests on the nominal value; the accuracy cannot be better than the weights\' class tolerance' : 'individual assigned masses',
@@ -2529,7 +2655,7 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
     referenceLoads: W.loads.map(l => ({ loadId: l.loadId, name: l.name, components: l.components.map(c => ({ weightId: c.weightId, quantity: Number(c.quantity) })) })),
     observations: W.observations.map(o => {
       const v = o.validity || {};
-      const r = { observationId: o.observationId, weightId: wizObsWeightId(W.loads.find(l => l.loadId === o.loadId) || { components: [] }), loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId, placementIndex: o.placementIndex, removedAndReplaced: !!o.removedAndReplaced,
+      const r = { observationId: o.observationId, weightId: wizObsWeightId(W.loads.find(l => l.loadId === o.loadId) || { components: [] }), loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId, placementIndex: o.placementIndex, removedAndReplaced: !!o.removedAndReplaced, loadingDirection: o.loadingDirection || null,
         rawMean: o.rawMean, rawStdDev: o.rawStdDev, rawMedian: o.rawMedian, rawMAD: o.rawMAD, sampleCount: o.sampleCount, durationMs: o.durationMs, outlierMethod: null,
         validityStatus: v.status || 'n/a', validityFlags: v.flagged || [], included: !!o.include };
       if (v.analysis && v.analysis.checks) r.validityChecks = v.analysis.checks;
@@ -2547,9 +2673,12 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
         sigmaPerMass: (fit.weighting.sigmaPerMass || []).map(s => ({ massMg: s.massMg, placements: s.n, sampleSdCounts: w5(s.sd), sigmaUsedCounts: w5(s.sigma) })) },
       chiSquare: w5(fit.chi2), reducedChiSquare: w5(fit.reducedChi2),
       warnings: extra.warnings || [],
+      hysteresisUse: W.hysteresisUse || 'both',
       overriddenObservations: included.filter(o => o.override).map(o => o.observationId) },
+    ...(extra.uncertainty ? { uncertainty: extra.uncertainty } : {}),
     validation: { status: 'not-characterized', method: null, checks: [{ id: 'fit-residuals', status: 'informational', note: 'observed scatter of the observations around the model; not an uncertainty' }], modelUncertainty: null },
-    reserved: { warmUpDurationSeconds: null, loadApproach: 'not-recorded', loadingDirection: 'not-determined', hysteresisAnalysis: null, temperatureCompensation: null, humidityCompensation: null }
+    reserved: { warmUpDurationSeconds: numOrNull(W.profile.warmUpMinutes) == null ? null : numOrNull(W.profile.warmUpMinutes) * 60, loadApproach: 'not-recorded',
+      loadingDirection: W.observations.some(o => o.loadingDirection) ? (W.hysteresisUse || 'both') : 'not-determined', hysteresisAnalysis: extra.hysteresis || null, temperatureCompensation: null, humidityCompensation: null }
   };
 }
 
@@ -2564,13 +2693,13 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
 // calibration change / gap exactly like a measurement. Observations store RAW counts, so the wizard result does not depend on any tare or on the calibration
 // that is active meanwhile.
 let wizMode = 'simple';
-const SIMPLE_CAPTURE_SECONDS = 10, SIMPLE_PLACEMENTS = 3, SIMPLE_LINEAR_TOL = 0.005;   // Simple mode: recording length; placements per mass; "straight line" if no residual exceeds 0.5 % of the mass span
+const SIMPLE_CAPTURE_SECONDS = 10, SIMPLE_PLACEMENTS = 3, SIMPLE_PLACEMENTS_MIN = 2, SIMPLE_PLACEMENTS_MAX = 10, SIMPLE_LINEAR_TOL = 0.005;   // Simple mode: recording length; placements per mass; "straight line" if no residual exceeds 0.5 % of the mass span
 const wiz = { open: false, tab: 'weights', minimised: false, sensorId: null, rateHz: null, profile: null, weights: [], groups: [], loads: [], observations: [], runId: null,
-  captureSeconds: 10, capture: null, fitModel: 'anchors', weighting: 'equal', message: '', selLoad: null, replaced: true, nextNum: 1, comboOpen: false, comboPick: {}, manualOpen: false, simpleSpec: null };
+  captureSeconds: 10, capture: null, fitModel: 'anchors', weighting: 'equal', message: '', selLoad: null, replaced: true, nextNum: 1, comboOpen: false, comboPick: {}, manualOpen: false, simpleSpec: null, placements: 3, returnRun: false, hysteresisUse: 'both', direction: null };
 const WIZ_EMPTY_WEIGHT = () => ({ weightId: 'ref-empty', name: 'Empty platform / zero reference', nominalMass: 0, assignedMass: null, unit: 'g', referenceUncertainty: null, groupId: null });
 function wizNew() {
-  Object.assign(wiz, { tab: 'weights', profile: { profileId: `scale-profile-${wizStamp()}`, profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', weighting: 'equal', message: '',
-    weights: [WIZ_EMPTY_WEIGHT()], groups: [], loads: [], comboOpen: false, comboPick: {}, runId: `run-${wizStamp()}`, selLoad: null, simpleSpec: null });
+  Object.assign(wiz, { tab: 'weights', profile: { profileId: `scale-profile-${wizStamp()}`, profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '', temperatureC: '', humidityPercent: '', warmUpMinutes: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', weighting: 'equal', message: '',
+    weights: [WIZ_EMPTY_WEIGHT()], groups: [], loads: [], comboOpen: false, comboPick: {}, runId: `run-${wizStamp()}`, selLoad: null, simpleSpec: null, returnRun: false, hysteresisUse: 'both', direction: null });
   wizSyncLoads(); wiz.selLoad = wiz.loads[0].loadId;
 }
 // Every weight has an automatic single-weight load; the empty platform has none (components: []). Also keeps the group membership consistent.
@@ -2599,8 +2728,10 @@ function wizMigrateGroups() {
 }
 function wizLoadFromConfig(cfg) {
   const num = v => (v == null ? null : Number(v));
-  wiz.profile = { profileId: cfg.profileId, profileName: cfg.profileName, unit: cfg.calibrationUnit, notes: (cfg.environment && cfg.environment.notes) || '', sensorModel: (cfg.sensor && cfg.sensor.model) || '' };
-  wiz.weights = (cfg.referenceWeights || []).map(w => ({ weightId: w.weightId, name: w.name || w.weightId, nominalMass: Number(w.nominalMass), assignedMass: num(w.assignedMass), unit: w.unit || cfg.calibrationUnit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty, groupId: w.groupId || null }));
+  wiz.profile = { profileId: cfg.profileId, profileName: cfg.profileName, unit: cfg.calibrationUnit, notes: (cfg.environment && cfg.environment.notes) || '', sensorModel: (cfg.sensor && cfg.sensor.model) || '',
+    temperatureC: cfg.environment && cfg.environment.temperatureC != null ? cfg.environment.temperatureC : '', humidityPercent: cfg.environment && cfg.environment.relativeHumidityPercent != null ? cfg.environment.relativeHumidityPercent : '', warmUpMinutes: cfg.reserved && cfg.reserved.warmUpDurationSeconds != null ? cfg.reserved.warmUpDurationSeconds / 60 : '' };
+  wiz.weights = (cfg.referenceWeights || []).map(w => ({ weightId: w.weightId, name: w.name || w.weightId, nominalMass: Number(w.nominalMass), assignedMass: num(w.assignedMass), unit: w.unit || cfg.calibrationUnit, referenceUncertainty: w.referenceUncertainty == null ? null : w.referenceUncertainty, groupId: w.groupId || null,
+    massUncertainty: w.massUncertainty && w.massUncertainty.basis && w.massUncertainty.basis !== 'none' ? { ...w.massUncertainty } : null }));
   const hasGroups = Array.isArray(cfg.referenceWeightGroups);
   wiz.groups = hasGroups ? cfg.referenceWeightGroups.map(g => ({ groupId: g.groupId, name: g.name || g.groupId, nominalMass: Number(g.nominalMass), unit: g.unit || cfg.calibrationUnit, massBasis: g.massBasis === 'assigned' ? 'assigned' : 'nominal', aggregation: g.aggregation === 'variance-components' ? 'variance-components' : 'mean-of-placements' })) : [];
   if (!hasGroups) wizMigrateGroups();
@@ -2613,12 +2744,13 @@ function wizLoadFromConfig(cfg) {
   wiz.observations = (cfg.observations || []).map(o => {
     const include = o.included !== undefined ? !!o.included : !o.excluded, st = o.validityStatus || 'n/a';
     return { observationId: o.observationId, loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId || 'imported', placementIndex: o.placementIndex || 0, removedAndReplaced: !!o.removedAndReplaced,
-      rawMean: Number(o.rawMean), rawStdDev: num(o.rawStdDev), rawMedian: num(o.rawMedian), rawMAD: num(o.rawMAD), sampleCount: num(o.sampleCount), durationMs: num(o.durationMs),
+      loadingDirection: o.loadingDirection === 'up' || o.loadingDirection === 'down' ? o.loadingDirection : null, rawMean: Number(o.rawMean), rawStdDev: num(o.rawStdDev), rawMedian: num(o.rawMedian), rawMAD: num(o.rawMAD), sampleCount: num(o.sampleCount), durationMs: num(o.durationMs),
       validity: { status: st, flagged: o.validityFlags || [], analysis: Array.isArray(o.validityChecks) ? { status: st, analyzedN: num(o.sampleCount) || 0, note: '', checks: o.validityChecks } : null },
       include, exclusionReason: o.exclusionReason, override: include && o.overrideReason ? { reason: o.overrideReason, at: o.overrideAt || null } : undefined, source: 'imported' };
   });
   wiz.fitModel = (cfg.fit && FIT_MODELS[cfg.fit.model]) ? cfg.fit.model : 'anchors';
   wiz.weighting = (cfg.fit && cfg.fit.weighting && WEIGHTINGS[cfg.fit.weighting.requested]) ? cfg.fit.weighting.requested : 'equal';
+  wiz.hysteresisUse = cfg.fit && ['both', 'up', 'down'].includes(cfg.fit.hysteresisUse) ? cfg.fit.hysteresisUse : 'both'; wiz.direction = null;
   wiz.comboOpen = false; wiz.comboPick = {}; wiz.runId = `run-${wizStamp()}`; wiz.nextNum = wiz.weights.length + 1; wiz.capture = null; wiz.tab = wizMode === 'simple' ? 'review' : 'fit';
   wizSyncLoads();
 }
@@ -2636,26 +2768,40 @@ function wizSimpleSetWeights(items) {
   const num = v => String(v).replace('.', 'p');
   wiz.profile.unit = items[0].unit; wiz.weights = [WIZ_EMPTY_WEIGHT()]; wiz.groups = []; wiz.loads = [];
   for (const it of items) {
-    const sym = unitById(it.unit).symbol, base = `${num(it.value)}${it.unit}`, gid = it.qty > 1 ? `grp-${base}` : null;
+    const sym = unitById(it.unit).symbol, base = `${num(it.value)}${it.unit}${it.tol ? `-t${num(it.tol.value)}${it.tol.unit}` : ''}`, gid = it.qty > 1 ? `grp-${base}` : null;
     if (gid) wiz.groups.push({ groupId: gid, name: `${it.qty} × ${it.value} ${sym}`, nominalMass: it.value, unit: it.unit, massBasis: 'nominal', aggregation: 'mean-of-placements' });
-    for (let q = 0; q < it.qty; q++) wiz.weights.push({ weightId: `ref-${base}${it.qty > 1 ? '-' + WIZ_LETTERS[q] : ''}`, name: `${it.value} ${sym} weight${it.qty > 1 ? ' ' + WIZ_LETTERS[q] : ''}`, nominalMass: it.value, assignedMass: null, unit: it.unit, referenceUncertainty: null, groupId: gid });
+    for (let q = 0; q < it.qty; q++) wiz.weights.push({ weightId: `ref-${base}${it.qty > 1 ? '-' + WIZ_LETTERS[q] : ''}`, name: `${it.value} ${sym} weight${it.qty > 1 ? ' ' + WIZ_LETTERS[q] : ''}`, nominalMass: it.value, assignedMass: null, unit: it.unit, referenceUncertainty: null, groupId: gid, massUncertainty: it.tol ? { value: it.tol.value, unit: it.tol.unit, basis: 'class-tolerance' } : null });
   }
   wizSyncLoads();
   const first = wizPlan().find(r => r.req > 0); wiz.selLoad = first ? first.load.loadId : wiz.loads[0].loadId;
 }
 // Required placements per single-weight load: 3 per mass level (the weights of a group take turns: 3 members -> 1 each, 2 -> 2 + 1, 1 -> 3).
+function wizPlacements() { return clamp(Math.round(Number(wiz.placements) || SIMPLE_PLACEMENTS), SIMPLE_PLACEMENTS_MIN, SIMPLE_PLACEMENTS_MAX); }
 function wizPlan() {
-  const rows = [];
+  const rows = [], P = wizPlacements();
   for (const l of wiz.loads) {
     if (!l.auto) continue;
     const w = wiz.weights.find(x => x.weightId === l.weightRef); if (!w) continue;
-    let req = SIMPLE_PLACEMENTS;
-    if (w.groupId) { const mem = wiz.weights.filter(x => x.groupId === w.groupId), k = mem.length, idx = mem.indexOf(w); req = Math.floor(SIMPLE_PLACEMENTS / k) + (idx < SIMPLE_PLACEMENTS % k ? 1 : 0); }
-    rows.push({ load: l, req, done: wiz.observations.filter(o => o.loadId === l.loadId).length, mass: wizLoadMassSafe(l) });
+    let req = P;
+    if (w.groupId) { const mem = wiz.weights.filter(x => x.groupId === w.groupId), k = mem.length, idx = mem.indexOf(w); req = Math.floor(P / k) + (idx < P % k ? 1 : 0); }
+    rows.push({ load: l, req, done: wiz.observations.filter(o => o.loadId === l.loadId && o.loadingDirection !== 'down').length, mass: wizLoadMassSafe(l), direction: 'up' });
   }
   rows.sort((a, b) => a.mass - b.mass);
   return rows;
 }
+// Optional return run (Simple mode): after the way UP (empty, light ... heavy) one placement per mass level on the way DOWN (heavy ... empty).
+function wizPlanDown() {
+  if (!wiz.returnRun) return [];
+  const by = new Map();
+  for (const l of wiz.loads) { if (!l.auto) continue; const m = wizLoadMassSafe(l); if (!Number.isFinite(m)) continue; const k = fitKey(m); if (!by.has(k)) by.set(k, []); by.get(k).push(l); }
+  const rows = [];
+  for (const [k, ls] of by) {
+    const cnt = l => wiz.observations.filter(o => o.loadId === l.loadId && o.loadingDirection === 'down').length, pick = ls.slice().sort((a, b) => cnt(a) - cnt(b))[0], done = ls.reduce((s, l) => s + cnt(l), 0);
+    rows.push({ load: pick, req: 1, done, mass: wizLoadMassSafe(pick), direction: 'down' });
+  }
+  return rows.sort((a, b) => b.mass - a.mass);
+}
+function wizFullPlan() { return wizPlan().concat(wizPlanDown()); }
 function wizPlainVerdict(v) {
   const st = v && v.status, f = ((v && v.flagged) || []).join(' ').toLowerCase();
   if (st === 'ok') return 'settled'; if (st === 'insufficient') return 'too short to judge'; if (!st || st === 'n/a') return 'not analysed';
@@ -2669,20 +2815,24 @@ function compactAnalysis(an) {
   return { status: an.status, analyzedN: an.analyzedN || 0, note: an.note || '', checks: (an.checks || []).map(c => ({ id: c.id, label: c.label, verdict: c.verdict, valueText: c.valueText || '', detail: c.detail || '',
     threshold: { warn: c.threshold && c.threshold.warn != null ? c.threshold.warn : null, fail: c.threshold && c.threshold.fail != null ? c.threshold.fail : null, failText: c.threshold && c.threshold.failText || undefined, direction: c.threshold && c.threshold.direction || undefined } })) };
 }
-function wizObservationFromRange(first, end, loadId, source) {
+function wizObservationFromRange(first, end, loadId, source, direction = null) {
   const raws = new Array(end - first); for (let i = first; i < end; i++) raws[i - first] = getRaw(i);
   const st = rawStats(raws), an = analyzeInterval(first, end);
   const flagged = (an.checks || []).filter(c => c.verdict === 'suspect' || c.verdict === 'invalid').map(c => c.label.split(' / ')[0]);
-  return { observationId: wizNextObsId(), loadId, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced,
+  return { observationId: wizNextObsId(), loadId, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced, loadingDirection: direction,
     rawMean: st.mean, rawStdDev: st.sd, rawMedian: st.median, rawMAD: st.mad, sampleCount: st.n, durationMs: getTime(end - 1) - getTime(first) + PERIOD_MS,
     validity: { status: an.status, flagged, analysis: compactAnalysis(an) }, include: an.status !== 'invalid', exclusionReason: an.status === 'invalid' ? 'validity check: invalid' : undefined, source };
 }
 function wizRecord() {
   const why = wizBlock(); if (why) { wiz.message = why; wizRender(); return; }
-  const load = wiz.loads.find(l => l.loadId === wiz.selLoad); if (!load) { wiz.message = 'Choose a load first.'; wizRender(); return; }
+  let load = wiz.loads.find(l => l.loadId === wiz.selLoad);
+  if (wizMode === 'simple') { const nx = wizFullPlan().find(r => r.done < r.req); if (nx) { load = nx.load; wiz.selLoad = load.loadId; } }   // Simple mode always records the placement it proposes
+  if (!load) { wiz.message = 'Choose a load first.'; wizRender(); return; }
   if (wizMode === 'simple') wiz.captureSeconds = SIMPLE_CAPTURE_SECONDS;
   const n = clamp(Math.round(wiz.captureSeconds * RATE_HZ), 2, MEASUREMENT_MAX_SAMPLES);
-  wiz.capture = { loadId: load.loadId, target: n };
+  let dir = wiz.direction || null;
+  if (wizMode === 'simple') { dir = null; if (wiz.returnRun) { const nx = wizFullPlan().find(r => r.done < r.req); dir = nx ? nx.direction : 'up'; } }
+  wiz.capture = { loadId: load.loadId, target: n, direction: dir };
   const ok = beginMeasurement(n, { tag: 'calibration wizard', onDone: wizCaptureDone, onCancel: r => { wiz.capture = null; wiz.message = `Capture cancelled: ${r}`; if (wiz.open) wizRender(); } });
   if (!ok) { wiz.capture = null; wiz.message = $('measProgress').textContent; }
   else wiz.message = `Recording ${n.toLocaleString()} samples (${(n / RATE_HZ).toFixed(1)} s). Do not touch the platform.`;
@@ -2690,7 +2840,7 @@ function wizRecord() {
 }
 function wizCaptureDone(entry, first, end) {
   const cap = wiz.capture; wiz.capture = null; if (!cap) return;
-  const o = wizObservationFromRange(first, end, cap.loadId, 'capture'); wiz.observations.push(o);
+  const o = wizObservationFromRange(first, end, cap.loadId, 'capture', cap.direction || null); wiz.observations.push(o);
   wiz.message = wizMode === 'simple' ? `Recorded: ${wizPlainVerdict(o.validity)}${o.include ? '' : ' (left out until you choose “include anyway”)'}.`
     : `Observation ${o.observationId} recorded: mean ${fmtNumber(o.rawMean, 2)} counts, SD ${fmtNumber(o.rawStdDev, 2)}, validity ${STATUS_TEXT[o.validity.status] || o.validity.status}${o.include ? '' : ' (excluded by default)'}.`;
   wiz.replaced = true; if (wiz.open) wizRender();
@@ -2702,14 +2852,14 @@ function wizUseSelection() {
   if (s.t0 < oldestTime() || s.t1 > newestTime()) { wiz.message = 'The selected samples are no longer in the buffer.'; wizRender(); return; }
   const first = lowerBoundTime(s.t0), end = lowerBoundTime(s.t1 + 0.0001);
   if (end - first < 2) { wiz.message = 'Select at least two samples.'; wizRender(); return; }
-  const o = wizObservationFromRange(first, end, wiz.selLoad, 'selection'); wiz.observations.push(o);
+  const o = wizObservationFromRange(first, end, wiz.selLoad, 'selection', wiz.direction || null); wiz.observations.push(o);
   wiz.message = `Observation ${o.observationId} taken from the selected interval (${o.sampleCount.toLocaleString()} samples).`; wizRender();
 }
 function wizAddManual() {
   const raw = Number(wq('wizManualRaw').value), sd = wq('wizManualSd').value === '' ? null : Number(wq('wizManualSd').value), n = wq('wizManualN').value === '' ? null : Math.round(Number(wq('wizManualN').value));
   if (!Number.isFinite(raw)) { wiz.message = 'Enter the mean raw counts.'; wizRender(); return; }
   wiz.observations.push({ observationId: wizNextObsId(), loadId: wiz.selLoad, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced,
-    rawMean: raw, rawStdDev: sd, rawMedian: null, rawMAD: null, sampleCount: n, durationMs: null, validity: { status: 'n/a', flagged: [], analysis: null }, include: true, source: 'manual' });
+    loadingDirection: wiz.direction || null, rawMean: raw, rawStdDev: sd, rawMedian: null, rawMAD: null, sampleCount: n, durationMs: null, validity: { status: 'n/a', flagged: [], analysis: null }, include: true, source: 'manual' });
   wiz.message = 'Manual observation added (no validity analysis available).'; wizRender();
 }
 // Including an observation whose validity check failed is allowed, knowingly: the override is recorded (reason, time) and ends up in the JSON.
@@ -2726,10 +2876,44 @@ function wizUnitSelect(a, i, f, cur) { return `<select data-w="${a}" data-i="${i
 function wizValidityBadge(v) { const st = (v && v.status) || 'n/a'; return `<span class="vbadge ${st === 'n/a' ? 'na' : st}">${VERDICT_ICON[st] || '–'} ${esc(STATUS_TEXT[st] || st)}${v && v.flagged && v.flagged.length ? ' (' + esc(v.flagged.join(', ')) + ')' : ''}</span>`; }
 // The validity result of an observation is expandable (same list as for a measurement); its open/closed state survives re-rendering.
 function wizValidityCell(o) { const v = o.validity || {}; return v.analysis && v.analysis.checks && v.analysis.checks.length ? analysisHTML(v.analysis, false, 'obs:' + o.observationId) : wizValidityBadge(v); }
+function uncProfileLabel(unc) {
+  if (!unc || unc.status !== 'estimated') return '';
+  const w = unc.components.find(c => c.id === 'weight-tolerance'), h = unc.components.find(c => c.id === 'hysteresis');
+  return w && w.included ? 'estimated, not traceable' : `estimated, ${h && h.included ? 'repeatability and hysteresis' : 'repeatability'} only, not traceable`;
+}
+function wizUncAt(unc, massMg) { return interpTable(unc.combined.table.map(t => ({ massMg: t.massMg, uMg: t.UMg })), massMg); }
+function uncSummaryHTML(unc, unit) {
+  if (!unc) return '';
+  if (unc.status !== 'estimated') return `<div class="status-note">Uncertainty: not estimated. ${esc(unc.reason || '')}</div>`;
+  const us = unitById(unit).symbol, lo = unc.combined.table[0].massMg, hi = unc.combined.table[unc.combined.table.length - 1].massMg;
+  const rows = [0, .25, .5, .75, 1].map(f => { const m = lo + (hi - lo) * f, r = unc.combined.table.reduce((a, b) => Math.abs(b.massMg - m) < Math.abs(a.massMg - m) ? b : a); return `<tr><td>${wizMassText(r.massMg, unit)}</td><td>${esc(formatMassSig(r.uMg, unit))}</td><td>${r.dof.toFixed ? (Number.isFinite(r.dof) ? r.dof.toFixed(1) : '∞') : ''}</td><td>${r.k.toFixed(2)}</td><td><strong>± ${esc(formatMassSig(r.UMg, unit))}</strong></td></tr>`; }).join('');
+  const comps = unc.components.map(c => `<li>${c.included ? '✓' : '✗'} ${esc(c.label)} <span class="small">· ${esc(c.note)}</span></li>`).join('');
+  return `<div class="status-note"><strong>Estimated uncertainty (${esc(uncProfileLabel(unc))})</strong><ul class="small">${comps}</ul><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>u<sub>c</sub> (calibration side)</th><th>dof</th><th>k (95 %)</th><th>U = k u<sub>c</sub></th></tr></thead><tbody>${rows}</tbody></table></div><div class="small">A measurement adds its own reading noise and resolution. Not included: ${esc(unc.notIncluded.join(', '))}. A bias shared by all weights is not reduced by averaging and cannot be seen. This is an estimate, not a traceable uncertainty (symbol ${esc(us)}).</div></div>`;
+}
+function wizFitReport() {
+  const b = wizBuild(), { pts, fits } = wizFits(), fit = b.fit, loo = fit.ok ? looResiduals(pts.points, b.model, { weighting: wizWeighting() }) : [], looBy = new Map(loo.map(l => [l.id, l]));
+  return { generatedAt: new Date().toISOString(), applicationVersion: '14.0', mode: wizMode, sensorId: wiz.sensorId, samplingRateHz: wiz.rateHz,
+    profile: { ...wiz.profile }, model: { id: b.model, label: FIT_MODELS[b.model].label }, weighting: fit.weighting, hysteresisUse: wiz.hysteresisUse || 'both',
+    comparison: Object.entries(fits).map(([id, f]) => ({ model: id, ok: f.ok, errors: f.errors, parameters: f.params, dof: f.dof, residualSdCounts: Number.isFinite(f.sdRawRes) ? f.sdRawRes : null, reducedChiSquare: f.reducedChi2, rmsResidualMassMg: Number.isFinite(f.rmsMassMg) ? f.rmsMassMg : null, maxAbsResidualMassMg: Number.isFinite(f.maxAbsMassMg) ? f.maxAbsMassMg : null })),
+    observations: wiz.observations.map(o => ({ observationId: o.observationId, loadId: o.loadId, loadingDirection: o.loadingDirection || null, rawMean: o.rawMean, rawStdDev: o.rawStdDev, sampleCount: o.sampleCount, durationMs: o.durationMs, validityStatus: (o.validity || {}).status, included: !!o.include, override: o.override || null })),
+    residuals: fit.ok ? fit.residuals.map(r => ({ ...r, looResidualCounts: (looBy.get(r.id) || {}).looRaw ?? null, looResidualMg: (looBy.get(r.id) || {}).looMassMg ?? null })) : [],
+    weightGroups: b.stats, hysteresis: b.hyst, uncertainty: b.unc, warnings: b.warnings.map(w => w.text), errors: b.errors };
+}
+function wizFitReportText(rep) {
+  const L = [`# Fit report: ${rep.profile.profileName}`, '', `Generated ${rep.generatedAt} · sensor ${rep.sensorId} · mode ${rep.mode}`, '', `Model: ${rep.model.label}`, `Weighting: ${rep.weighting ? rep.weighting.scheme : ''}${rep.weighting && rep.weighting.reason ? ' (' + rep.weighting.reason + ')' : ''}`, `Loading directions used: ${rep.hysteresisUse}`, '', '## Model comparison', '', '| model | p | dof | SD (counts) | red. chi2 | RMS (mg) | largest (mg) |', '|---|---|---|---|---|---|---|'];
+  for (const c of rep.comparison) L.push(c.ok ? `| ${c.model} | ${c.parameters} | ${c.dof} | ${c.residualSdCounts == null ? '-' : c.residualSdCounts.toFixed(3)} | ${c.reducedChiSquare == null ? '-' : c.reducedChiSquare.toFixed(2)} | ${c.rmsResidualMassMg == null ? '-' : c.rmsResidualMassMg.toFixed(2)} | ${c.maxAbsResidualMassMg == null ? '-' : c.maxAbsResidualMassMg.toFixed(2)} |` : `| ${c.model} | not possible: ${(c.errors || [])[0] || ''} |`);
+  L.push('', '## Residuals (observed scatter, not uncertainty)', '', '| observation | mass (mg) | counts | residual (counts) | leave-one-out (counts) | standardised |', '|---|---|---|---|---|---|');
+  for (const r of rep.residuals) L.push(`| ${r.id} | ${r.massMg} | ${r.raw} | ${r.resRaw.toFixed(3)} | ${r.looResidualCounts == null ? '-' : r.looResidualCounts.toFixed(3)} | ${Number.isFinite(r.std) ? r.std.toFixed(2) : '-'} |`);
+  if (rep.hysteresis) { L.push('', '## Hysteresis (mean down - mean up)', '', '| mass (mg) | n up | n down | diff (counts) | diff (mg) |', '|---|---|---|---|---|'); for (const l of rep.hysteresis.levels) L.push(`| ${l.massMg} | ${l.nUp} | ${l.nDown} | ${l.diffCounts.toFixed(3)} | ${Number.isFinite(l.diffMg) ? l.diffMg.toFixed(2) : '-'} |`); }
+  if (rep.uncertainty) { L.push('', `## Uncertainty (${rep.uncertainty.status}${rep.uncertainty.status === 'estimated' ? ', ' + uncProfileLabel(rep.uncertainty) : ''})`, ''); if (rep.uncertainty.reason) L.push(rep.uncertainty.reason); for (const c of rep.uncertainty.components || []) L.push(`- ${c.included ? 'included' : 'left out'}: ${c.label} - ${c.note}`); if (rep.uncertainty.notIncluded) L.push('', 'Not included: ' + rep.uncertainty.notIncluded.join(', ')); }
+  if (rep.warnings.length) { L.push('', '## Warnings', ''); for (const w of rep.warnings) L.push('- ' + w); }
+  if (rep.errors.length) { L.push('', '## Errors', ''); for (const w of rep.errors) L.push('- ' + w); }
+  return L.join('\n') + '\n';
+}
 function wizPaneWeights() {
   const w = wiz, p = w.profile;
   const gopts = cur => `<option value="">— none —</option>` + w.groups.map(g => `<option value="${esc(g.groupId)}"${g.groupId === cur ? ' selected' : ''}>${esc(g.name)}</option>`).join('');
-  const rows = w.weights.map((x, i) => `<tr><td>${wizInput('weight', i, 'name', x.name)}</td><td>${wizInput('weight', i, 'nominalMass', x.nominalMass, 'number', 'min="0"')}</td><td>${wizInput('weight', i, 'assignedMass', x.assignedMass, 'number', 'min="0" placeholder="= nominal"')}</td><td>${wizUnitSelect('weight', i, 'unit', x.unit)}</td><td>${x.weightId === 'ref-empty' ? '' : `<select data-w="weight" data-i="${i}" data-f="groupId">${gopts(x.groupId)}</select>`}</td><td>${x.weightId === 'ref-empty' ? '' : `<button data-wa="delWeight" data-i="${i}" title="Remove this weight">✕</button>`}</td></tr>`).join('');
+  const rows = w.weights.map((x, i) => `<tr><td>${wizInput('weight', i, 'name', x.name)}</td><td>${wizInput('weight', i, 'nominalMass', x.nominalMass, 'number', 'min="0"')}</td><td>${wizInput('weight', i, 'assignedMass', x.assignedMass, 'number', 'min="0" placeholder="= nominal"')}</td><td>${wizUnitSelect('weight', i, 'unit', x.unit)}</td><td>${x.weightId === 'ref-empty' ? '' : wizInput('weight', i, 'uncValue', x.massUncertainty ? x.massUncertainty.value : '', 'number', 'min="0" placeholder="none" title="Plus/minus value in the weight unit: the certificate uncertainty U, or the tolerance limit"')}</td><td>${x.weightId === 'ref-empty' ? '' : `<select data-w="weight" data-i="${i}" data-f="uncBasis">${Object.entries(WEIGHT_UNC_BASES).map(([id, t]) => `<option value="${id}"${(x.massUncertainty ? x.massUncertainty.basis : 'none') === id ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`}</td><td>${x.weightId === 'ref-empty' ? '' : `<select data-w="weight" data-i="${i}" data-f="groupId">${gopts(x.groupId)}</select>`}</td><td>${x.weightId === 'ref-empty' ? '' : `<button data-wa="delWeight" data-i="${i}" title="Remove this weight">✕</button>`}</td></tr>`).join('');
   const grows = w.groups.map((g, i) => { const mem = w.weights.filter(x => x.groupId === g.groupId), odd = g.massBasis === 'nominal' && mem.some(x => Math.abs(massToMg(Number(x.nominalMass), x.unit) - massToMg(Number(g.nominalMass), g.unit)) > 1e-9 * Math.max(1, massToMg(Number(g.nominalMass), g.unit)));
     return `<tr><td>${wizInput('group', i, 'name', g.name)}</td><td>${wizInput('group', i, 'nominalMass', g.nominalMass, 'number', 'min="0"')}</td><td>${wizUnitSelect('group', i, 'unit', g.unit)}</td>
       <td><select data-w="group" data-i="${i}" data-f="massBasis"><option value="nominal"${g.massBasis === 'nominal' ? ' selected' : ''}>nominal (uncertified)</option><option value="assigned"${g.massBasis === 'assigned' ? ' selected' : ''}>assigned (own masses)</option></select></td>
@@ -2742,10 +2926,11 @@ function wizPaneWeights() {
   <div class="control-grid" style="margin-top:10px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', p.profileName)}</div>
   <div class="field"><label>Profile ID</label>${wizInput('profile', 0, 'profileId', p.profileId)}</div>
   <div class="field"><label>Calibration unit (masses in the file)</label>${wizUnitSelect('profile', 0, 'unit', p.unit)}</div>
-  <div class="field span2"><label>Notes (stored in environment.notes)</label>${wizInput('profile', 0, 'notes', p.notes)}</div></div>
+  <div class="field span2"><label>Notes (stored in environment.notes)</label>${wizInput('profile', 0, 'notes', p.notes)}</div>
+  <div class="field"><label>Temperature (°C)</label>${wizInput('profile', 0, 'temperatureC', p.temperatureC, 'number')}</div><div class="field"><label>Relative humidity (%)</label>${wizInput('profile', 0, 'humidityPercent', p.humidityPercent, 'number')}</div><div class="field"><label>Warm-up before measuring (min)</label>${wizInput('profile', 0, 'warmUpMinutes', p.warmUpMinutes, 'number', 'min="0"')}</div></div>
   <h3 style="margin:12px 0 4px">Reference weights</h3>
-  <div class="small">Every physical weight is its own entry. Enter the certificate (assigned) mass if you have one; otherwise the nominal mass is used. Put weights of the same claimed mass into a <strong>weight group</strong> (below) to pool them into one anchor.</div>
-  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>Name</th><th>Nominal</th><th>Assigned</th><th>Unit</th><th>Group</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  <div class="small">Tolerance: if you know it, type the weight’s tolerance (class limit, e.g. ±0.5 mg) or certificate uncertainty U. Limits count as rectangular (÷√3), a certificate U is divided by k = 2. Weights without it make the estimated uncertainty “repeatability only”. Every physical weight is its own entry. Enter the certificate (assigned) mass if you have one; otherwise the nominal mass is used. Put weights of the same claimed mass into a <strong>weight group</strong> (below) to pool them into one anchor.</div>
+  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>Name</th><th>Nominal</th><th>Assigned</th><th>Unit</th><th title="Certificate uncertainty U, or tolerance limit, in the weight unit">± U / tolerance</th><th>Basis</th><th>Group</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   <div class="button-row"><button data-wa="addWeight">＋ Add weight</button><button data-wa="comboOpen" title="A load of several weights placed together, e.g. 100 g A + 100 g B">＋ Add combination…</button></div>${combo}
   ${combos ? `<h3 style="margin:12px 0 4px">Combination loads</h3><div class="tablewrap"><table class="wiz-table"><tbody>${combos}</tbody></table></div>` : ''}
   <h3 style="margin:12px 0 4px">Weight groups</h3>
@@ -2757,17 +2942,18 @@ function wizPaneObs() {
   const w = wiz, p = w.profile, why = wizBlock(), busy = !!w.capture, li = w.loads.findIndex(l => l.loadId === w.selLoad);
   const opts = w.loads.map(l => `<option value="${esc(l.loadId)}"${l.loadId === w.selLoad ? ' selected' : ''}>${esc(l.name)} · ${wizMassText(wizLoadMassSafe(l), p.unit)}</option>`).join('');
   const rows = w.observations.map((o, i) => { const l = w.loads.find(x => x.loadId === o.loadId);
-    return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(o.observationId)}</td><td>${esc(l ? l.name : '?')}</td><td>${l ? wizMassText(wizLoadMassSafe(l), p.unit) : '—'}</td><td>${fmtNumber(o.rawMean, 3)}</td><td>${o.rawStdDev == null ? '—' : fmtNumber(o.rawStdDev, 3)}</td><td>${o.sampleCount == null ? '—' : o.sampleCount.toLocaleString()}</td><td>${wizValidityCell(o)}</td><td><input type="checkbox" data-w="obsInclude" data-i="${i}" ${o.include ? 'checked' : ''} aria-label="Include in the fit">${o.override ? '<div class="small warning">included anyway</div>' : ''}</td><td><button data-wa="delObs" data-i="${i}">✕</button></td></tr>`; }).join('');
+    return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(o.observationId)}</td><td>${esc(l ? l.name : '?')}</td><td>${l ? wizMassText(wizLoadMassSafe(l), p.unit) : '—'}</td><td>${fmtNumber(o.rawMean, 3)}</td><td>${o.rawStdDev == null ? '—' : fmtNumber(o.rawStdDev, 3)}</td><td>${o.sampleCount == null ? '—' : o.sampleCount.toLocaleString()}${o.durationMs ? ' · ' + fmtSpan(o.durationMs / 1000) : ''}</td><td>${wizValidityCell(o)}</td><td><select data-w="obsDir" data-i="${i}" aria-label="Loading direction"><option value=""${!o.loadingDirection ? ' selected' : ''}>–</option><option value="up"${o.loadingDirection === 'up' ? ' selected' : ''}>up</option><option value="down"${o.loadingDirection === 'down' ? ' selected' : ''}>down</option></select></td><td><input type="checkbox" data-w="obsInclude" data-i="${i}" ${o.include ? 'checked' : ''} aria-label="Include in the fit">${o.override ? '<div class="small warning">included anyway</div>' : ''}</td><td><button data-wa="delObs" data-i="${i}">✕</button></td></tr>`; }).join('');
   return `<div class="small">Put the load on the platform, wait until the reading has settled, then record. Observations store raw counts of the shown sensor (<strong>${esc(activeSensor.name)}</strong>). Place and remove a weight repeatedly for replicates: the scatter between placements is what the fit can resolve.</div>
   <div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Load on the platform</label><div class="inline" style="flex-wrap:nowrap"><button data-wa="loadPrev" title="Previous load" aria-label="Previous load" ${li <= 0 ? 'disabled' : ''}>◀</button><select data-w="selLoad">${opts}</select><button data-wa="loadNext" title="Next load" aria-label="Next load" ${li < 0 || li >= w.loads.length - 1 ? 'disabled' : ''}>▶</button></div></div>
   <div class="field"><label>Recording length (s) → <span id="wizSamplesNote">${Math.round(w.captureSeconds * RATE_HZ).toLocaleString()} samples at ${RATE_HZ} Hz</span></label><input type="number" min="0.1" step="any" data-w="capSeconds" value="${w.captureSeconds}"></div>
-  <div class="field"><label class="check" style="margin-top:18px"><input type="checkbox" data-w="replaced" ${w.replaced ? 'checked' : ''}> removed and replaced since the last placement</label></div></div>
+  <div class="field"><label class="check" style="margin-top:18px"><input type="checkbox" data-w="replaced" ${w.replaced ? 'checked' : ''}> removed and replaced since the last placement</label></div>
+  <div class="field span2"><label>Loading direction of the next recording</label><select data-w="direction"><option value=""${!w.direction ? ' selected' : ''}>not recorded</option><option value="up"${w.direction === 'up' ? ' selected' : ''}>up (the load was increased to reach this mass)</option><option value="down"${w.direction === 'down' ? ' selected' : ''}>down (the load was decreased to reach this mass)</option></select></div></div>
   <div class="button-row"><button class="primary" data-wa="record" ${why || busy ? 'disabled' : ''}>● Record from the shown sensor</button><button data-wa="useSel" ${why && !/measurement is running/.test(why) ? 'disabled' : ''}>Use the selected interval</button>${busy ? '<button data-wa="cancelRec">Cancel recording</button>' : ''}</div>
   <progress id="wizRecBar" max="1" value="0" ${busy ? '' : 'hidden'}></progress><div class="small" id="wizRecProgress">${why ? esc(why) : ''}</div>
   <details id="wizManualBox" style="margin-top:8px"${w.manualOpen ? ' open' : ''}><summary>Enter an observation by hand</summary>
     <div class="control-grid" style="margin-top:8px"><div class="field"><label>Mean counts</label><input type="number" step="any" id="wizManualRaw"></div><div class="field"><label>SD (optional)</label><input type="number" step="any" id="wizManualSd"></div><div class="field"><label>Samples (optional)</label><input type="number" step="1" id="wizManualN"></div><div class="field"><label>&nbsp;</label><button data-wa="addManual">＋ Add for the load above</button></div></div>
     <div class="small">For the load chosen above. A manual observation has no validity analysis.</div></details>
-  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>ID</th><th>Load</th><th>Mass</th><th>Mean (counts)</th><th>SD</th><th>n</th><th>Validity (click to expand)</th><th title="Include in the fit">Use</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="small">No observations yet.</td></tr>'}</tbody></table></div>`;
+  <div class="tablewrap"><table class="wiz-table"><thead><tr><th>ID</th><th>Load</th><th>Mass</th><th>Mean (counts)</th><th>SD</th><th>n · time</th><th>Validity (click to expand)</th><th title="Loading direction: up = load increased, down = decreased">Dir</th><th title="Include in the fit">Use</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="small">No observations yet.</td></tr>'}</tbody></table></div>`;
 }
 function wizNiceTicks(min, max, n = 5) {
   const span = max - min || 1, raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p, step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p, t = [];
@@ -2819,15 +3005,21 @@ function wizBuild() {
     if (!wiz.observations.some(o => o.removedAndReplaced && o.placementIndex > 1)) W('No placement is marked as removed and replaced: placement repeatability was not sampled.', 'The weights were not taken off and put back between recordings.', 'replace');
     if (!wiz.weights.some(x => x.assignedMass != null)) W('No certificate (assigned) masses were entered: the calibration rests on the nominal values of the weights and is not traceable; its accuracy cannot be better than the weights’ own tolerance.', 'The weights are not certified. The scale can only be as accurate as the weights themselves.', 'nominal');
     for (const s of stats) if (s.verdict === 'differ') W(`Weight group “${s.name}”: the weights differ from each other (between-weight SD ${fmtNumber(s.sB, 2)} counts) by more than the placement scatter (${fmtNumber(s.sW, 2)} counts).`, `The weights of “${s.name}” are not equal in practice.`, 'group');
-    cfg = buildCalibrationConfig(Object.assign({}, wiz, { sensorId: wiz.sensorId, rateHz: wiz.rateHz }), fit, new Date().toISOString(), { warnings: warnings.map(x => x.text), groupStats: stats });
+    const allPts = wizPoints(wiz, { all: true }).points, hyst = fit.slopeAt ? hysteresisAnalysis(allPts, fit.slopeAt) : null, unc = buildUncertaintyProfile(wiz, fit, hyst, wiz.hysteresisUse || 'both');
+    if (unc.status === 'not-estimable') W(unc.reason, 'The uncertainty cannot be estimated yet: record each weight several times (taking it off and putting it back).', 'uncertainty');
+    else if (!unc.components.find(c => c.id === 'weight-tolerance').included) W('No (or not for every weight) typed tolerance or certificate uncertainty: the estimated uncertainty covers repeatability only and is not traceable.', 'The estimated uncertainty only reflects how repeatable your placements were, not how accurate the weights are. Type the weights’ tolerance if you know it.', 'noTolerance');
+    if (hyst && hyst.levels.length && (wiz.hysteresisUse || 'both') !== 'both') W('The fit uses one loading direction only; hysteresis is reported but not included in the uncertainty.', 'Only one loading direction is used for the calibration.', 'hystOne');
+    cfg = buildCalibrationConfig(Object.assign({}, wiz, { sensorId: wiz.sensorId, rateHz: wiz.rateHz }), fit, new Date().toISOString(), { warnings: warnings.map(x => x.text), groupStats: stats, uncertainty: unc, hysteresis: hyst });
     const checked = validateCalibrationConfig(cfg); errors.push(...checked.errors); for (const t of checked.warnings) W(t, 'This is not a certified calibration; no uncertainty is claimed.', 'validate');
   }
-  return { cfg, fit, model, errors, warnings, stats };
+  return { cfg, fit, model, errors, warnings, stats, unc: cfg ? cfg.uncertainty : null, hyst: cfg ? cfg.reserved.hysteresisAnalysis : null };
 }
 function wizId(prefix, list, key) { let n = wiz.nextNum++; while (list.some(x => x[key] === `${prefix}${n}`)) n = wiz.nextNum++; return `${prefix}${n}`; }
 function wizStamp() { return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12); }
 function wizPaneFit() {
   const p = wiz.profile, u = p.unit, { pts, fits } = wizFits(), fit = fits[wiz.fitModel], uf = mg => mgToUnit(mg, u), us = unitById(u).symbol;
+  const hy = fit.ok && fit.slopeAt ? hysteresisAnalysis(wizPoints(wiz, { all: true }).points, fit.slopeAt) : null, unc = fit.ok ? buildUncertaintyProfile(wiz, fit, hy, wiz.hysteresisUse || 'both') : null;
+  const looBy = new Map((fit.ok ? looResiduals(pts.points, wiz.fitModel, { weighting: wizWeighting() }) : []).map(l => [l.id, l]));
   const sel = Object.entries(FIT_MODELS).map(([id, m]) => `<option value="${id}"${id === wiz.fitModel ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
   const wsel = Object.entries(WEIGHTINGS).map(([id, t]) => `<option value="${id}"${id === wiz.weighting ? ' selected' : ''}>${esc(t)}</option>`).join('');
   const cmp = Object.entries(FIT_MODELS).map(([id, m]) => { const f = fits[id]; return `<tr class="${id === wiz.fitModel ? 'sel' : ''}"><td>${esc(m.label)}</td>${f.ok ? `<td>${f.params}</td><td>${f.dof}</td><td>${Number.isFinite(f.sdRawRes) ? fmtNumber(f.sdRawRes, 3) : '—'}</td><td>${f.reducedChi2 == null ? '—' : fmtNumber(f.reducedChi2, 2)}</td><td>${wizMassText(f.rmsMassMg, u)}</td><td>${wizMassText(f.maxAbsMassMg, u)}</td>` : `<td colspan="6" class="warning">${esc(f.errors[0] || 'not possible')}</td>`}</tr>`; }).join('');
@@ -2843,21 +3035,24 @@ function wizPaneFit() {
     const sp = fit.ok ? fit.residuals.filter(r => Number.isFinite(r.std)).map(r => ({ x: uf(r.massMg), y: r.std, on: true })) : [];
     if (sp.length) { const r = Math.max(3, ...sp.map(q => Math.abs(q.y))) * 1.1; plots += wizPlotSVG({ w: 560, h: 170, xMin: lo - px, xMax: hi + px, yMin: -r, yMax: r, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 1), curve: [], points: sp, zero: true, xTitle: `reference mass (${us})`, yTitle: 'standardised residual' }); }
   }
-  const rrows = fit.ok ? fit.residuals.map(r => `<tr><td>${esc(r.id)}</td><td>${wizMassText(r.massMg, u)}</td><td>${fmtNumber(r.raw, 3)}</td><td>${fmtNumber(r.fitRaw, 3)}</td><td>${fmtNumber(r.resRaw, 3)}</td><td>${Number.isFinite(r.resMassMg) ? fmtNumber(uf(r.resMassMg), 4) : '—'}</td><td>${fmtNumber(r.w, 4)}</td><td>${Number.isFinite(r.std) ? fmtNumber(r.std, 2) : '—'}</td></tr>`).join('') : '';
+  const rrows = fit.ok ? fit.residuals.map(r => `<tr><td>${esc(r.id)}</td><td>${wizMassText(r.massMg, u)}</td><td>${fmtNumber(r.raw, 3)}</td><td>${fmtNumber(r.fitRaw, 3)}</td><td>${fmtNumber(r.resRaw, 3)}</td><td>${Number.isFinite(r.resMassMg) ? fmtNumber(uf(r.resMassMg), 4) : '—'}</td><td>${fmtNumber(r.w, 4)}</td><td>${Number.isFinite(r.std) ? fmtNumber(r.std, 2) : '—'}</td><td>${(looBy.get(r.id) || {}).looRaw == null ? '—' : fmtNumber(looBy.get(r.id).looRaw, 3)}</td><td>${(looBy.get(r.id) || {}).looMassMg == null ? '—' : fmtNumber(uf(looBy.get(r.id).looMassMg), 4)}</td></tr>`).join('') : '';
   const wt = fit.weighting || {}, sig = new Map((wt.sigmaPerMass || []).map(s => [fitKey(s.massMg), s]));
   const groups = fit.groups.map(g => { const s = sig.get(fitKey(g.massMg)); return `<tr><td>${wizMassText(g.massMg, u)}</td><td>${g.raws.length}</td><td>${fmtNumber(g.rawMean, 3)}</td><td>${Number.isFinite(g.rawSD) ? fmtNumber(g.rawSD, 3) : '—'}</td><td>${s ? fmtNumber(s.sigma, 3) : '—'}</td></tr>`; }).join('');
   const gs = fit.ok ? weightGroupStats(wiz, fit) : [];
   const gstat = gs.map(s => `<tr><td>${esc(s.name)}</td><td>${s.a} weights · ${s.N} placements</td><td>${s.sW == null ? '—' : fmtNumber(s.sW, 3)}</td><td>${s.sB == null ? '—' : fmtNumber(s.sB, 3)}</td><td>${s.F == null ? '—' : (Number.isFinite(s.F) ? fmtNumber(s.F, 2) : '∞')}</td><td>${s.verdict === 'differ' ? '<span class="warning">weights differ</span>' : s.verdict === 'same' ? 'no difference beyond placement scatter' : esc(s.reason)}</td></tr>` + s.members.map(m => `<tr class="sub"><td></td><td>${esc(m.name)} · ${m.n} placement(s)</td><td colspan="2">${m.meanRaw == null ? '—' : fmtNumber(m.meanRaw, 3) + ' counts'}</td><td colspan="2">${m.relMassMg == null ? '—' : (m.relMassMg >= 0 ? '+' : '') + fmtNumber(uf(m.relMassMg), 4) + ' ' + esc(us) + (m.relMassSeMg != null ? ' ± ' + fmtNumber(uf(m.relMassSeMg), 4) : '')} relative to the group mean</td></tr>`).join('')).join('');
   return `${pts.errors.length ? `<div class="warning small">${pts.errors.map(esc).join('<br>')}</div>` : ''}
-  <div class="control-grid"><div class="field"><label>Model</label><select data-w="fitModel">${sel}</select></div><div class="field"><label>Weighting (line / polynomial fits)</label><select data-w="weighting">${wsel}</select></div></div>
+  <div class="control-grid"><div class="field"><label>Model</label><select data-w="fitModel">${sel}</select></div><div class="field"><label>Weighting (line / polynomial fits)</label><select data-w="weighting">${wsel}</select></div><div class="field"><label title="Observations without a direction count as up">Loading directions used in the fit</label><select data-w="hystUse"><option value="both"${(wiz.hysteresisUse || 'both') === 'both' ? ' selected' : ''}>both (mean path; hysteresis is a separate component)</option><option value="up"${wiz.hysteresisUse === 'up' ? ' selected' : ''}>up only</option><option value="down"${wiz.hysteresisUse === 'down' ? ' selected' : ''}>down only</option></select></div></div>
   <div class="small" style="margin:6px 0">The curve is fitted as counts on mass (the noise is in the counts) and then written to the file as anchors sampled on the fitted curve. Switch observations on or off in step 2; excluded ones stay in the file, marked. Weighting uses the scatter <em>between placements</em> at each mass (shrunk towards the pooled value, or a straight-line variance model); with fewer than 3 masses or no replicates it falls back to equal weights and says so. The piecewise-linear model already averages replicates, so weights do not apply to it.</div>
   ${fit.ok ? `<div class="readout">Observations used: <strong>${fit.n}</strong> · different masses: <strong>${fit.distinct}</strong> · parameters: <strong>${fit.params}</strong> · degrees of freedom: <strong>${fit.dof}</strong><br>Weighting used: <strong>${esc(WEIGHTINGS[wt.scheme] || wt.scheme)}</strong>${wt.reason ? ` <span class="warning">(${esc(wt.reason)})</span>` : ''}${fit.reducedChi2 != null ? `<br>Reduced χ² = Σ w r² / dof: <strong>${fmtNumber(fit.reducedChi2, 2)}</strong> (about 1: model and scatter estimate agree; much larger: the model is wrong or the scatter was underestimated; much smaller: scatter overestimated)` : ''}<br>Residual SD: <strong>${Number.isFinite(fit.sdRawRes) ? fmtNumber(fit.sdRawRes, 3) + ' counts' : 'not defined (no degrees of freedom)'}</strong> · RMS residual: <strong>${wizMassText(fit.rmsMassMg, u)}</strong> · largest: <strong>${wizMassText(fit.maxAbsMassMg, u)}</strong>${fit.nodes ? `<br>Written as <strong>${fit.nodes - 1}</strong> linear segments; largest deviation from the exact inverse: <strong>${wizMassText(fit.maxInterpErrMg, u)}</strong>` : ''}</div>` : `<div class="warning">${fit.errors.map(esc).join('<br>')}</div>`}
   <div class="plots">${plots}</div>
+  ${hy ? `<h3 style="margin:12px 0 4px">Hysteresis: mean(down) − mean(up)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>n up</th><th>n down</th><th>Difference (counts)</th><th>Difference (${esc(us)})</th></tr></thead><tbody>${hy.levels.map(l => `<tr><td>${wizMassText(l.massMg, u)}</td><td>${l.nUp}</td><td>${l.nDown}</td><td>${fmtNumber(l.diffCounts, 3)}</td><td>${Number.isFinite(l.diffMg) ? (l.diffMg >= 0 ? '+' : '') + fmtNumber(uf(l.diffMg), 4) : '—'}${l.seMg != null ? ' ± ' + fmtNumber(uf(l.seMg), 4) : ''}</td></tr>`).join('')}</tbody></table></div><div class="small">Hysteresis: the reading at the same load differs depending on whether it was approached from below or from above. With “both” the curve is the mean path and half of this difference enters the uncertainty as its own component.</div>` : '<div class="small" style="margin-top:8px">No hysteresis analysis: no mass has observations in both loading directions (set “Loading direction” in step 2).</div>'}
+  ${uncSummaryHTML(unc, u)}
+  <div class="button-row"><button data-wa="exportReport" ${fit.ok ? '' : 'disabled'}>Export full fit report (JSON)</button><button data-wa="exportReportText" ${fit.ok ? '' : 'disabled'}>Export fit report (text)</button></div>
   <h3 style="margin:12px 0 4px">Model comparison (same observations, same weighting)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Model</th><th>p</th><th>dof</th><th>SD (counts)</th><th>red. χ²</th><th>RMS</th><th>largest</th></tr></thead><tbody>${cmp}</tbody></table></div>
   <div class="small">A lower residual SD with fewer degrees of freedom is not better evidence: a model with dof = 0 passes through every point and says nothing about scatter. Prefer the simplest model whose residuals show no pattern.</div>
   ${groups ? `<h3 style="margin:12px 0 4px">Replicates per reference mass</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>Placements</th><th>Mean (counts)</th><th>SD between placements</th><th>σ used for weighting</th></tr></thead><tbody>${groups}</tbody></table></div>` : ''}
   ${gstat ? `<h3 style="margin:12px 0 4px">Weight groups: are the weights equal?</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Group</th><th>Data</th><th>Within-weight SD (counts)</th><th>Between-weight SD (counts)</th><th>F</th><th>Verdict</th></tr></thead><tbody>${gstat}</tbody></table></div><div class="small">One-way variance components: within = scatter of repeated placements of the same weight, between = differences between the weights beyond that. “Weights differ” is an informal finding (between &gt; within), not an error. Relative masses show how the sensor ranks the weights; a bias shared by all of them cannot be seen this way.</div>` : ''}
-  ${rrows ? `<h3 style="margin:12px 0 4px">Residuals (observed scatter, not uncertainty)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Observation</th><th>Mass</th><th>Counts</th><th>Fit</th><th>Residual (counts)</th><th>Residual (${esc(us)})</th><th>Weight</th><th>Standardised</th></tr></thead><tbody>${rrows}</tbody></table></div>` : ''}`;
+  ${rrows ? `<h3 style="margin:12px 0 4px">Residuals (observed scatter, not uncertainty)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Observation</th><th>Mass</th><th>Counts</th><th>Fit</th><th>Residual (counts)</th><th>Residual (${esc(us)})</th><th>Weight</th><th>Standardised</th><th title="Observed value minus the prediction of the fit WITHOUT this observation: a point that only the fit itself can explain stands out here">Leave-one-out (counts)</th><th>Leave-one-out (${esc(us)})</th></tr></thead><tbody>${rrows}</tbody></table></div>` : ''}`;
 }
 function wizPaneReview() {
   const b = wizBuild(), u = wiz.profile.unit;
@@ -2866,6 +3061,7 @@ function wizPaneReview() {
   const over = wiz.observations.filter(o => o.include && o.override).map(o => o.observationId);
   return `<div class="readout"><strong>${esc(wiz.profile.profileName)}</strong> · ${esc(FIT_MODELS[b.model].label)} · ${esc(WEIGHTINGS[b.fit.weighting.scheme] || '')} · unit ${esc(unitById(u).symbol)} · ${b.fit.anchors.length} anchors for sensor <strong>${esc(wiz.sensorId)}</strong></div>
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.text)}</div>`).join('')}
+  ${uncSummaryHTML(b.unc, u)}
   ${over.length ? `<div class="small warning">Overridden observations (included although the validity check failed): ${over.map(esc).join(', ')}</div>` : ''}
   <div class="small" style="margin:6px 0">Activating starts a new calibration epoch on the shown sensor: the tare is reset, a running measurement is aborted, and earlier samples keep the calibration they were recorded with. The file claims no uncertainty (validation status “not-characterized”); only its structure and monotonicity are checked.</div>
   <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button></div>
@@ -2873,6 +3069,11 @@ function wizPaneReview() {
   ${anchors ? `<h3 style="margin:12px 0 4px">Anchors that will be written</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>Counts</th></tr></thead><tbody>${anchors}</tbody></table></div>` : ''}`;
 }
 // ---- Simple mode panes -----------------------------------------------------------------------------------------------------
+// Plain-language hint: more placements -> more degrees of freedom -> smaller t factor
+function wizPlacementsHint() {
+  const levels = Math.max(2, new Set(wizPlan().map(r => fitKey(r.mass))).size), k = P => tFactor(Math.max(1, levels * P - 2)).toFixed(2), P = wizPlacements();
+  return `With ${levels} masses and ${P} placements each the 95 % factor is about k = ${k(P)} (2 placements: ${k(2)}, 5 placements: ${k(5)}, 10 placements: ${k(10)}). More placements narrow the estimated uncertainty, but each takes ${SIMPLE_CAPTURE_SECONDS} s plus the time to put the weight back.`;
+}
 function wizSimpleWeights() {
   const spec = wiz.simpleSpec != null ? wiz.simpleSpec : '3 x 100 g, 1 x 200 g';
   const list = wiz.weights.filter(w => w.weightId !== 'ref-empty').map(w => `<li>${esc(w.name)}${w.groupId ? ' <span class="small">(pooled with the others of its group)</span>' : ''}</li>`).join('');
@@ -2880,14 +3081,18 @@ function wizSimpleWeights() {
   <div class="field" style="margin-top:8px"><label>Your weights</label><input type="text" id="wizSimpleSpec" data-w="simpleSpec" value="${esc(spec)}" placeholder="3 x 100 g, 1 x 200 g"></div>
   <div class="button-row"><button class="primary" data-wa="simpleSet" ${wiz.observations.length ? 'disabled' : ''}>Use these weights</button><button data-wa="restart">Start over</button></div>
   ${wiz.observations.length ? '<div class="small">Measurements exist already; use “Start over” to change the weights.</div>' : ''}
-  ${list ? `<div class="small" style="margin-top:8px">Current weights (the empty platform is always included):</div><ul class="small">${list}</ul>` : ''}`;
+  ${list ? `<div class="small" style="margin-top:8px">Current weights (the empty platform is always included):</div><ul class="small">${list}</ul>` : ''}
+  <div class="control-grid" style="margin-top:8px"><div class="field"><label>Placements per mass (2 to 10)</label><input type="number" min="2" max="10" step="1" data-w="placements" value="${wizPlacements()}"></div>
+  <div class="field"><label class="check" style="margin-top:18px"><input type="checkbox" data-w="returnRun" ${wiz.returnRun ? 'checked' : ''}> also measure on the way down (shows hysteresis)</label></div></div>
+  <div class="small">${wizPlacementsHint()}</div>
+  <div class="small">Tolerance: add it after the mass to include it in the uncertainty, e.g. <strong>3 x 100 g ±0.5 mg</strong> (a limit, counted as ÷√3). Without it the estimated uncertainty covers repeatability only.</div>`;
 }
 function wizSimpleMeasure() {
-  const plan = wizPlan(), total = plan.reduce((s, r) => s + r.req, 0), done = plan.reduce((s, r) => s + Math.min(r.done, r.req), 0), next = plan.find(r => r.done < r.req), why = wizBlock(), busy = !!wiz.capture;
+  const plan = wizFullPlan(), total = plan.reduce((s, r) => s + r.req, 0), done = plan.reduce((s, r) => s + Math.min(r.done, r.req), 0), next = plan.find(r => r.done < r.req), why = wizBlock(), busy = !!wiz.capture;
   if (!total) return '<div class="small">Step 2 of 3 · Enter your weights in step 1 first.</div>';
   if (next && !busy) wiz.selLoad = next.load.loadId;
   const isEmpty = next && next.load.weightRef === 'ref-empty';
-  const instr = next ? `<div class="status-note"><strong>Next:</strong> ${isEmpty ? 'clear the platform completely (nothing on it)' : `put <strong>${esc(next.load.name)}</strong> on the platform`}. Take it off and put it back before each recording, and wait a few seconds until the reading has settled. Each recording takes ${SIMPLE_CAPTURE_SECONDS} s; do not touch the platform.</div>`
+  const instr = next ? `<div class="status-note"><strong>Next${next.direction === 'down' ? ' (way down)' : ''}:</strong> ${isEmpty ? 'clear the platform completely (nothing on it)' : `put <strong>${esc(next.load.name)}</strong> on the platform`}. Take it off and put it back before each recording, and wait a few seconds until the reading has settled. Each recording takes ${SIMPLE_CAPTURE_SECONDS} s; do not touch the platform.</div>`
     : '<div class="status-note">All placements are recorded. Continue with step 3 (Finish) or record more.</div>';
   const rows = wiz.observations.map((o, i) => { const l = wiz.loads.find(x => x.loadId === o.loadId);
     const use = o.include ? (o.override ? '<span class="warning">used anyway</span>' : 'used') : (o.validity && o.validity.status === 'invalid' ? `<button data-wa="inclAnyway" data-i="${i}" title="Use it although the check failed. This is recorded in the file.">include anyway</button>` : 'not used');
@@ -2899,12 +3104,13 @@ function wizSimpleMeasure() {
   <div class="small">“Settled” means the checks found no drift, step, vibration or gap. A measurement that is not usable is left out; you can still use it with “include anyway”, and the file will say so.</div>`;
 }
 function wizSimpleFinish() {
-  const plan = wizPlan(), total = plan.reduce((s, r) => s + r.req, 0), done = plan.reduce((s, r) => s + Math.min(r.done, r.req), 0), u = wiz.profile.unit;
+  const plan = wizFullPlan(), total = plan.reduce((s, r) => s + r.req, 0), done = plan.reduce((s, r) => s + Math.min(r.done, r.req), 0), u = wiz.profile.unit;
   const b = wizBuild(), block = wiz.sensorId !== activeSensor.id ? 'The wizard belongs to another sensor than the one shown.' : '';
   const modelText = !b.fit.ok ? '' : b.model === 'linear' ? 'The scale responds like a straight line, so one straight line is fitted.' : 'Lines are drawn from one average to the next (the response is not clearly a straight line, or there are too few masses).';
   const scatter = b.fit.ok && Number.isFinite(b.fit.rmsMassMg) && b.fit.dof > 0 ? `Typical deviation of the measurements from the result: <strong>${wizMassText(b.fit.rmsMassMg, u)}</strong>. This is observed scatter, not an uncertainty.` : '';
   return `<div class="small">Step 3 of 3 · ${done} of ${total} placements recorded${done < total ? ' (more repeats make the result more trustworthy)' : ''}.</div>
   ${modelText ? `<div class="readout" style="margin:6px 0">${esc(modelText)}<br>${scatter}</div>` : ''}
+  ${b.unc && b.unc.status === 'estimated' ? `<div class="status-note" style="margin:6px 0">Typical uncertainty of a weighing in the middle of the range: <strong>± ${esc(formatMassSig(wizUncAt(b.unc, (b.unc.combined.table[0].massMg + b.unc.combined.table[b.unc.combined.table.length - 1].massMg) / 2), u))}</strong> (${esc(uncProfileLabel(b.unc))}; 95 %). Each measurement adds its own reading noise. “Repeatability” is how well the scale repeats when you put the same weight back; it is not the same as being accurate.</div>` : (b.unc ? `<div class="status-note" style="margin:6px 0">${esc(b.unc.reason || '')}</div>` : '')}
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.plain)}</div>`).join('')}
   <div class="small" style="margin:6px 0">After activating, put a weight you know on the scale and check that it reads right. Activating starts a new calibration period: the tare is reset and earlier readings keep the calibration they were recorded with.</div>
   <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration file</button></div>
@@ -2945,6 +3151,8 @@ function wizOnChange(e) {
     if (f === 'name') { w.name = v; wizSyncLoads(); }
     else if (f === 'unit') { w.unit = v; render = true; }
     else if (f === 'groupId') { w.groupId = v || null; wizSyncLoads(); render = true; }
+    else if (f === 'uncValue') { const val = v === '' ? null : Number(v); if (val == null || !Number.isFinite(val)) w.massUncertainty = null; else w.massUncertainty = { ...(w.massUncertainty || {}), value: val, basis: (w.massUncertainty && w.massUncertainty.basis) || 'class-tolerance' }; render = true; }
+    else if (f === 'uncBasis') { if (v === 'none') w.massUncertainty = null; else w.massUncertainty = { ...(w.massUncertainty || { value: null }), basis: v }; render = true; }
     else { w[f] = v === '' ? (f === 'assignedMass' ? null : 0) : Number(v); render = true; }
   }
   else if (a === 'group') {
@@ -2955,6 +3163,11 @@ function wizOnChange(e) {
   else if (a === 'comboPick') { const w = wiz.weights[i]; if (w) wiz.comboPick[w.weightId] = v; }
   else if (a === 'capSeconds') { wiz.captureSeconds = clamp(Number(v) || 10, 0.1, 1200); const n = wq('wizSamplesNote'); if (n) n.textContent = `${Math.round(wiz.captureSeconds * RATE_HZ).toLocaleString()} samples at ${RATE_HZ} Hz`; }
   else if (a === 'simpleSpec') wiz.simpleSpec = v;
+  else if (a === 'placements') { wiz.placements = clamp(Math.round(Number(v) || SIMPLE_PLACEMENTS), SIMPLE_PLACEMENTS_MIN, SIMPLE_PLACEMENTS_MAX); render = true; }
+  else if (a === 'returnRun') { wiz.returnRun = !!v; render = true; }
+  else if (a === 'direction') wiz.direction = v || null;
+  else if (a === 'obsDir') { const o = wiz.observations[i]; if (o) o.loadingDirection = v || null; render = true; }
+  else if (a === 'hystUse') { wiz.hysteresisUse = v; render = true; }
   else if (a === 'selLoad') wiz.selLoad = v;
   else if (a === 'replaced') wiz.replaced = v;
   else if (a === 'obsInclude') { const o = wiz.observations[i]; if (o) wizSetInclude(o, v); render = true; }
@@ -2995,6 +3208,8 @@ function wizOnClick(e) {
     case 'addManual': return wizAddManual();
     case 'delObs': wiz.observations.splice(i, 1); break;
     case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), `calibration-${String(r.cfg.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
+    case 'exportReport': { const rep = wizFitReport(); downloadBlob(new Blob([JSON.stringify(rep, null, 2)], { type: 'application/json' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
+    case 'exportReportText': { const rep = wizFitReport(); downloadBlob(new Blob([wizFitReportText(rep)], { type: 'text/markdown' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.md`); return; }
     case 'activate': return wizActivate();
   }
   wizRender();
@@ -3014,6 +3229,400 @@ function initWizard() {
   // the collapsible "enter by hand" box keeps its state across re-renders
   $('wizModal').addEventListener('toggle', e => { if (e.target && e.target.id === 'wizManualBox') wiz.manualOpen = e.target.open; }, true);
   $('wizMode').addEventListener('change', e => { wizMode = e.target.value === 'advanced' ? 'advanced' : 'simple'; wizRender(); });   // no data is lost: one data model
+}
+
+// ===== v14: UNCERTAINTY, BAND MODES, HYSTERESIS, AUTH + HISTORY HELPERS (pure functions: no DOM, no state) =============
+// ---- Student t factor ----------------------------------------------------------------------------------------------
+// Two-sided 95 % factor for `dof` degrees of freedom (table up to 30, then interpolated in 1/dof between 30, 40, 60, 120, infinity).
+// dof < 1 is treated as 1 (t = 12.7): with no information about the scatter the interval is simply very wide.
+const UNC_COVERAGE = 0.95;                    // the only coverage level offered
+const UNC_INCLUDE_OBJECT_PLACEMENT = true;    // see computeUncertainty: one weighing of an unknown object is one more placement
+const UNC_DITHER_SIGMA_COUNTS = 1;            // reading noise (counts) from which quantisation is averaged out
+const UNC_TABLE_POINTS = 21;                  // masses at which the calibration-side uncertainty tables are sampled
+const T975 = [NaN, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
+const T975_TAIL = [[30, 2.042], [40, 2.021], [60, 2.000], [120, 1.980], [Infinity, 1.960]];
+function tFactor(dof) {
+  if (!(dof >= 1)) dof = 1;
+  if (!Number.isFinite(dof)) return 1.96;
+  if (dof <= 30) {
+    const lo = Math.floor(dof), hi = Math.ceil(dof); if (lo === hi) return T975[lo];
+    const a = 1 / lo, b = 1 / hi, x = 1 / dof; return T975[lo] + (T975[hi] - T975[lo]) * (a - x) / (a - b);
+  }
+  for (let k = 0; k + 1 < T975_TAIL.length; k++) {
+    const [d0, t0] = T975_TAIL[k], [d1, t1] = T975_TAIL[k + 1];
+    if (dof <= d1) { const a = 1 / d0, b = d1 === Infinity ? 0 : 1 / d1, x = 1 / dof; return t0 + (t1 - t0) * (a - x) / (a - b); }
+  }
+  return 1.96;
+}
+// ---- typed weight uncertainty (stage 1) ------------------------------------------------------------------------------
+// weight.massUncertainty = {value, unit, basis: 'certificate' | 'class-tolerance' | 'user-estimate' | 'none', coverageFactor?, distribution?}
+// certificate: expanded uncertainty U with coverage factor k (default 2): u = U / k.   limits only (class tolerance, "± x mg", own estimate):
+// rectangular, u = limit / sqrt 3 (triangular: limit / sqrt 6 if asked for). Returns the STANDARD uncertainty in mg, or null if none was typed.
+const WEIGHT_UNC_BASES = { none: 'none typed', certificate: 'certificate (± U, coverage factor k)', 'class-tolerance': 'class tolerance (limit ±)', 'user-estimate': 'my own estimate (limit ±)' };
+function weightStdUncertaintyMg(w) {
+  const mu = w && w.massUncertainty; if (!mu || !mu.basis || mu.basis === 'none') return null;
+  const v = Number(mu.value); if (mu.value == null || mu.value === '' || !Number.isFinite(v) || v < 0) return null;
+  let mg; try { mg = massToMg(v, mu.unit || w.unit); } catch (_) { return null; }
+  const dist = mu.distribution || (mu.basis === 'certificate' ? 'normal' : 'rectangular'), k = Number(mu.coverageFactor) > 0 ? Number(mu.coverageFactor) : 2;
+  return dist === 'normal' ? mg / k : dist === 'triangular' ? mg / Math.sqrt(6) : mg / Math.sqrt(3);
+}
+function interpTable(table, m) {   // linear interpolation in [{massMg, uMg}], clamped to the ends
+  if (!table || !table.length) return NaN; if (m <= table[0].massMg) return table[0].uMg; const L = table.length - 1; if (m >= table[L].massMg) return table[L].uMg;
+  let lo = 0, hi = L; while (lo + 1 < hi) { const mid = (lo + hi) >> 1; if (table[mid].massMg <= m) lo = mid; else hi = mid; }
+  const a = table[lo], b = table[hi], t = (m - a.massMg) / (b.massMg - a.massMg); return a.uMg + t * (b.uMg - a.uMg);
+}
+function uncertaintyGrid(fit, n = UNC_TABLE_POINTS) {   // uniform grid over the reference range, plus the anchor masses of the piecewise model
+  const [lo, hi] = fit.mRange, set = new Set(); for (let k = 0; k < n; k++) set.add(lo + (hi - lo) * k / (n - 1));
+  if (fit.model === 'anchors') for (const g of fit.groups) set.add(g.massMg);
+  return [...set].sort((a, b) => a - b);
+}
+// Weight tolerance per mass level. A level is a distinct load mass among the INCLUDED observations. Independent weights: a load of several
+// different weights adds in quadrature; the several different loads at one level are averaged, so n independent weights give u / sqrt n
+// (placements of the SAME weight do not reduce it). A bias shared by all weights (e.g. all too heavy by the class tolerance) is NOT reduced
+// by averaging, and nothing here can estimate it: the result says so. If any weight used has no typed value the whole component is left out
+// (a half-included weight uncertainty would look more complete than it is).
+function weightToleranceTable(W) {
+  const levels = new Map(), missing = new Set();
+  for (const o of W.observations) {
+    if (!o.include) continue;
+    const load = W.loads.find(l => l.loadId === o.loadId); if (!load) continue;
+    let m; try { m = wizLoadMassMg(W, load); } catch (_) { continue; }
+    const key = fitKey(m); let lv = levels.get(key); if (!lv) { lv = { massMg: m, loads: new Map() }; levels.set(key, lv); }
+    if (lv.loads.has(load.loadId)) continue;
+    let s2 = 0, ok = true;
+    for (const c of load.components) {
+      const w = W.weights.find(x => x.weightId === c.weightId), u = w ? weightStdUncertaintyMg(w) : null;
+      if (u == null) { ok = false; missing.add(c.weightId); continue; }
+      s2 += (Number(c.quantity) * u) ** 2;
+    }
+    lv.loads.set(load.loadId, ok ? s2 : null);
+  }
+  const table = []; let anyTyped = false;
+  for (const lv of [...levels.values()].sort((a, b) => a.massMg - b.massMg)) {
+    const vals = [...lv.loads.values()]; if (vals.some(v => v == null)) continue;
+    const u = Math.sqrt(vals.reduce((s, v) => s + v, 0)) / vals.length; if (u > 0) anyTyped = true;
+    table.push({ massMg: lv.massMg, uMg: u, loads: vals.length });
+  }
+  return { table, complete: missing.size === 0 && table.length > 0 && anyTyped, missingWeightIds: [...missing] };
+}
+// ---- hysteresis (loading direction) ---------------------------------------------------------------------------------
+// points: [{massMg, raw, direction}] of INCLUDED observations; direction 'up' | 'down' (anything else is ignored here). Per mass level that has
+// both directions: diff = mean(down) - mean(up) in counts and, with the local slope, in mg.
+function hysteresisAnalysis(points, slopeAt) {
+  const by = new Map();
+  for (const p of points) { if (p.direction !== 'up' && p.direction !== 'down') continue; const k = fitKey(p.massMg); let l = by.get(k); if (!l) { l = { massMg: p.massMg, up: [], down: [] }; by.set(k, l); } l[p.direction].push(p.raw); }
+  const levels = [], mean = a => a.reduce((s, v) => s + v, 0) / a.length, sd = a => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1)); };
+  for (const l of [...by.values()].sort((a, b) => a.massMg - b.massMg)) {
+    if (!l.up.length || !l.down.length) continue;
+    const diff = mean(l.down) - mean(l.up), slope = slopeAt ? slopeAt(l.massMg) : NaN, dMg = Number.isFinite(slope) && slope !== 0 ? diff / slope : NaN;
+    const seC = l.up.length > 1 && l.down.length > 1 ? Math.sqrt(sd(l.up) ** 2 / l.up.length + sd(l.down) ** 2 / l.down.length) : null;
+    levels.push({ massMg: l.massMg, nUp: l.up.length, nDown: l.down.length, meanUp: mean(l.up), meanDown: mean(l.down), diffCounts: diff, diffMg: dMg, seMg: seC != null && Number.isFinite(slope) && slope ? seC / Math.abs(slope) : null });
+  }
+  if (!levels.length) return null;
+  const fin = levels.map(l => l.diffMg).filter(Number.isFinite);
+  return { levels, maxAbsDiffMg: fin.length ? Math.max(...fin.map(Math.abs)) : NaN, meanDiffMg: fin.length ? fin.reduce((s, v) => s + v, 0) / fin.length : NaN };
+}
+// ---- calibration-side uncertainty block (written to the file) ----------------------------------------------------------
+const UNC_NOT_INCLUDED = ['temperature', 'creep', 'off-centre loading', 'drift between calibration and use'];
+function buildUncertaintyProfile(W, fit, hyst, hUse = 'both') {
+  const base = { status: 'not-estimable', traceable: false, basis: 'none', coverageProbability: UNC_COVERAGE, components: [], notIncluded: UNC_NOT_INCLUDED.slice(), k: null, combined: null };
+  if (!fit || !fit.ok || !fit.seRawAt || !(fit.dof > 0) || !Number.isFinite(fit.seRawAt(fit.mRange[0]))) {
+    return { ...base, reason: 'The repeatability of the placements cannot be estimated: no reference mass was placed more than once (no degrees of freedom). Record replicates.' };
+  }
+  const grid = uncertaintyGrid(fit), slope = m => Math.abs(fit.slopeAt(m));
+  const rep = grid.map(m => ({ massMg: m, uMg: fit.seRawAt(m) / slope(m) })), obj = grid.map(m => ({ massMg: m, uMg: fit.sdRawAt(m) / slope(m) }));
+  const wtol = weightToleranceTable(W), wIncluded = wtol.complete;
+  const hIncluded = !!(hyst && hyst.levels.length && Number.isFinite(hyst.maxAbsDiffMg) && hUse === 'both');
+  const hTable = hIncluded ? hyst.levels.filter(l => Number.isFinite(l.diffMg)).map(l => ({ massMg: l.massMg, uMg: Math.abs(l.diffMg) / (2 * Math.sqrt(3)) })) : null;
+  const comps = [
+    { id: 'placement-repeatability', label: 'placement repeatability, propagated through the fit', included: true, dof: fit.dof, table: rep, note: fit.model === 'anchors' ? 'scatter of the replicate means (shrunk towards the pooled scatter)' : 'standard error of the fitted curve from the residual scatter and the leverage of the observations' },
+    { id: 'object-placement', label: 'placement of the weighed object (one placement)', included: UNC_INCLUDE_OBJECT_PLACEMENT, dof: fit.dof, table: obj, note: 'a single weighing puts the object down once; this is the scatter between placements, not only the error of the curve' },
+    { id: 'weight-tolerance', label: 'typed weight tolerance / certificate', included: wIncluded, dof: null, table: wIncluded ? wtol.table : null, note: wIncluded ? 'independent weights: n weights give u / sqrt n. A bias shared by ALL the weights (all too heavy by the class tolerance) is not reduced and cannot be seen by this tool' : (wtol.table.length ? `left out: no tolerance typed for ${wtol.missingWeightIds.length} weight(s)` : 'left out: no tolerance typed for the weights') },
+    { id: 'hysteresis', label: 'hysteresis (up / down difference)', included: hIncluded, dof: null, table: hTable, note: hIncluded ? 'half-width |down - up| / 2, rectangular' : (hyst ? 'left out: the fit uses one loading direction only' : 'left out: no run in both directions') }
+  ];
+  const notIncluded = UNC_NOT_INCLUDED.slice();
+  if (!hIncluded) notIncluded.unshift('hysteresis');
+  if (!wIncluded) notIncluded.unshift('weight tolerance');
+  const table = grid.map(m => {
+    const parts = [{ u: interpTable(rep, m), dof: fit.dof }];
+    if (UNC_INCLUDE_OBJECT_PLACEMENT) parts.push({ u: interpTable(obj, m), dof: fit.dof });
+    if (wIncluded) parts.push({ u: interpTable(wtol.table, m), dof: Infinity });
+    if (hIncluded && hTable.length) parts.push({ u: interpTable(hTable, m), dof: Infinity });
+    const c = combineUncertainties(parts); return { massMg: m, uMg: c.u, dof: c.dof, k: c.k, UMg: c.U };
+  });
+  return { status: 'estimated', traceable: false, basis: wIncluded ? 'repeatability+weight-tolerances' + (hIncluded ? '+hysteresis' : '') : (hIncluded ? 'repeatability+hysteresis' : 'repeatability'), coverageProbability: UNC_COVERAGE, dof: fit.dof, k: { dof: fit.dof, value: tFactor(fit.dof) },
+    components: comps, notIncluded, combined: { note: 'calibration-side components only (placement repeatability, object placement, weight tolerance, hysteresis); the reading noise and resolution of a measurement are added when it is made', table } };
+}
+// Root-sum-of-squares with the Welch-Satterthwaite effective degrees of freedom. parts: [{u, dof}] (dof Infinity = fully known, e.g. a typed limit).
+function combineUncertainties(parts) {
+  let s2 = 0; for (const p of parts) if (Number.isFinite(p.u)) s2 += p.u * p.u;
+  const u = Math.sqrt(s2); let den = 0; for (const p of parts) if (Number.isFinite(p.u) && Number.isFinite(p.dof) && p.dof > 0) den += Math.pow(p.u, 4) / p.dof;
+  const dof = den > 0 ? Math.pow(u, 4) / den : Infinity, k = tFactor(dof);
+  return { u, dof, k, U: k * u };
+}
+function uncertaintyLabel(u) {
+  if (!u || u.status !== 'ok') return '';
+  if (u.includesWeights) return 'estimated, not traceable';
+  return `estimated, ${u.includesHysteresis ? 'repeatability and hysteresis' : 'repeatability'} only, not traceable`;
+}
+// ---- the uncertainty of ONE measurement result (stage 2 + 3) ------------------------------------------------------------
+// profile: the calibration's `uncertainty` block. inp: {massMg: absolute mass of the result, sigmaMg: spread of the measured samples (mg),
+// neff: effective number of independent samples (null if unknown), sigmaCounts: spread in counts, slopeMgPerCount: |d mass / d counts| at the result}.
+function computeUncertainty(profile, inp) {
+  if (!profile || typeof profile !== 'object') return { status: 'unavailable', reason: 'This calibration holds no repeatability data (it was made before v14, or without replicates).' };
+  if (profile.status !== 'estimated') return { status: 'unavailable', reason: profile.reason || 'The calibration could not estimate the placement repeatability.' };
+  const comp = id => (profile.components || []).find(c => c.id === id), m = inp.massMg, parts = [], list = [];
+  const add = (id, label, u, dof, note) => { list.push({ id, label, uMg: u, dof, note: note || '' }); parts.push({ u, dof }); };
+  const a = comp('placement-repeatability'); add(a.id, a.label, interpTable(a.table, m), a.dof, a.note);
+  const o = comp('object-placement'); if (o && o.included) add(o.id, o.label, interpTable(o.table, m), o.dof, o.note);
+  const neffKnown = Number.isFinite(inp.neff) && inp.neff >= 1, neff = neffKnown ? Math.min(inp.neff, 1e12) : 1;
+  add('reading-noise', 'reading noise of the measured samples (σ / √n_eff)', inp.sigmaMg / Math.sqrt(neff), Math.max(1, neff - 1), neffKnown ? `n_eff ≈ ${neff.toFixed(1)}` : 'n_eff unknown (too few samples): σ itself is used');
+  const dith = Number.isFinite(inp.sigmaCounts) && inp.sigmaCounts >= UNC_DITHER_SIGMA_COUNTS;
+  if (Number.isFinite(inp.slopeMgPerCount)) add('resolution', 'resolution (one count)', Math.abs(inp.slopeMgPerCount) / Math.sqrt(12) / (dith ? Math.sqrt(neff) : 1), Infinity, dith ? 'reading noise dithers the quantisation: averaged out' : 'the noise is below one count: quantisation is not averaged');
+  const w = comp('weight-tolerance'); if (w && w.included) add(w.id, w.label, interpTable(w.table, m), Infinity, w.note);
+  const h = comp('hysteresis'); if (h && h.included) add(h.id, h.label, interpTable(h.table, m), Infinity, h.note);
+  const c = combineUncertainties(parts), res = { status: 'ok', components: list, combinedMg: c.u, dof: c.dof, k: c.k, expandedMg: c.U, includesWeights: !!(w && w.included), includesHysteresis: !!(h && h.included), notIncluded: profile.notIncluded || UNC_NOT_INCLUDED, traceable: false, basis: profile.basis, massMg: m };
+  res.label = uncertaintyLabel(res); return res;
+}
+// ---- spread band modes (v14, display option) ----------------------------------------------------------------------------
+// A step of height H leaves a fraction f of NEW samples in the window; mean +/- SD then reaches H (1 - f + sqrt(f (1-f))) above the old level
+// (at most 1.207 H, f = 0.146): not a bug, but a window that mixes two levels. Three bands: 'symmetric' (mean +/- SD, the default), 'asymmetric'
+// (upper line = mean of the samples above the centre value, lower line = mean of those below; after a step it cannot cross the old level; in
+// steady noise it is about 0.8 sigma), 'stepaware' (restart the window at a level step found by the CUSUM statistic of the validity checks).
+const BAND_MODES = { symmetric: 'Symmetric ±σ (centre ± spread)', asymmetric: 'Asymmetric (mean of the samples above / below)', stepaware: 'Step-aware (window restarts at a detected level step)' };
+function stepRestartIndex(vals) {
+  const T = ANALYSIS_THRESHOLDS; if (vals.length < T.minSamples) return 0;
+  const r = analysisStepCheck(vals);
+  return (r.verdict === 'invalid' || r.verdict === 'suspect') && r.stepLike === true && r.sizeSigma >= T.stepMinSigma && Number.isFinite(r.changeIndex) ? r.changeIndex : 0;
+}
+function bandStats(vals, method, mode, options) {
+  const ema = method === 'ema' || method === 'emaNorm';
+  const start = mode === 'stepaware' && !ema ? stepRestartIndex(vals) : 0, v = start ? vals.slice(start) : vals, r = estimate(v, [], method, options);
+  let upper = r.value + r.sigma, lower = r.value - r.sigma;
+  if (mode === 'asymmetric' && !ema) {
+    let su = 0, nu = 0, sl = 0, nl = 0; for (const x of v) { if (x > r.value) { su += x; nu++; } else if (x < r.value) { sl += x; nl++; } }
+    upper = nu ? su / nu : r.value; lower = nl ? sl / nl : r.value;
+  }
+  return { value: r.value, sigma: r.sigma, upper, lower, start };
+}
+// ---- Authentication (HTTP Basic, writes only) -----------------------------------------------------------------------------
+function b64encode(bytes) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'; let s = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i], b = i + 1 < bytes.length ? bytes[i + 1] : NaN, c = i + 2 < bytes.length ? bytes[i + 2] : NaN, n = (a << 16) | ((b || 0) << 8) | (c || 0);
+    s += A[(n >> 18) & 63] + A[(n >> 12) & 63] + (Number.isNaN(b) ? '=' : A[(n >> 6) & 63]) + (Number.isNaN(c) ? '=' : A[n & 63]);
+  }
+  return s;
+}
+function basicAuthHeader(user, password) { return 'Basic ' + b64encode(new TextEncoder().encode(`${user}:${password}`)); }
+// ---- sample history: merge by time / id, binary layout ---------------------------------------------------------------------
+// existing and incoming are {t:[], raw:[], id:[]} in ascending time; ids may be NaN (unknown). A sample of `incoming` is dropped if an existing
+// sample has the same id (finite) or the same time. Returns the merged arrays (ascending time) plus counts.
+function mergeSampleLists(existing, incoming) {
+  const idSet = new Set(); for (const v of existing.id) if (Number.isFinite(v)) idSet.add(v);
+  const tSet = new Set(existing.t), t = [], raw = [], id = []; let dup = 0, i = 0, j = 0;
+  const inc = [];
+  for (let k = 0; k < incoming.t.length; k++) { const iid = incoming.id[k]; if ((Number.isFinite(iid) && idSet.has(iid)) || tSet.has(incoming.t[k])) { dup++; continue; } inc.push(k); }
+  inc.sort((a, b) => incoming.t[a] - incoming.t[b]);
+  while (i < existing.t.length || j < inc.length) {
+    const takeNew = j < inc.length && (i >= existing.t.length || incoming.t[inc[j]] < existing.t[i]);
+    if (takeNew) { const k = inc[j++]; t.push(incoming.t[k]); raw.push(incoming.raw[k]); id.push(incoming.id[k]); }
+    else { t.push(existing.t[i]); raw.push(existing.raw[i]); id.push(existing.id[i]); i++; }
+  }
+  return { t, raw, id, added: inc.length, duplicates: dup };
+}
+// PROPOSED binary layout of a history chunk (to be confirmed with the firmware): little endian, 'HIST' magic, u16 version = 1, u16 reserved,
+// u32 count, then count x 12 bytes {u32 sample id, u32 device time ms, i32 raw counts}.
+const HISTORY_MAGIC = 0x54534948;
+function decodeHistoryBinary(buf) {
+  const dv = new DataView(buf.buffer ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : buf);
+  if (dv.byteLength < 12 || dv.getUint32(0, true) !== HISTORY_MAGIC) throw new Error('not a history chunk (bad magic)');
+  if (dv.getUint16(4, true) !== 1) throw new Error('unknown history layout version');
+  const n = dv.getUint32(8, true); if (dv.byteLength < 12 + 12 * n) throw new Error('truncated history chunk');
+  const id = new Array(n), t = new Array(n), raw = new Array(n);
+  for (let k = 0; k < n; k++) { const o = 12 + 12 * k; id[k] = dv.getUint32(o, true); t[k] = dv.getUint32(o + 4, true); raw[k] = dv.getInt32(o + 8, true); }
+  return { id, t, raw };
+}
+function encodeHistoryBinary(ids, ts, raws) {
+  const n = ids.length, buf = new ArrayBuffer(12 + 12 * n), dv = new DataView(buf);
+  dv.setUint32(0, HISTORY_MAGIC, true); dv.setUint16(4, 1, true); dv.setUint16(6, 0, true); dv.setUint32(8, n, true);
+  for (let k = 0; k < n; k++) { const o = 12 + 12 * k; dv.setUint32(o, ids[k], true); dv.setUint32(o + 4, ts[k], true); dv.setInt32(o + 8, raws[k], true); }
+  return buf;
+}
+function decodeHistoryJson(msg) {   // {samples:[{n,t,raw}]} or {ids:[],t:[],raw:[]} or a bare array of {n,t,raw}
+  const out = { id: [], t: [], raw: [] };
+  if (msg && Array.isArray(msg.ids)) { for (let k = 0; k < msg.ids.length; k++) { out.id.push(Number(msg.ids[k])); out.t.push(Number(msg.t[k])); out.raw.push(Math.round(Number(msg.raw[k]))); } return out; }
+  const arr = Array.isArray(msg) ? msg : (msg && Array.isArray(msg.samples) ? msg.samples : []);
+  for (const s of arr) { out.id.push(Number(s.n)); out.t.push(Number(s.t)); out.raw.push(Math.round(Number(s.raw))); }
+  return out;
+}
+// ===== END v14 pure block ==============================================================================================
+
+// ===== v14: SAMPLE HISTORY (range requests by the web UI) ==================================================================
+// Design (handout section 7): the live stream and the history are independent. Every live sample carries a monotonic sample id `n` and a device
+// timestamp. The web UI asks the history server for OLDER ids itself (GET <historyUrl>?sensor=<id>&from_id=a&to_id=b; binary chunks preferred,
+// JSON accepted) and MERGES them into the sensor's ring buffer by time, dropping duplicates by id. The server needs no notion of a "new user".
+// Live samples are NOT held back: merging works while the stream continues (so the "buffer live samples, then prepend" order of the handout is
+// replaced by a merge that is valid at any moment; the result is identical). The same merge fills gaps after a reconnect: a jump in the sample
+// ids is requested as a range; ids the server no longer has simply stay what they are, an explicit gap in the timestamps (and in the id counter
+// that the validity checks now compare against).
+// ASSUMED server limits (to be confirmed with the firmware): how many samples it retains, the largest chunk, the binary layout (decodeHistoryBinary).
+const HISTORY_URL = null, HISTORY_CHUNK = 5000, HISTORY_MAX_CHUNKS = 400;
+function historyUrlFor(sensor) { return sensor.historyUrl || HISTORY_URL; }
+function historyRequestUrl(base, sensorId, fromId, toId) { return `${base}${base.includes('?') ? '&' : '?'}sensor=${encodeURIComponent(sensorId)}&from_id=${fromId}&to_id=${toId}`; }
+function firstKnownId(st) { for (let i = 0; i < st.count; i++) { const v = st.ids[(st.head + i) % st.capacity]; if (Number.isFinite(v)) return v; } return NaN; }
+// Merge a chunk {id:[], t:[] (device ms, absolute), raw:[]} into the sensor. Works on any sensor (shown or hidden). Returns counts.
+function mergeHistory(sensor, chunk) {
+  const st = sensor.state;
+  return withState(st, () => {
+    const n = chunk.t.length; if (!n) return { added: 0, duplicates: 0, dropped: 0, count: st.count };
+    if (st.timeOrigin == null) { let mn = Infinity; for (const v of chunk.t) if (v < mn) mn = v; st.timeOrigin = mn; }
+    if (st.derivedReady && st.unprocessed > 0) {   // finish the samples that were stored while the sensor was hidden (they keep the sensor's current calibration)
+      for (let i = st.count - Math.min(st.unprocessed, st.count); i < st.count; i++) st.massMg[physicalIndex(i)] = calibrateAbsolute(getRaw(i), st.calPrepared).valueMg;
+      st.unprocessed = 0;
+    }
+    const ex = { t: new Array(st.count), raw: new Array(st.count), id: new Array(st.count) }, massOf = new Map();
+    for (let i = 0; i < st.count; i++) { const p = physicalIndex(i); ex.t[i] = st.times[p]; ex.raw[i] = st.raw[p]; ex.id[i] = st.ids[p]; if (st.derivedReady) massOf.set(st.times[p], st.massMg[p]); }
+    const inc = { t: chunk.t.map(v => v - st.timeOrigin), raw: chunk.raw, id: chunk.id }, m = mergeSampleLists(ex, inc);
+    if (!m.added) return { added: 0, duplicates: m.duplicates, dropped: 0, count: st.count };
+    if (st.measurement) { const t0 = st.measurement.t0; if (inc.t.some(v => v >= t0)) cancelMeasurement('history was inserted into the measured interval'); }
+    let total = m.t.length, from = 0, dropped = 0;
+    if (!st.unlimited && total > st.capacity) { dropped = total - st.capacity; from = dropped; total = st.capacity; }   // the newest `capacity` samples are kept
+    const cap = st.unlimited ? Math.max(st.capacity, Math.ceil(total / 100000) * 100000) : st.capacity, D = st.derivedReady, dn = D ? cap : 0;
+    const times = new Float64Array(cap), raw = new Int32Array(cap), ids = new Float64Array(cap).fill(NaN), mass = new Float64Array(dn);
+    for (let i = 0; i < total; i++) {
+      const k = from + i; times[i] = m.t[k]; raw[i] = m.raw[k]; ids[i] = m.id[k];
+      if (D) { const known = massOf.get(m.t[k]); mass[i] = known !== undefined ? known : calibrateAbsolute(m.raw[k], (st.calibrations.length ? calibrationAt(m.t[k]).config : st.calPrepared)).valueMg; }
+    }
+    st.capacity = cap; st.times = times; st.raw = raw; st.ids = ids; st.massMg = mass; st.count = total; st.head = 0;
+    if (D) { st.rawMA = new Float64Array(cap); st.rawSD = new Float64Array(cap); st.massMA = new Float64Array(cap); st.massSD = new Float64Array(cap); rebuildDerived(); rebuildEMA(); }
+    else st.unprocessed = st.count;
+    st.curveCache = { key: '', map: new Map() }; st.miniCache = { key: '', map: new Map() }; st.pmNeff = null; st.pmStab = null;
+    if (st.live) fitLiveWindow(); else clampHistoricalView();
+    return { added: m.added, duplicates: m.duplicates, dropped, count: st.count };
+  });
+}
+function historyAfterMerge(sensor) {
+  if (sensor !== activeSensor) return;
+  if (state.selection) updateSelectionForNewContext();
+  scheduleRender();
+}
+async function historyFetchChunk(sensor, fromId, toId) {
+  const base = historyUrlFor(sensor), r = await fetch(historyRequestUrl(base, sensor.id, fromId, toId), { cache: 'no-store' });   // a READ: no Authorization header
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+  return /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer())) : decodeHistoryJson(await r.json());
+}
+function historyStatusText(sensor) {
+  const h = sensor.history; if (!historyUrlFor(sensor)) return 'no history server configured';
+  return `history: ${h.running ? 'loading… ' : ''}${h.status}${h.loaded ? ` · ${h.loaded.toLocaleString()} older samples loaded` : ''}${h.error ? ` · ${h.error}` : ''}${sensor.gapCount ? ` · ${sensor.gapCount.toLocaleString()} missing ids noticed` : ''}`;
+}
+// Load OLDER history: from the oldest known id backwards, one chunk at a time, until the server has nothing older, the buffer is full or nothing new arrives.
+async function historyLoadOlder(sensor) {
+  const base = historyUrlFor(sensor), h = sensor.history;
+  if (!base) { h.status = 'not configured'; return h; }
+  if (h.running) return h;
+  h.running = true; h.error = null; h.status = 'loading'; updateSourceNote();
+  try {
+    for (let guard = 0; guard < HISTORY_MAX_CHUNKS; guard++) {
+      const st = sensor.state, first = firstKnownId(st);
+      if (!Number.isFinite(first)) { h.status = 'waiting for the first sample id'; break; }
+      if (!st.unlimited && st.count >= st.capacity) { h.status = 'buffer full'; break; }
+      const to = first - 1, floor = h.minId == null ? 0 : h.minId; if (to < floor) { h.status = 'complete (server start reached)'; break; }
+      const room = st.unlimited ? Infinity : st.capacity - st.count, size = Math.min(HISTORY_CHUNK, room), from = Math.max(floor, to - size + 1);
+      const chunk = await historyFetchChunk(sensor, from, to);
+      if (!chunk.id.length) { h.minId = to + 1; h.status = 'complete (server has nothing older)'; break; }
+      const r = mergeHistory(sensor, chunk); h.loaded += r.added; historyAfterMerge(sensor);
+      let lo = Infinity; for (const v of chunk.id) if (Number.isFinite(v) && v < lo) lo = v;
+      if (lo > from) { h.minId = lo; }           // the server could not go back further
+      if (!r.added) { h.status = 'complete (no new samples)'; break; }
+      h.status = 'loading';
+    }
+    if (h.status === 'loading') h.status = 'paused (chunk limit)';
+  } catch (e) { h.error = e.message; h.status = 'error'; }
+  h.running = false; updateSourceNote(); return h;
+}
+function noteGap(sensor, fromId, toId) {
+  sensor.gapCount += toId - fromId + 1;
+  const g = sensor.gaps[sensor.gaps.length - 1];
+  if (g && g.status === 'pending' && fromId <= g.toId + 1) g.toId = Math.max(g.toId, toId); else sensor.gaps.push({ fromId, toId, status: 'pending' });
+  if (historyUrlFor(sensor)) setTimeout(() => historyFillGaps(sensor), 0); else sensor.gaps[sensor.gaps.length - 1].status = 'no history server';
+}
+async function historyFillGaps(sensor) {
+  if (sensor.history.fillingGaps || !historyUrlFor(sensor)) return;
+  sensor.history.fillingGaps = true;
+  try {
+    for (const g of sensor.gaps) {
+      if (g.status !== 'pending') continue;
+      let got = 0;
+      try { for (let a = g.fromId; a <= g.toId; a += HISTORY_CHUNK) { const b = Math.min(g.toId, a + HISTORY_CHUNK - 1), chunk = await historyFetchChunk(sensor, a, b); if (chunk.id.length) { got += mergeHistory(sensor, chunk).added; historyAfterMerge(sensor); } } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
+      catch (e) { g.status = 'failed: ' + e.message; }
+    }
+  } finally { sensor.history.fillingGaps = false; updateSourceNote(); }
+}
+function historyScheduleInitial(sensor) {
+  const h = sensor.history; if (h.autoStarted || !historyUrlFor(sensor)) return; h.autoStarted = true;
+  setTimeout(() => historyLoadOlder(sensor), 0);
+}
+function updateSourceNote() {
+  if (!activeSensor || activeSensor.kind !== 'server') return;
+  $('sourceNote').textContent = `Server sensor · ${activeSensor.sseUrl || 'no SSE URL'} · ${historyStatusText(activeSensor)}`;
+}
+// ===== v14: AUTHENTICATION (HTTP Basic, in our own code, WRITES ONLY) ====================================================
+// The server asks for a password only when one is set, and only for writes (settings files, calibration files, other file changes).
+// GET, SSE and history stay open (EventSource cannot send headers). We do not use the browser's own pop-up (it cannot be controlled or
+// forgotten and behaves differently for streams): a write is sent with `Authorization: Basic base64(user:password)` when a password is
+// known; on 401 our dialog asks ONCE and the write is retried once. The password lives in memory and in sessionStorage (this tab);
+// "remember on this device" additionally uses localStorage (off by default). It is never logged, never put into a URL, never exported.
+// CORS: if the UI is not served by the ESP32 itself, the server must answer the preflight and allow the Authorization header.
+// SECURITY: Basic over plain HTTP sends the password readably. Trusted home network or HTTPS only.
+const AUTH_SESSION_KEY = 'massTelemetryWorkbench.auth.session', AUTH_LOCAL_KEY = 'massTelemetryWorkbench.auth.remembered';
+const CALIBRATION_UPLOAD_URL = null;   // PUT of a calibration JSON (a write: password if one is set)
+let authCred = null, authPending = null, authPromptImpl = null;
+function authStorageGet(kind, key) { try { const s = kind === 'session' ? (typeof sessionStorage !== 'undefined' ? sessionStorage : null) : (typeof localStorage !== 'undefined' ? localStorage : null); const t = s && s.getItem(key); const o = t && JSON.parse(t); return o && typeof o.user === 'string' && typeof o.password === 'string' ? o : null; } catch (_) { return null; } }
+function authStorageSet(kind, key, v) { try { const s = kind === 'session' ? sessionStorage : localStorage; if (v) s.setItem(key, JSON.stringify(v)); else s.removeItem(key); } catch (_) {} }
+function authInit() { authCred = authStorageGet('session', AUTH_SESSION_KEY) || authStorageGet('local', AUTH_LOCAL_KEY); authUpdateInfo(); }
+function authStore(cred, remember) { authCred = { user: cred.user, password: cred.password }; authStorageSet('session', AUTH_SESSION_KEY, authCred); authStorageSet('local', AUTH_LOCAL_KEY, remember ? authCred : null); authUpdateInfo(); }
+function authForget() { authCred = null; authStorageSet('session', AUTH_SESSION_KEY, null); authStorageSet('local', AUTH_LOCAL_KEY, null); authUpdateInfo(); }
+function authUpdateInfo() {
+  const el = typeof document !== 'undefined' && document.getElementById('authInfo'); if (!el) return;
+  el.textContent = !authCred ? 'Server password: none known in this tab.' : (authStorageGet('local', AUTH_LOCAL_KEY) ? `Server password: remembered on this device (user “${authCred.user}”).` : `Server password: kept for this tab only (user “${authCred.user}”).`);
+  const b = document.getElementById('authForgetBtn'); if (b) b.disabled = !authCred;
+}
+function authDialogPrompt(message) {
+  return new Promise(resolve => {
+    const modal = $('authModal'); $('authMsg').textContent = message || ''; $('authUser').value = authCred ? authCred.user : ($('authUser').value || ''); $('authPass').value = ''; $('authRemember').checked = false; modal.hidden = false;
+    const done = v => { modal.hidden = true; $('authPass').value = ''; $('authOk').onclick = null; $('authCancel').onclick = null; modal.onkeydown = null; resolve(v); };
+    $('authOk').onclick = () => done({ user: $('authUser').value, password: $('authPass').value, remember: $('authRemember').checked });
+    $('authCancel').onclick = () => done(null); modal.onkeydown = e => { if (e.key === 'Enter') $('authOk').onclick(); else if (e.key === 'Escape') done(null); };
+    setTimeout(() => { try { $(authCred ? 'authPass' : 'authUser').focus(); } catch (_) {} }, 0);
+  });
+}
+function authAsk(message) {
+  if (!authPending) authPending = Promise.resolve((authPromptImpl || authDialogPrompt)(message)).then(r => { authPending = null; return r; }, e => { authPending = null; throw e; });
+  return authPending;
+}
+// Every WRITE to the server goes through here. `init` is a normal fetch init (method, headers, body).
+async function serverWrite(url, init = {}) {
+  const send = cred => { const headers = { ...(init.headers || {}) }; if (cred) headers['Authorization'] = basicAuthHeader(cred.user, cred.password); return fetch(url, { ...init, headers }); };
+  let r = await send(authCred);
+  if (r.status === 401) {
+    const got = await authAsk(authCred ? 'The server did not accept the password. Enter it again.' : 'The server asks for a password before it accepts changes.');
+    if (!got || !got.password) return r;
+    authStore({ user: got.user, password: got.password }, !!got.remember);
+    r = await send(authCred);
+    if (r.status === 401) authForget();   // a wrong password is not kept
+  }
+  return r;
+}
+async function uploadCalibration() {
+  if (!CALIBRATION_UPLOAD_URL) { showCalibrationMessages([], ['No calibration server is configured (CALIBRATION_UPLOAD_URL is empty).'], ''); return; }
+  try {
+    const out = { ...CALIBRATION, revisionId: state.revisionId }; if (state.fullHash) out.contentHash = state.fullHash;
+    const r = await serverWrite(CALIBRATION_UPLOAD_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out, null, 2) });
+    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
+    showCalibrationMessages([], [], 'The active calibration was sent to the server.');
+  } catch (e) { showCalibrationMessages([`Could not send the calibration: ${e.message}`], [], ''); }
 }
 
 // uPlot is pinned to one exact version (reproducible builds; no surprise breaking changes). To

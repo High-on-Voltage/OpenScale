@@ -112,7 +112,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <h3>Calibration</h3>
         <div id="calibrationInfo" class="small">Loading calibration…</div>
         <div class="button-row" style="margin-bottom:6px"><button id="calWizardBtn" class="primary">Calibration wizard &amp; fitting editor…</button></div>
-        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button></div>
+        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button><button id="calUploadBtn" title="Send the active calibration to the server (needs the password if one is set)">Send to server</button></div>
         <input id="calFile" type="file" accept=".json,application/json" hidden>
         <div id="calMessages" class="small" style="margin-top:6px"></div>
         <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
@@ -125,7 +125,8 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
   <section class="metrics">
     <div class="mcol span2">
       <div class="metric-pair">
-        <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div><div class="detail warning" id="rangeStatus" hidden></div></div>
+        <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div>
+          <div class="detail" id="pmLines"><span id="pmSigma" title="Spread σ of the single readings in the estimator window (the same number as the spread card). How much single readings scatter; not an uncertainty.">σ —</span> · <span id="pmMean" title="Uncertainty of the window AVERAGE if the readings were independent: σ divided by the effective number of independent samples n_eff (from the autocorrelation, so slow noise counts less than white noise). A longer window narrows it only while the noise is white. Repeatability of the average only: no calibration, no weights.">±avg —</span> · <span id="pmStab" title="Stability: how much the DISPLAYED value itself moved (max − min) during the last window length. Small = settled; large = still moving. This is not a repeatability.">moved —</span></div><div class="detail warning" id="rangeStatus" hidden></div></div>
         <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
       </div>
       <section class="panel compact" aria-label="Display and estimator settings">
@@ -133,7 +134,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
           <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
           <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampelLocal">Hampel filter (sliding local median/MAD) + mean</option><option value="hampel">Global MAD filter + mean (old Hampel-style)</option><option value="ema">Exponential moving average (EMA, seeded; old)</option><option value="emaNorm">EMA, seed-normalised weights</option></select></div>
-          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div></div>
+          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div><div class="inline small" style="margin-top:4px">= <input id="windowSeconds" type="number" min="0.025" step="any" value="1" style="width:92px" aria-label="Window length in seconds"> s at <span id="windowRateText">80</span> Hz (samples ÷ rate)</div></div>
           <div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
           <div class="field" id="hampelField" hidden><label for="hampelHalf">Hampel half-width k (window 2k+1)</label><input id="hampelHalf" type="number" min="2" max="50" step="1" value="5"></div><div class="field" id="hampelSigmaField" hidden><label for="hampelSigma">Hampel threshold (× robust σ)</label><input id="hampelSigma" type="number" min="1" max="10" step="0.5" value="3"></div>
           <div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
@@ -149,7 +150,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       </section>
     </div>
     <div class="mcol">
-      <div class="metric"><div class="label">Measurement</div><div class="value" id="measValue">—</div><div class="detail" id="measDetail">No measurement yet</div><div class="detail" id="measNote"></div></div>
+      <div class="metric"><div class="label">Measurement</div><div class="value" id="measValue">—</div><div class="detail" id="measDetail">No measurement yet</div><div class="detail" id="measUnc"></div><div class="detail" id="measNote"></div></div>
       <section class="panel compact" aria-label="Measurement">
         <div class="field" style="margin-bottom:8px"><label for="measSlider">Length: <strong id="measSliderText">5 s · 400 samples</strong></label><input id="measSlider" type="range" min="0" max="1000" step="1" value="489"></div>
         <div class="control-grid">
@@ -187,6 +188,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <label class="check"><input type="checkbox" id="zeroRawFillToggle"> Fill zero to instantaneous mass</label>
         <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
         <div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1" value="5"><div class="small">Slow response at low values · immediate at 100%</div></div>
+        <div class="field full" style="margin:7px 0 6px"><label for="bandModeSelect" title="How the band around the centre line is drawn. After a level step the window holds old and new samples, so a plain centre ± SD band reaches about 21 % above the old level (not a bug).">Spread band</label><select id="bandModeSelect"><option value="symmetric">Symmetric ±σ (default)</option><option value="asymmetric">Asymmetric (mean of samples above / below)</option><option value="stepaware">Step-aware (restarts at a level step)</option></select><div class="small" id="bandModeNote">Not used for the EMA estimators.</div></div>
         <label class="check"><input type="checkbox" id="downsampleToggle"> Downsample large windows (min/max envelope)</label>
         <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
         <div class="small">Downsampling activates only above roughly four plotted points per horizontal pixel. Disable it to plot every visible sample.</div>
@@ -317,6 +319,9 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       <div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser (<code>ui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the server default, or the built-in values if there is none.</div>
       <div class="button-row"><button id="uiResetBtn">Reset UI settings</button><button id="uiExportBtn">Export ui-settings.json</button></div>
       <div class="button-row"><button id="uiSaveServerBtn">Save current as server default</button><button id="uiResetServerBtn">Reset server default</button></div>
+      <hr class="settings-divider"><div id="authInfo" class="readout">—</div>
+      <div class="button-row"><button id="authForgetBtn">Forget password</button></div>
+      <div class="small" style="margin:6px 0">A password is only asked for when something is changed on the server (settings, calibration). Reading and the live stream never need it. It is kept in this tab; it is never written into a file or a link. The password is sent as HTTP Basic: on plain HTTP it is readable on the network, so use it on a trusted home network or over HTTPS only.</div>
       <div id="uiMessages" class="small" style="margin-top:8px"></div>
     </div>
     <div class="modal-body" id="smPane_sensor" hidden>
@@ -328,10 +333,23 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssRate">Nominal sampling rate (Hz)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
           <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
         </div>
+        <div class="field span2" style="margin-top:8px"><label>Sample history</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the server</button></div><div class="small" id="ssHistoryInfo">—</div></div>
         <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensor_settings.json</button><button id="ssDownloadBtn">Download sensor_settings.json</button></div>
       </div>
       <div id="ssMessages" class="small" style="margin-top:8px"></div>
       <div class="small" style="margin-top:6px">More sensor settings will follow. The file contains all server sensors.</div>
+    </div>
+  </div>
+</div>
+<div id="authModal" class="modal" hidden style="z-index:80">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal-head"><h2 id="authTitle">Password</h2></div>
+    <div class="modal-body">
+      <div id="authMsg" class="small" style="margin-bottom:8px"></div>
+      <div class="control-grid"><div class="field span2"><label for="authUser">User name</label><input type="text" id="authUser" autocomplete="username"></div><div class="field span2"><label for="authPass">Password</label><input type="password" id="authPass" autocomplete="current-password"></div></div>
+      <label class="check"><input type="checkbox" id="authRemember"> Remember on this device (stored unencrypted in this browser)</label>
+      <div class="small">Sent as HTTP Basic. Over plain HTTP the password is readable on the network: trusted home network or HTTPS only.</div>
+      <div class="button-row"><button id="authOk" class="primary">Continue</button><button id="authCancel">Cancel</button></div>
     </div>
   </div>
 </div>
@@ -341,6 +359,6 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="modal-body" id="wizBody"></div>
   </div>
 </div>
-<script src="telemetry_workbench_v13.js"></script>
+<script src="telemetry_workbench_v14.js"></script>
 </body>
 </html>
