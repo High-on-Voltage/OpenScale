@@ -1002,6 +1002,149 @@ const near = (a,b,rel=1e-9,abs=1e-9) => Math.abs(a-b) <= Math.max(abs, rel*Math.
     const p3 = R(`authDialogPrompt('x')`); R(`$('authModal').onkeydown({key:'Escape'})`); ok('A8 Esc cancels', (await p3)===null); }
   ok('A9 static: the modal, the forget button, the info line and the history controls exist in the HTML', ['authModal','authUser','authPass','authRemember','authOk','authCancel','authForgetBtn','authInfo','calUploadBtn','ssHistoryBtn','ssHistoryInfo','bandModeSelect','windowSeconds','pmLines','measUnc'].every(i=>html.includes(`id="${i}"`)) && /Trusted home network|trusted home network/.test(html));
 
+  // ===== v15 ======================================================================================================
+  R = await load();
+  // ---- Track Live <-> Pause Tracking
+  R(`for(let i=0;i<500;i++)appendSample(nextSensorValue()); updateViewLabel();`);
+  ok('V15a live: button offers "Pause Tracking"', R(`$('trackBtn').textContent`)==='Pause Tracking');
+  R(`trackToggle()`);
+  ok('V15a click pauses tracking: view frozen, button now "Track Live"', R(`state.live`)===false && R(`state.trackPaused`)===true && R(`$('trackBtn').textContent`)==='Track Live');
+  R(`state.viewMax=newestTime(); autoTrackIfAtEnd();`);
+  ok('V15a a paused view at the far right does NOT jump back to live by itself', R(`state.live`)===false);
+  R(`trackToggle()`); ok('V15a second click = Track Live again; flag cleared', R(`state.live`)===true && R(`state.trackPaused`)===false && R(`$('trackBtn').textContent`)==='Pause Tracking');
+  R(`state.live=false; state.viewMax=newestTime(); autoTrackIfAtEnd();`); ok('V15a panning away and back (no pause) still auto-tracks', R(`state.live`)===true);
+  // ---- logarithmic window slider
+  ok('V15b window slider is logarithmic: 0 -> 2, 1000 -> 10,000, 500 -> 141, monotone, 80 samples at about 433', R(`sliderToWindow(0)`)===2 && R(`sliderToWindow(1000)`)===10000 && R(`sliderToWindow(500)`)===141 && Math.abs(R(`windowToSlider(80)`)-433)<=1 && R(`(()=>{let p=-1;for(let k=0;k<=1000;k+=7){const v=sliderToWindow(k);if(v<p)return false;p=v}return true})()`));
+  ok('V15b round trip slider -> samples -> slider stays within 1 step; the control is a 0..1000 range', R(`(()=>{for(const n of [2,3,10,80,141,1000,4800,10000]){const b=sliderToWindow(windowToSlider(n));if(Math.abs(b-n)>Math.max(1,0.01*n))return false}return true})()`) && /id="windowRange" type="range" min="0" max="1000"/.test(html));
+  R(`setMovingAverageWindow(80,true,false,false)`); ok('V15b setting the window moves the slider to its log position', Math.abs(R(`$('windowRange').value`)-433)<=1);
+  // ---- sub-pixel setting
+  ok('V15c sub-pixel: default off, stored with the UI settings (additive), uPlot gets pxAlign 0 only when on', J(`sanitizeUiSettings({schemaVersion:1}).value.subPixel`)===false && J(`sanitizeUiSettings({schemaVersion:1,subPixel:true}).value.subPixel`)===true && J(`sanitizeUiSettings({schemaVersion:1,subPixel:'x'}).errors.length`)===1 && /pxAlign:subPixel\?0:1/.test(code) && (code.match(/pxAlign:subPixel\?0:1/g)||[]).length===2 && /id="subPixelToggle"/.test(html) && R(`subPixel`)===false);
+  R(`globalThis.__ls={};globalThis.localStorage={getItem:k=>(k in __ls?__ls[k]:null),setItem:(k,v)=>{__ls[k]=String(v)},removeItem:k=>{delete __ls[k]}};setSubPixel(true);uiLocalWrite(collectUiSettings());setSubPixel(false);applyUiSettings(uiLocalRead())`);
+  ok('V15c the setting round-trips and "Reset UI settings" returns to off', R(`subPixel`)===true && (await R(`uiResetLocal().then(()=>subPixel)`))===false);
+  // ---- clear charts
+  R = await load();
+  R(`globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0}close(){}}; applySensorList([{id:'a',name:'A',sseUrl:'/s1'}]);`);
+  R(`for(let i=0;i<400;i++)appendSample(nextSensorValue()); autoTare(); for(let i=0;i<200;i++)appendSample(nextSensorValue()); handleSseMessage('/s1',JSON.stringify(Array.from({length:50},(_,k)=>({id:'a',t:1e6+k*12.5,raw:5000,n:k+1}))));`);
+  const tBefore = R(`state.nextTime`);
+  R(`clearCharts()`);
+  ok('V15d "Clear charts": shown sensor loses its samples; tares, log and calibration stay; time keeps running; other sensors untouched', R(`state.count`)===0 && R(`state.appended`)===0 && R(`state.tareEvents.length`)===1 && R(`state.logs.length`)>=1 && R(`state.nextTime`)===tBefore && R(`state.calibrations.length`)>=1 && R(`sensors.get('a').state.count`)===50);
+  R(`for(let i=0;i<300;i++)appendSample(nextSensorValue()); updateMetrics();`);
+  ok('V15d the buffer works again after clearing (rolling statistics, navigator, tare still applied)', R(`state.count`)===300 && R(`getNetMg(299)===getMassMg(299)-state.tareEvents[0].tareMassMg`) && R(`buildMiniData()[0].length`)>0 && Number.isFinite(R(`getMassSD(299)`)));
+  R(`clearAllCharts()`); ok('V15d "Clear all charts": every sensor is emptied, logs stay', R(`sensors.get('a').state.count`)===0 && R(`state.count`)===0 && R(`state.tareEvents.length`)===1);
+  R(`for(let i=0;i<50;i++)appendSample(nextSensorValue()); handleSseMessage('/s1',JSON.stringify([{id:'a',t:2e6,raw:5000,n:900}])); clearAll()`);
+  ok('V15d "Clear all": also tares, log, measurement and overload events; calibrations stay', R(`state.count===0&&state.tareEvents.length===0&&state.logs.length===0&&state.lastMeasurement===null&&state.calibrations.length>=1&&sensors.get('a').state.count===0&&sensors.get('a').state.logs.length===0`));
+  R(`$('measSamples').value=200; for(let i=0;i<10;i++)appendSample(5000); startMeasurement(); clearCharts();`); ok('V15d clearing cancels a running measurement', R(`state.measurement===null`));
+  ok('V15d the three buttons are in a collapsed <details> at the END of the settings menu', /<details id="clearArea">/.test(html) && !/<details id="clearArea"[^>]* open/.test(html) && html.indexOf('id="clearArea"')>html.indexOf('id="calMessages"') && ['clearChartsBtn','clearAllChartsBtn','clearAllBtn'].every(i=>html.indexOf('id="'+i+'"')>html.indexOf('id="clearArea"')));
+  // ---- overload monitor (demo calibration: 4600 counts = 0 g, 5000 = 100 g, 5400 = 200 g; 4 counts per g)
+  R = await load();
+  const ST = `testSensor`;
+  const feed = (sensor, raw, n) => R(`for(let i=0;i<${n};i++)ingestSample(${sensor},${raw}); 0`);
+  { const r = J(`(()=>{const p=overloadApplySettings(testSensor,{maxLoad:{value:100,unit:'g'}});return {e:p.errors,c:testSensor.ovl.cfg}})()`);
+    ok('V15e settings: max 100 g -> 100,000 mg; no min given (min = -max); defaults 0.1 s, 10 / 20 / 40 %, break 0.5 s', r.e.length===0 && r.c.maxMg===100000 && r.c.minMg===null && r.c.averageS===0.1 && r.c.yellowPct===10 && r.c.orangePct===20 && r.c.redPct===40 && r.c.breakS===0.5);
+    const lv = (avg) => J(`overloadLevel(${avg},testSensor.ovl.cfg)`);
+    ok('V15e levels: 105 g below the yellow threshold = none; 115 g yellow; 125 g orange; 150 g red; exactly the limit none; -115 g yellow (min defaults to -max); -150 g red', lv(105000).level===null && lv(115000).level==='yellow' && lv(125000).level==='orange' && lv(150000).level==='red' && lv(100000).level===null && lv(-115000).level==='yellow' && lv(-115000).side==='under' && lv(-150000).level==='red' && lv(50000).level===null); }
+  { const bad = s => J(`overloadApplySettings(testSensor,${s}).errors.length`);
+    ok('V15e invalid settings are refused with a reason and change nothing: min >= max, thresholds not rising, unknown unit, negative max', bad(`{maxLoad:{value:100,unit:'g'},minLoad:{value:100,unit:'g'}}`)>0 && bad(`{maxLoad:{value:100,unit:'g'},yellowPercent:30,orangePercent:20}`)>0 && bad(`{maxLoad:{value:100,unit:'furlong'}}`)>0 && bad(`{maxLoad:{value:-5,unit:'g'}}`)>0 && R(`testSensor.ovl.cfg.maxMg`)===100000);
+    ok('V15e a typed minimum is used for underload (-50 g) and an empty maximum switches the monitor off', J(`(()=>{overloadApplySettings(testSensor,{maxLoad:{value:100,unit:'g'},minLoad:{value:-50,unit:'g'}});const a=overloadLevel(-57000,testSensor.ovl.cfg).level;overloadApplySettings(testSensor,{maxLoad:null});const b=overloadStep(testSensor,0,1e9);overloadApplySettings(testSensor,{maxLoad:{value:100,unit:'g'}});return [a,testSensor.ovl.cfg.maxMg,testSensor.ovl.active]})()`).join()==='yellow,100000,' ); }
+  R = await load(); R(`overloadApplySettings(testSensor,{maxLoad:{value:100,unit:'g'}}); __now=1000;`);
+  feed(ST,5000,40);
+  ok('V15f normal load: no event, no banner', R(`testSensor.ovl.active`)===null && R(`testSensor.ovl.events.length`)===0 && R(`(updateOverloadBanner(),$('overloadBanner').hidden)`)===true);
+  feed(ST,5100,1); feed(ST,5000,20);
+  ok('V15f one single spike sample (average over 0.1 s = 8 samples) is not an overload', R(`testSensor.ovl.active`)===null, JSON.stringify(J(`testSensor.ovl.current`)));
+  feed(ST,5060,20);
+  { const a = J(`testSensor.ovl.active`);
+    ok('V15f 115 g for longer than the averaging time -> event starts, yellow', a && a.peakLevel==='yellow' && a.side==='over' && a.samples>5 && a.peakMg>110000, JSON.stringify(a));
+    const st = J(`(()=>{const s=overloadStatus(testSensor,performance.now());updateOverloadBanner();return {now:s.now,level:s.level,html:$('overloadBanner').innerHTML,hidden:$('overloadBanner').hidden}})()`);
+    ok('V15f banner is visible, names the sensor, says OVERLOAD and "STILL OVERLOADED"', st.hidden===false && /OVERLOAD/.test(st.html) && /STILL OVERLOADED/.test(st.html) && /ovl-yellow/.test(st.html) && /Test signal/.test(st.html) && st.now===true); }
+  feed(ST,5200,20);
+  ok('V15f the same event escalates to red when the load rises to 150 g (peak level and peak mass kept)', R(`testSensor.ovl.active.peakLevel`)==='red' && R(`testSensor.ovl.active.peakMg`)>140000);
+  feed(ST,5000,10);   // 125 ms back to normal: shorter than the 0.5 s break
+  feed(ST,5060,12);
+  ok('V15f a break of 0.125 s (< 0.5 s) does not start a new event', R(`testSensor.ovl.events.length`)===0 && R(`testSensor.ovl.active.peakLevel`)==='red');
+  feed(ST,5000,20);   // 250 ms back to normal, still inside the break
+  { const s = J(`(()=>{const x=overloadStatus(testSensor,performance.now());return {now:x.now,html:(updateOverloadBanner(),$('overloadBanner').innerHTML)}})()`);
+    ok('V15f inside the break the banner stays but no longer says "still overloaded"', s.now===false && /ended/.test(s.html) && !/STILL/.test(s.html)); }
+  feed(ST,5000,40);   // total 0.75 s of normal load -> event closes
+  { const e = J(`testSensor.ovl.events[0]`);
+    ok('V15g after 0.5 s without overload the event is closed and logged once: peak, duration (first to last overloaded sample), side, limit', R(`testSensor.ovl.events.length`)===1 && R(`testSensor.ovl.active`)===null && e.type==='overload' && e.peakLevel==='red' && e.peakMg>140000 && e.side==='over' && e.limitMg===100000 && e.durationMs>300 && R(`testSensor.state.logs[0].entryId`)===e.entryId, JSON.stringify(e));
+    const d = R(`describeEventHTML(testSensor.state.logs[0])`);
+    ok('V15g log row and tooltip describe it ("Overload · red", peak, limit, +%, duration); jumping to it works', /Overload · red/.test(d) && /limit/.test(d) && /\+\d+ %/.test(d) && /Overload/.test(R(`(renderLog(),$('logList').innerHTML)`)) && (()=>{try{R(`jumpToLogEntry(testSensor.state.logs[0].entryId,'overload')`);return true}catch(x){console.log(x);return false}})());
+    ok('V15g the event is a range for the chart marks (log entry range, lane hit test) ', J(`logEntryRange(testSensor.state.logs[0])`).t0===e.t0 && R(`hitTestEvents({posToVal:x=>x*0.1},(testSensor.state.logs[0].t0+testSensor.state.logs[0].t1)/2/100,5).some(h=>h.entry===testSensor.state.logs[0])`)); }
+  { R(`__now=5000`); const a = J(`(()=>{const s=overloadStatus(testSensor,5000);return s&&{now:s.now,ago:s.endedAgoS}})()`);
+    R(`__now=1000`); const hold = J(`(()=>{testSensor.ovl.lastEndWall=1000;return [overloadStatus(testSensor,1000+3000)!==null,overloadStatus(testSensor,1000+7999)!==null,overloadStatus(testSensor,1000+8001)]})()`);
+    ok('V15g after the incident the warning stays visible for the hold time (8 s) with "ended N s ago", then disappears', hold[0] && hold[1] && hold[2]===null); }
+  feed(ST,5000,20); feed(ST,5060,20); feed(ST,5000,60); 
+  ok('V15g a second incident after more than the break is a new event (2 events in total)', R(`testSensor.ovl.events.length`)===2);
+  // underload
+  R = await load(); R(`overloadApplySettings(testSensor,{maxLoad:{value:100,unit:'g'}});`);
+  feed(ST,4000,20); feed(ST,4600,60);
+  ok('V15h underload: -150 g (raw 4000) is red and reported as UNDERLOAD with a minus sign', R(`testSensor.ovl.events.length`)===1 && R(`testSensor.ovl.events[0].side`)==='under' && R(`testSensor.ovl.events[0].peakLevel`)==='red' && R(`testSensor.ovl.events[0].limitMg`)===-100000 && /Underload/.test(R(`describeEventHTML(testSensor.ovl.events[0])`)) && /−/.test(R(`describeEventHTML(testSensor.ovl.events[0])`)));
+  // hidden sensor also monitored; unit shown in the sensor's own unit
+  R = await load(); R(`globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0}close(){}}; applySensorList([{id:'a',name:'Scale A',sseUrl:'/s1'}]); overloadApplySettings(sensors.get('a'),{maxLoad:{value:100,unit:'g'}});`);
+  R(`handleSseMessage('/s1',JSON.stringify(Array.from({length:60},(_,k)=>({id:'a',t:5e6+k*12.5,raw:5000,n:k+1}))));handleSseMessage('/s1',JSON.stringify(Array.from({length:40},(_,k)=>({id:'a',t:5e6+(60+k)*12.5,raw:5200,n:61+k}))));`);
+  ok('V15h a sensor that is NOT shown (raw only) is monitored too and appears in the banner; clicking it is wired by data-sensor', R(`sensors.get('a').ovl.active!==null`) && R(`sensors.get('a').state.derivedReady`)===false && /data-sensor="a"/.test(R(`(updateOverloadBanner(),$('overloadBanner').innerHTML)`)) && /Scale A/.test(R(`$('overloadBanner').innerHTML`)));
+  R(`for(let i=0;i<10;i++)ingestSample(testSensor,5000);`); ok('V15h the shown sensor and the hidden one keep separate events and logs', R(`testSensor.ovl.active`)===null && R(`sensors.get('a').state.logs.length`)===0);
+  { R(`handleSseMessage('/s1',JSON.stringify(Array.from({length:60},(_,k)=>({id:'a',t:5e6+(100+k)*12.5,raw:5000,n:101+k}))))`);
+    ok('V15h a closing event on a hidden sensor goes into ITS log, not into the log shown for the other sensor', R(`sensors.get('a').state.logs.length`)===1 && R(`testSensor.state.logs.filter(l=>l.type==='overload').length`)===0 && R(`$('logList').innerHTML`).includes('Overload')===false); }
+  { R(`overloadApplySettings(sensors.get('a'),{maxLoad:null})`); R(`sensors.get('a').ovl.active=null`);
+    R(`ssSelectedId='a'; sensorSettingsRender(); $('ssMaxLoad').value='200'; $('ssLoadUnit').value='g'; $('ssMinLoad').value='-50'; $('ssAvgS').value='0.2'; $('ssYellow').value='5'; $('ssOrange').value='15'; $('ssRed').value='30'; $('ssBreak').value='1'; $('ssHold').value='12';`);
+    await R(`sensorSettingsApply()`);
+    const c = J(`sensors.get('a').ovl.cfg`), d = J(`sensorSettingsDoc().sensors.find(s=>s.id==='a').overload`);
+    ok('V15i settings tab: overload fields are read, applied and written to sensor_settings.json (weights with unit, not counts)', c.maxMg===200000 && c.minMg===-50000 && c.averageS===0.2 && c.yellowPct===5 && c.orangePct===15 && c.redPct===30 && c.breakS===1 && c.holdS===12 && d.maxLoad.value===200 && d.maxLoad.unit==='g' && d.minLoad.value===-50 && d.redPercent===30, JSON.stringify(d));
+    R(`$('ssYellow').value='50'; $('ssOrange').value='15';`); await R(`sensorSettingsApply()`);
+    ok('V15i invalid input is refused with a message; nothing changes', /Not applied/.test(R(`$('ssMessages').textContent`)) && R(`sensors.get('a').ovl.cfg.yellowPct`)===5);
+    const m = await R(`applySensorSettingsDoc({sensors:[{id:'a',name:'Renamed',overload:{maxLoad:{value:1,unit:'kg'}}},{id:'zzz'}]}).then(x=>JSON.stringify(x))`);
+    ok('V15i a sensor_settings.json can be loaded: overload applied (1 kg = 1,000,000 mg), unknown sensors reported', R(`sensors.get('a').ovl.cfg.maxMg`)===1e6 && R(`sensors.get('a').name`)==='Renamed' && /zzz/.test(m), m); }
+  // ---- connection timeout
+  R = await load(); R(`globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0}close(){}}; __now=1000; applySensorList([{id:'a',name:'A',sseUrl:'/s1',rateHz:80},{id:'slow',name:'Slow',sseUrl:'/s2',rateHz:0.5}]); sseConnections.get('/s1').status='live'; sseConnections.get('/s2').status='live';`);
+  ok('V15j a stream that opened and delivers nothing is "timeout" after max(2 s, 20 periods): not before', R(`__now=1000+1900,sensorStaleMs(sensors.get('a'),__now)`)===0 && R(`sensorStaleMs(sensors.get('a'),1000+5000)`)>=5000 && R(`(__now=6000,sensorLink(sensors.get('a')).key)`)==='timeout' && /No data for 5 s/.test(R(`sensorLink(sensors.get('a')).text`)));
+  ok('V15j a slow sensor (0.5 Hz, period 2 s) gets 40 s: not stale after 30 s, stale after 41 s', R(`sensorStaleMs(sensors.get('slow'),1000+30000)`)===0 && R(`sensorStaleMs(sensors.get('slow'),1000+41000)`)>0);
+  R(`__now=8000; handleSseMessage('/s1',JSON.stringify([{id:'a',t:1000,raw:5000,n:1}]));`); ok('V15j a sample resets the timer: link is "live" again', R(`sensorLink(sensors.get('a')).key`)==='live' && R(`sensorStaleMs(sensors.get('a'),9000)`)===0);
+  R(`__now=60000; setSensorPaused(sensors.get('a'),true)`); ok('V15j a paused or unlisted sensor is never reported as timed out', R(`sensorStaleMs(sensors.get('a'),__now+99999)`)===0 && R(`(sensors.get('slow').unlisted=true,sensorStaleMs(sensors.get('slow'),__now+99999))`)===0);
+  R(`setSensorPaused(sensors.get('a'),false); sensors.get('slow').unlisted=false;`); ok('V15j resuming restarts the timer (no instant timeout)', R(`sensorStaleMs(sensors.get('a'),__now+1000)`)===0);
+  R(`__now=100000; updateStatusUI()`); ok('V15j the status line counts a timed-out sensor as NOT streaming and shows the icon in the sensor list', !/\b3 of 3\b/.test(R(`$('statusText').textContent`)) && R(`(renderSensorSelect(),LINK_ICON.timeout)`)==='⏱');
+  R(`__now=200000; handleSseMessage('/s1',JSON.stringify([{id:'a',t:1100,raw:5000,n:2}])); testSensor.state.lastWall=1;`); ok('V15j the test signal is checked too', R(`sensorLink(testSensor).key`)==='timeout');
+  R(`housekeeping()`); ok('V15j housekeeping runs without error and refreshes banner and status', true);
+  // ---- calibration files bound to a sensor
+  R = await load(); R(`globalThis.EventSource=class{constructor(u){this.url=u;this.readyState=0}close(){}}; applySensorList([{id:'a',name:'A',sseUrl:'/s1'},{id:'b',name:'B',sseUrl:'/s1'}]);`);
+  ok('V15k file name is calibration_<profileId>.json (unsafe characters replaced)', R(`calFileName({profileId:'my profile/1'})`)==='calibration_my_profile_1.json');
+  const MK = (pid, sid, f='') => `(()=>{const c=JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION));c.profileId='${pid}';c.profileName='${pid}';${sid?`c.sensorId='${sid}';`:''}${f}return c})()`;
+  { const r = J(`(async()=>0)()&&0`);
+    const wrong = await R(`activateCalibration(${MK('pa','b')},'t').then(r=>r.errors.join(' '))`);
+    ok('V15k a calibration that names another sensor than the shown one is refused with the sensor name', /belongs to sensor “b”/.test(wrong) && R(`state.calibrations.length`)===1);
+    const bad = R(`validateCalibrationConfig(${MK('pa','',"c.sensorId=5;")}).errors.length`); ok('V15k sensorId must be a text', bad>0 && R(`validateCalibrationConfig(${MK('pa','')}).errors.length`)===0);
+    R(`activateSensor('a')`); const okr = await R(`activateCalibration(${MK('pa','a',"c.calibrationAnchors[2].rawMean=5410;")},'t').then(r=>r.errors.length)`);
+    ok('V15k the owning sensor accepts it: new epoch, library entry, active file remembered in the sensor settings', okr===0 && R(`calLibrary.has('calibration_pa.json')`) && R(`sensors.get('a').settings.calibrationFile`)==='calibration_pa.json' && R(`state.calibrations.length`)===2 && R(`calLibrary.get('calibration_pa.json').sensorId`)==='a'); }
+  { R(`activateSensor('b')`); ok('V15k each sensor has its OWN active calibration: sensor B still runs the embedded demo while A has file pa', R(`state.calibrations.length`)===1 && R(`sensors.get('b').settings.calibrationFile||null`)===null && R(`sensors.get('a').state.revisionId`)!==R(`state.revisionId`));
+    const doc = J(`sensorSettingsDoc()`); ok('V15k sensor_settings.json stores the active calibration file per sensor', doc.sensors.find(s=>s.id==='a').calibrationFile==='calibration_pa.json' && doc.sensors.find(s=>s.id==='b').calibrationFile===null);
+    const msg = await R(`selectCalibrationFile('a','calibration_pa.json')`); ok('V15k selecting a library file switches to its sensor and reports it (already active = no change)', /active for/.test(msg) && R(`activeSensor.id`)==='a');
+    await R(`activateCalibration(${MK('pb','a',"for(const a of c.calibrationAnchors)a.referenceValue/=2;")},'t')`);
+    const back = await R(`selectCalibrationFile('a','calibration_pa.json')`); ok('V15k switching back to an earlier file of the same sensor starts a new epoch with that file', /active for/.test(back) && R(`sensors.get('a').settings.calibrationFile`)==='calibration_pa.json' && R(`state.calibrations.length`)===4);
+    const dem = await R(`selectCalibrationFile('a','')`); ok('V15k "Embedded demo" can be chosen again (file link cleared)', R(`sensors.get('a').settings.calibrationFile`)===null && /demo/.test(dem));
+    const miss = await R(`selectCalibrationFile('b','calibration_unknown.json')`); ok('V15k a named file that is not loaded is reported, not guessed; the name is kept as pending', /not loaded/.test(miss) && R(`sensors.get('b').settings.calibrationFile`)==='calibration_unknown.json'); }
+  { // import switches to the owner sensor; file without a sensor binds to the shown sensor
+    R(`activateSensor('a')`);
+    const file = (cfg,name) => `({size:1000,name:'${name}',text:async()=>JSON.stringify(${cfg})})`;
+    await R(`importCalibrationFile(${file(MK('pc','b',"c.calibrationAnchors[2].rawMean=5420;"),'calibration_pc.json')})`);
+    ok('V15k importing a file that belongs to sensor B while A is shown switches to B and activates it there', R(`activeSensor.id`)==='b' && R(`sensors.get('b').settings.calibrationFile`)==='calibration_pc.json' && R(`sensors.get('a').settings.calibrationFile||null`)===null);
+    await R(`importCalibrationFile(${file(`{...${MK('pd','')},hello:1}`,'old.json')})`);
+    ok('V15k an old file without a sensor is bound to the shown sensor and the user is told', R(`sensors.get('b').settings.calibrationFile`)==='calibration_pd.json' && /names no sensor/.test(R(`$('calMessages').innerHTML`)) );
+    await R(`importCalibrationFile(${file(MK('pe','nope'),'x.json')})`); ok('V15k a file for an unknown sensor is rejected with a message', /not in the sensor list/.test(R(`$('calMessages').innerHTML`)) && R(`sensors.get('b').settings.calibrationFile`)==='calibration_pd.json'); }
+  { // export: stamped with the sensor, fingerprint matches, name
+    R(`globalThis.__dl=[];downloadBlob=(b,n)=>__dl.push([n,b.parts.join('')]);Blob=class{constructor(p){this.parts=p}};`);
+    await R(`exportCalibration()`); const ex = JSON.parse(R(`__dl[0][1]`));
+    const fp = await R(`fingerprintConfig((()=>{const c=JSON.parse(__dl[0][1]);delete c.contentHash;delete c.revisionId;return c})()).then(f=>f.id)`);
+    ok('V15k export: file name calibration_<profileId>.json; the sensor id is stored; the revision id and content hash belong to that stamped content (re-import has no hash warning)', R(`__dl[0][0]`)==='calibration_pd.json' && ex.sensorId==='b' && ex.revisionId===fp && ex.revisionId.length===12);
+    const re = await R(`(async()=>{const c=JSON.parse(__dl[0][1]);const r=await activateCalibration(c,'again');return r.warnings.join('|')})()`);
+    ok('V15k re-importing the exported file: same revision as the active one, no "contentHash does not match" warning', !/contentHash/.test(re)); }
+  { R(`wizNew(); wiz.sensorId=activeSensor.id; wiz.rateHz=80; wizLoadFromConfig(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION))); wiz.sensorId='b'; wiz.rateHz=80;`);
+    R(`globalThis.__dl=[];downloadBlob=(b,n)=>__dl.push([n,b.parts.join('')]);wizOnClick({target:{closest:()=>({dataset:{wa:'exportCal'}})}})`);
+    const c = JSON.parse(R(`__dl[0][1]`)); ok('V15k the wizard writes the sensor id into the calibration and names the file calibration_<profileId>.json; the file validates', c.sensorId==='b' && /^calibration_.*\.json$/.test(R(`__dl[0][0]`)) && R(`validateCalibrationConfig(JSON.parse(__dl[0][1])).errors.length`)===0); }
+  ok('V15k info text shows the file name and the binding', /file calibration_/.test(R(`(updateCalibrationInfo(),$('calibrationInfo').innerHTML)`)));
+  // ---- static: every new element exists, overload strings
+  ok('V15l new elements exist in the HTML', ['overloadBanner','subPixelToggle','clearArea','clearChartsBtn','clearAllChartsBtn','clearAllBtn','ssCalFile','ssMaxLoad','ssLoadUnit','ssMinLoad','ssAvgS','ssYellow','ssOrange','ssRed','ssBreak','ssHold','ssLoadBtn','ssFile'].every(i=>html.includes(`id="${i}"`)));
+  for (const mode of ['simple','advanced']) ok(`V15l wizard ${mode} still renders all tabs`, (()=>{try{for(const t of ['weights','observations','review'])R(`wizMode='${mode}';wiz.tab='${t}';wizRender();wq('wizBody').innerHTML.length`);return true}catch(e){console.log(e);return false}})());
+
   console.log(fails? `\n${fails} FAILED` : '\nall passed');
   process.exitCode = fails?1:0;
 })();

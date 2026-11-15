@@ -42,7 +42,12 @@ main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolba
 .compact input[type=number],.compact select{padding:4px 6px}.compact .button-row{margin-top:8px}
 .u-legend .u-value{display:inline-block;min-width:10.5ch;text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap}
 .u-legend .u-series:first-child .u-value{min-width:7ch}.u-legend .u-label{white-space:nowrap}
-.log-row.measurement{border-left:3px solid #9b7bd6}.log-row.calibration{border-left:3px solid #6f9bff}.log-row.note{border-left:3px solid var(--muted);cursor:default}
+.log-row.measurement{border-left:3px solid #9b7bd6}.log-row.calibration{border-left:3px solid #6f9bff}.ovl-banner{position:sticky;top:0;z-index:40;display:flex;flex-direction:column;gap:4px;margin:0 0 10px}
+.ovl-item{padding:12px 16px;border-radius:10px;font-size:18px;font-weight:600;cursor:pointer;border:2px solid rgba(0,0,0,.25)}
+.ovl-yellow{background:#f6c85f;color:#2a2100}.ovl-orange{background:#ff9a3c;color:#2a1200}.ovl-red{background:#e5384a;color:#fff}
+.ovl-item.ovl-now{animation:ovlpulse 1s ease-in-out infinite}@keyframes ovlpulse{50%{filter:brightness(1.25)}}
+.log-row.overload{border-left:3px solid #e5384a}
+.log-row.note{border-left:3px solid var(--muted);cursor:default}
 progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.bufrow select{width:auto}
 @media(max-width:950px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.side .panel:last-child{grid-column:1/-1}}
 @media(max-width:600px){header{align-items:flex-start;flex-wrap:wrap}.header-actions{justify-content:flex-end}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.side{grid-template-columns:1fr}.side .panel:last-child{grid-column:auto}.metric{padding:10px}.metric .value{font-size:21px}.toolbar{align-items:flex-start}.toolbar-left,.toolbar-right{width:100%}.toolbar-right{justify-content:space-between}}
@@ -116,12 +121,19 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <input id="calFile" type="file" accept=".json,application/json" hidden>
         <div id="calMessages" class="small" style="margin-top:6px"></div>
         <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
+        <hr class="settings-divider">
+        <details id="clearArea"><summary>Clear data…</summary>
+          <div class="small" style="margin:6px 0">Calibrations are never deleted. You are asked to confirm.</div>
+          <div class="button-row"><button id="clearChartsBtn" title="Empty the chart data of the shown sensor">Clear charts</button><button id="clearAllChartsBtn" title="Empty the chart data of every sensor">Clear all charts</button></div>
+          <div class="button-row"><button id="clearAllBtn" title="Chart data, tares, log, measurements and overload events of every sensor">Clear all</button></div>
+        </details>
       </div>
     </div>
     <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
   </div>
 </header>
 <main>
+  <div id="overloadBanner" class="ovl-banner" role="alert" hidden></div>
   <section class="metrics">
     <div class="mcol span2">
       <div class="metric-pair">
@@ -134,7 +146,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
           <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
           <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampelLocal">Hampel filter (sliding local median/MAD) + mean</option><option value="hampel">Global MAD filter + mean (old Hampel-style)</option><option value="ema">Exponential moving average (EMA, seeded; old)</option><option value="emaNorm">EMA, seed-normalised weights</option></select></div>
-          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="2" max="10000" step="1" value="80"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div><div class="inline small" style="margin-top:4px">= <input id="windowSeconds" type="number" min="0.025" step="any" value="1" style="width:92px" aria-label="Window length in seconds"> s at <span id="windowRateText">80</span> Hz (samples ÷ rate)</div></div>
+          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="0" max="1000" step="1" value="433" title="logarithmic: 2 to 10,000 samples"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div><div class="inline small" style="margin-top:4px">= <input id="windowSeconds" type="number" min="0.025" step="any" value="1" style="width:92px" aria-label="Window length in seconds"> s at <span id="windowRateText">80</span> Hz (samples ÷ rate)</div></div>
           <div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
           <div class="field" id="hampelField" hidden><label for="hampelHalf">Hampel half-width k (window 2k+1)</label><input id="hampelHalf" type="number" min="2" max="50" step="1" value="5"></div><div class="field" id="hampelSigmaField" hidden><label for="hampelSigma">Hampel threshold (× robust σ)</label><input id="hampelSigma" type="number" min="1" max="10" step="0.5" value="3"></div>
           <div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
@@ -173,7 +185,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers. Hover markers, highlighted spans or the thin event lane at the top edge for details. Lower graph: the full retained history; click or drag it to navigate.</div>
         <div id="miniChart"></div>
         <div class="controls-bar">
-          <div class="toolbar-left"><button id="trackBtn" class="primary">Track Live</button><button id="selectModeBtn" aria-pressed="false">Select interval</button><button id="exportBtn">Export CSV</button></div>
+          <div class="toolbar-left"><button id="trackBtn" class="primary">Pause Tracking</button><button id="selectModeBtn" aria-pressed="false">Select interval</button><button id="exportBtn">Export CSV</button></div>
           <div class="bufrow" style="margin:0"><label for="bufferInput" class="small">Buffer limit</label><select id="bufferInput" title="The raw history is never modified. Unlimited grows in 100,000-sample steps."><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="unlimited">Unlimited (memory-limited)</option></select></div>
           <div class="toolbar-right"><span class="small" id="sourceNote">Test signal: bounded marching randomness</span><span class="small" id="sampleCount">0 samples</span></div>
         </div>
@@ -189,6 +201,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <label class="check"><input type="checkbox" id="zeroLineToggle"> Always show zero-line</label>
         <div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1" value="5"><div class="small">Slow response at low values · immediate at 100%</div></div>
         <div class="field full" style="margin:7px 0 6px"><label for="bandModeSelect" title="How the band around the centre line is drawn. After a level step the window holds old and new samples, so a plain centre ± SD band reaches about 21 % above the old level (not a bug).">Spread band</label><select id="bandModeSelect"><option value="symmetric">Symmetric ±σ (default)</option><option value="asymmetric">Asymmetric (mean of samples above / below)</option><option value="stepaware">Step-aware (restarts at a level step)</option></select><div class="small" id="bandModeNote">Not used for the EMA estimators.</div></div>
+        <label class="check"><input type="checkbox" id="subPixelToggle"> Sub-pixel rendering (testing; uPlot pxAlign 0, off = pixel-aligned)</label>
         <label class="check"><input type="checkbox" id="downsampleToggle"> Downsample large windows (min/max envelope)</label>
         <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
         <div class="small">Downsampling activates only above roughly four plotted points per horizontal pixel. Disable it to plot every visible sample.</div>
@@ -206,7 +219,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       </section>
       <section class="panel" id="navPanel" hidden>
         <div class="panel-head"><h2>Navigation</h2></div>
-        <div class="small">Mouse wheel / pinch: zoom X-axis. Drag the main chart to inspect history. Track Live returns to the newest data.</div>
+        <div class="small">Mouse wheel / pinch: zoom X-axis. Drag the main chart to inspect history. Pause Tracking freezes the view; Track Live returns to the newest data.</div>
         <div class="button-row"><button id="zoomInBtn">＋ Zoom in</button><button id="zoomOutBtn">－ Zoom out</button></div>
         <div class="button-row"><button id="backBtn">← Older</button><button id="forwardBtn">Newer →</button></div>
       </section>
@@ -333,8 +346,22 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssRate">Nominal sampling rate (Hz)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
           <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
         </div>
+        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><span class="small">Files are named calibration_&lt;profileId&gt;.json and belong to one sensor. Import files under Settings → Calibration.</span></div>
+        <h3 style="margin:12px 0 4px">Overload warning</h3>
+        <div class="small">Limits are weights, compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used.</div>
+        <div class="control-grid" style="margin-top:6px">
+          <div class="field"><label for="ssMaxLoad">Maximum load</label><input type="number" id="ssMaxLoad" step="any" min="0" placeholder="off"></div>
+          <div class="field"><label for="ssLoadUnit">Unit</label><select id="ssLoadUnit"></select></div>
+          <div class="field"><label for="ssMinLoad">Minimum load (optional, e.g. −200)</label><input type="number" id="ssMinLoad" step="any" placeholder="= −maximum"></div>
+          <div class="field"><label for="ssAvgS">Average over (s)</label><input type="number" id="ssAvgS" step="any" min="0.001"></div>
+          <div class="field"><label for="ssYellow">Yellow above excess (%)</label><input type="number" id="ssYellow" step="any" min="0"></div>
+          <div class="field"><label for="ssOrange">Orange above excess (%)</label><input type="number" id="ssOrange" step="any" min="0"></div>
+          <div class="field"><label for="ssRed">Red above excess (%)</label><input type="number" id="ssRed" step="any" min="0"></div>
+          <div class="field"><label for="ssBreak">Breaks shorter than (s) stay one event</label><input type="number" id="ssBreak" step="any" min="0"></div>
+          <div class="field"><label for="ssHold">Keep the warning visible for (s)</label><input type="number" id="ssHold" step="any" min="1"></div>
+        </div>
         <div class="field span2" style="margin-top:8px"><label>Sample history</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the server</button></div><div class="small" id="ssHistoryInfo">—</div></div>
-        <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensor_settings.json</button><button id="ssDownloadBtn">Download sensor_settings.json</button></div>
+        <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensor_settings.json</button><button id="ssDownloadBtn">Download sensor_settings.json</button><button id="ssLoadBtn">Load sensor_settings.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
       </div>
       <div id="ssMessages" class="small" style="margin-top:8px"></div>
       <div class="small" style="margin-top:6px">More sensor settings will follow. The file contains all server sensors.</div>
@@ -359,6 +386,6 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="modal-body" id="wizBody"></div>
   </div>
 </div>
-<script src="telemetry_workbench_v14.js"></script>
+<script src="telemetry_workbench_v15.js"></script>
 </body>
 </html>

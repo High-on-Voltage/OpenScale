@@ -1,76 +1,44 @@
-# Mass Telemetry Workbench: handout v14.1 (addendum to v14; read after v14. Specifies the NEXT round. Nothing here is implemented yet.)
+# Mass Telemetry Workbench: handout v15 (read after v14 and v14.1; overrides them where they differ)
 
-Baseline stays `telemetry_workbench_v14.*` + `audit_harness_v14.js`. Rules unchanged: every new behaviour gets a harness test, none weakened; pure functions DOM-free; thresholds as named constants echoed in the UI; new file keys additive (`schemaVersion` 1); the app never claims an uncertainty it cannot support. User profile unchanged (enthusiast, plain wording, Claude manages everything).
+Baseline: `telemetry_workbench_v15.html` + `.js`, `audit_harness_v15.js` (run `node audit_harness_v15.js telemetry_workbench_v15.html`). All v14 checks run unchanged and pass; the v15 checks are added at the end of the harness. **Still not browser-tested.**
 
-## 1. Decisions taken (user agreed to all)
-1. Off-centre loading, creep, zero drift and temperature sensitivity are **measured as part of the calibration** and stored in `calibration.json` (new `characterization` block, next to `uncertainty`).
-2. **Use conditions** (reading delay, time since tare, expected temperature difference) are NOT calibration data: they live in `sensor_settings.json` (or on the measurement).
-3. **Long-term drift** (weeks) is a log of check weighings, a separate growing file linked to the calibration revision; server storage later. Not part of the next round beyond the file format.
-4. **Temperature in two forms:** typed manual estimate (labelled "user estimate") and a real sensor channel. **Temperature correction of the mass readings is postponed** (later opt-in, own calibration epoch, because it changes the raw-to-mass pipeline). The next round only displays, records, and puts temperature into the uncertainty.
-5. **Auxiliary channels are open:** temperature is processed by us; any other channel gets storage, alignment, graph, CSV and history so the user can do what they like with it. No user formulas yet.
-6. Temperature and load-cell samples come from **one device and one clock**: alignment is by timestamp.
-7. The ESP32 chip temperature is not used as load-cell temperature.
+## 1. Decisions from the user (this session)
+- Differences of temperature are always in K, values in °C (for v14.1).
+- Simple mode shows the extra checks (v14.1) as three steps.
 
-## 2. `sensors.json`: auxiliary channels
-Each channel is its own entry (same list as the load cells; `kind` distinguishes them):
-```json
-{"id":"t-body","kind":"temperature","name":"Load cell body","sseUrl":"/stream/t","rateHz":1,
- "unit":"°C","conversion":{"type":"polynomial","coefficients":[-12.3,0.0042]},"attachedTo":["scale-1"],
- "deviceId":"esp32-1"}
-```
-- `kind`: `loadcell` (default, as today) | `temperature` | `generic`. `unit` is the unit of the converted value.
-- `conversion` (applied by the UI to the channel's native `raw` value): `polynomial` (coefficients c0, c1, … = 1 to x), `steinhart-hart` {a,b,c} (raw = resistance Ω → K → °C), `beta` {beta, r0, t0, rSeries}, `direct` (no conversion). A conversion failure marks the sample invalid, never silently zero.
-- `attachedTo`: array of load-cell ids, may be empty; stated only on the aux entry (one place to edit). A temperature channel attached to several cells serves all of them; a cell may have several (e.g. body + ambient): the user picks the **primary** one per cell for the uncertainty (`primaryTemperature` in the sensor settings).
-- `deviceId` (optional, default = `sseUrl`): sensors with the same device share **one time origin** (today every sensor sets its own origin at its first sample; that must change so that an aux channel and its load cell line up). Origin = first accepted timestamp of the device.
-- User corrections of a conversion (e.g. an ice-point offset) are saved via `sensor_settings.json` (password for writes as in v14); the firmware values stay the defaults.
-- SSE sample of an aux channel: `{"id":"t-body","t":<device ms>,"raw":<float>,"n":<sample id>}` (float, not rounded to integer counts). History API identical (`sensor=<aux id>`); binary layout v2 proposal: as v1 but 16-byte records (u32 id, u32 ms, f64 raw).
+## 2. What v15 implements
+| Request | Where / how |
+|---|---|
+| Track Live ⇄ **Pause Tracking** | one button; pausing freezes the view and the automatic "back to live at the right edge" is switched off until Track Live is pressed (`state.trackPaused`) |
+| Window slider logarithmic | slider 0..1000 maps to 2..10,000 samples (`sliderToWindow`, `windowToSlider`); the number fields are unchanged |
+| Sub-pixel rendering (**testing**) | Display options checkbox, off by default = uPlot `pxAlign: 1`; on = `pxAlign: 0`. Stored in `ui-settings.json` as `subPixel` (additive) |
+| Clear charts / Clear all charts / Clear all | collapsed "Clear data…" at the very end of the Settings panel, with a confirmation. Calibrations are never deleted. *Clear charts*: samples of the shown sensor. *Clear all charts*: samples of every sensor. *Clear all*: also tares, log, measurements, overload events of every sensor |
+| **Overload / underload warning** | per sensor, see §3 |
+| **Connection timeout** | see §4 |
+| **Calibration file per sensor** | see §5 |
 
-## 3. Aux pipeline (separate from the load-cell state)
-- Own light ring buffer per channel: time (f64), raw (f64), id (f64), converted value (f64), capacity as the load cells (default 100,000). The load-cell pipeline and its tests stay untouched.
-- Pause / reconnect / gap detection by id and history merge behave as for load cells (reuse `ingest`, `noteGap`, `mergeSampleLists`).
-- `auxValueAt(channel, t)`: linear interpolation to a load-cell sample time; NaN if the neighbouring aux samples are further apart than `AUX_MAX_GAP_FACTOR` × the channel period (never extrapolated).
-- Graph: right-hand axis in the main chart (and optionally the navigator), one toggle per channel in Display options, hidden when a channel has no data in view; own unit label; legend entry. CSV export: trailing columns `aux_<id>` only when attached channels exist (the 11 base columns stay as tested in v13).
-- Temperature specifics: show **rate of change** (K/min over a settable window) next to the value; the sensor lags the strain gauge, the rate often matters more than the absolute value.
+## 3. Overload warning (my reading of the request, please check)
+- Limits are **weights** (value + unit, stored as mg). Maximum empty = warning off. Minimum optional; without it **−maximum** is used.
+- The load is the **gross** calibrated mass (the tare is ignored, the cell does not know it), averaged over the newest **0.1 s** of samples (adjustable). It runs for **every** sensor, also those that are not shown.
+- Level = *excess* over the limit: `(avg − max) / max` (below the minimum: `(min − avg) / |min|`). **Yellow > 10 %, orange > 20 %, red > 40 %** excess (all three adjustable; the red default of 40 % is my choice, you did not name one). I read "(>10 % max load)" as the excess above the limit. A load that is above the limit by less than the yellow threshold shows nothing; set yellow to 0 if you want every exceedance flagged.
+- An **event** starts at the first sample with a level and ends when no level was seen for **0.5 s** (adjustable; shorter dips stay one event). Duration, peak mass, peak level and side (over / under) are stored. Time = device sample time.
+- Display: a large banner at the top of the page (sticky, one line per sensor, click = show that sensor). It pulses and says **STILL OVERLOADED** while the load is over the limit, otherwise "ended N s ago", and stays for **8 s** after the incident (adjustable). "no data (status unknown)" if the stream is silent.
+- Charts: a coloured band over the event's time range (and a stripe at the top edge) in the main chart and the navigator. Log: an `overload` entry per closed event (hover, click to jump). Hidden sensors keep their own log.
+- Settings: Settings Menu → **Sensor** tab (the test signal is listed there too, so you can try it: set a maximum of e.g. 150 g). Stored in `sensor_settings.json` per sensor as `overload: {maxLoad:{value,unit}, minLoad, averageS, yellowPercent, orangePercent, redPercent, breakS, holdS}`. New button "Load sensor_settings.json…" reads such a file back.
+- Not done: limits in raw counts; history merged into the buffer is not run through the monitor.
 
-## 4. `characterization` block in `calibration.json`
-```
-characterization: {
-  status: "measured" | "partly measured" | "user-estimate" | "none",
-  eccentricity: { testMassMg, centreRaw, positions:[{name, raw, devMg}], maxAbsDevMg, fractionOfLoad, source:"measured"|"user-estimate", observationIds:[…] },
-  creep:        { testMassMg, settleS, samples:[{tS, fraction}], source, observationIds },
-  zeroDrift:    { rateMgPerH, seMgPerH, durationS, source, observationIds },
-  temperature:  { referenceC, zeroMgPerK, zeroSe, spanPpmPerK, spanSe, source:"measured"|"user-estimate", channelId|null, note }
-}
-```
-Tests are recorded with the existing capture machinery (tagged observations, validity checks, include-anyway override, `removedAndReplaced` where relevant) and stored in `observations[]` with a `purpose` key (`calibration` default | `eccentricity` | `creep` | `zero-drift`). They never enter the calibration fit.
+## 4. Connection timeout
+A sensor that should stream (not paused, listed, connection open, or the test signal) but delivers no sample for `max(2 s, 20 × nominal period)` is shown as "No data for N s": red status dot, ⏱ in the sensor list, not counted as streaming. A timer (500 ms) updates it; any sample, resuming a sensor or a new connection resets it. Constants: `STREAM_TIMEOUT_MIN_MS`, `STREAM_TIMEOUT_PERIODS`.
 
-## 5. Wizard steps (Advanced: new tab "5 Characterization"; Simple: optional "Extra checks" after Finish, each skippable)
-1. **Eccentricity:** one weight of about a third of capacity (user chooses), centre then four edge positions (guided like the placement plan), each recorded as usual. Deviation per position `devMg = (raw_i − raw_centre) / slope`; `fractionOfLoad = max|devMg| / testMass`. Plain wording: "How much does the reading change if you put the weight off-centre?"
-2. **Creep:** place a weight, record for N minutes (default 5, up to 30); `fraction(t) = (r(t) − r(settle)) / (r(settle) − r_empty)` at t = 30 s, 1 min, 2 min, 5 min … (those that fit), settle time chosen by the user (default 10 s).
-3. **Zero drift:** record the empty platform for N minutes (default 10, up to 60); weighted linear fit of mass vs time gives rate ± standard error in mg/h (the validity checks must not flag it for a step; a flagged recording is left out unless "include anyway").
-4. **Temperature sensitivity:** (a) *with a sensor:* needs the observations to have different temperatures (warm-up or two sessions); regress the empty-platform raw and the span readings against the recorded mean temperature; refuse and say why if the temperature range is < `TEMP_FIT_MIN_RANGE_K` (default 2 K); (b) *without:* type "zero shift mg per 10 K" and "span ppm per K" (datasheet or own estimate), source = `user-estimate`.
-Every observation also stores the mean / min / max temperature of its recording for each attached temperature channel (`temperatures:{id:{mean,min,max,unit}}`), automatically.
+## 5. Calibration files belong to one sensor
+- New top-level key `sensorId` in the calibration file (additive, `schemaVersion` 1). The wizard writes it. File name: **`calibration_<profileId>.json`** (export and wizard export).
+- A calibration naming another sensor than the shown one is refused. Importing such a file **switches to its sensor** and activates it there; a file for an unknown sensor is rejected; an old file without `sensorId` is bound to the shown sensor (with a notice). Export stamps the sensor id and recomputes revision id and content hash for the stamped content.
+- **Active file per sensor**: `sensor_settings.json` → `calibrationFile`. Settings Menu → Sensor tab has a selector (embedded demo + the files of that sensor known in this session). Loading `sensor_settings.json` activates the named files that are known; unknown names are reported and kept as pending.
+- Optional `CALIBRATION_FILES_URL` (null for now): GET `<url>/<file name>` for a server library. **Open:** the server must provide the file list and storage; the browser only keeps files in memory for the session.
+- Every sensor already had its own calibration state; only the file binding, naming and selection are new.
 
-## 6. Use conditions (`sensor_settings.json`, per load cell, additive keys)
-`useConditions: { readingDelayS, sessionSinceTareS, temperatureDeltaK, primaryTemperature }`. Defaults: reading delay 30 s, time since tare 3,600 s, temperatureDeltaK 3 (typed ±, used when no sensor). Shown in the Settings Menu, Sensor tab, in plain words, with the effect on the number.
+## 6. Not done yet (v14.1 spec, next round)
+`characterization` block (eccentricity, creep, zero drift, temperature sensitivity), wizard tab "5 Characterization" and the Simple "Extra checks" (three steps), auxiliary channels (`kind`, conversions, `deviceId`/shared time origin, aux ring buffers, right-hand axis, `aux_<id>` CSV columns), use conditions, the four new uncertainty components, `checkweighings.json` format. Nothing of it was started.
 
-## 7. New uncertainty components (added to `computeUncertainty`; each listed in the details, each says measured / user estimate)
-All rectangular unless stated, standard uncertainty = half-width / √3, dof = ∞ for typed limits, the fit's dof for measured fractions where a standard error exists.
-- **Off-centre:** half-width `a = fractionOfLoad × m` (m = mass of the result). Correction of an earlier statement: the centre is the reference, so the largest deviation IS the half-width; there is **no extra ÷ 2**. Scales with the load (stored as a fraction, ppm-like), not one number for the whole range.
-- **Creep:** half-width `|fraction(readingDelayS)| × m`, interpolated in the stored curve (constant beyond its ends, flagged).
-- **Zero drift:** half-width `|rate| × sessionSinceTareS`, with the standard error of the rate added in quadrature to the half-width before dividing by √3.
-- **Temperature:** `ΔT` = largest |T_now − referenceC| over the measurement (sensor) or `temperatureDeltaK` (typed). Half-width `sqrt((zeroMgPerK·ΔT)² + (spanPpmPerK·1e-6·m·ΔT)²)`. Label part "(temperature: your estimate)" unless both sensitivity and ΔT come from measurement/sensor.
-- Label examples: `(estimated, repeatability, creep and zero drift measured; temperature your estimate; not traceable)`. A component not measured stays on the "not included" list exactly as today (temperature, creep, off-centre, drift are removed from that list only when included).
-- If creep/drift/eccentricity was recorded under a different calibration revision than the active one, say so in the component note.
-
-## 8. Long-term drift (format only)
-`checkweighings.json` (or server resource): `{schemaVersion:1, calibrationRevisionId, entries:[{recordedAt, weightId, referenceMassMg, readingMg, sigmaMg, neff, temperatureC|null, note}]}`. Used later for a drift-over-time chart and a "re-check due" hint; no component in the uncertainty yet.
-
-## 9. Harness tests required (in addition to the usual round-trip, validity and escaping tests)
-Conversion functions against known values (Steinhart-Hart 10 kΩ NTC at 25 °C = 25.00 °C, polynomial, beta); aux ring buffer wrap, gaps, history merge; `auxValueAt` interpolation and the max-gap rule; shared device time origin (aux and load cell aligned to the same timestamp); eccentricity / creep / drift fits against constructed data with known answers; temperature regression with known slope, refusal below the range limit; each new component against a hand calculation; label wording for all measured / estimate combinations; wizard tabs render; file round trip; old files without `characterization` still load and say "not characterized".
-
-## 10. Open points for the next session
-- Units: K vs °C for ΔT (proposal: always K for differences, °C for values).
-- Whether Simple mode shows the extra checks as one optional step or three.
-- Creep and drift recording lengths are rules of thumb (named constants); revisit after real measurements.
-- Firmware: float `raw` for aux channels, shared clock, history for aux ids, `deviceId` in the sensor list.
+## 7. Browser checklist (new items marked ★)
+All v14 items, plus ★ overload banner (size, wrapping, sticky behaviour, colours in light and dark mode), ★ event bands in both charts and the top stripe, ★ Pause Tracking button state while panning and selecting, ★ log slider feel, ★ sub-pixel rendering on / off (does the chart look sharper or blurrier), ★ Clear data… confirmations, ★ Sensor tab layout with the new fields, ★ timeout display with a real unplugged stream.

@@ -19,6 +19,9 @@ const UNIT_CONFIG = JSON.parse($('unitConfig').textContent);
 const EMBEDDED_CALIBRATION = JSON.parse($('calibrationConfig').textContent);
 let CALIBRATION = EMBEDDED_CALIBRATION;   // the ACTIVE calibration (switchable since v8)
 const MAX_ROBUST_WINDOW = 4096;
+const OVL_DEFAULTS = Object.freeze({maxMg: null, minMg: null, averageS: 0.1, yellowPct: 10, orangePct: 20, redPct: 40, breakS: 0.5, holdS: 8});
+function newOverloadState() { return {cfg: {...OVL_DEFAULTS}, q: [], active: null, events: [], current: null, lastEndWall: null, lastEnd: null}; }
+let subPixel = false;   // v15 (testing): true = uPlot pxAlign 0, sub-pixel rendering
 let bandMode = 'symmetric';   // v14 display option: see BAND_MODES
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
@@ -165,7 +168,7 @@ function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
   const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
-    firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
+    ovl: newOverloadState(), firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
   return sensor;
@@ -604,6 +607,17 @@ function drawSpans(u){
     ctx.fillRect(Math.min(x0,x1),top,Math.max(2*dpr,Math.abs(x1-x0)),4*dpr);
   }
   ctx.restore();
+  drawOverloads(u);
+}
+function drawOverloads(u){
+  const ctx=u.ctx,dpr=window.devicePixelRatio||1,top=u.bbox.top,h=u.bbox.height,list=state.logs.filter(l=>l.type==='overload');
+  const a=activeSensor&&activeSensor.ovl&&activeSensor.ovl.active;if(a)list.push({t0:a.t0,t1:a.lastOverT,peakLevel:a.peakLevel});
+  ctx.save();
+  for(const l of list){
+    const x0=u.valToPos(l.t0/1000,'x',true),x1=u.valToPos(l.t1/1000,'x',true),col=OVL_COLORS[l.peakLevel]||OVL_COLORS.red,w=Math.max(3*dpr,Math.abs(x1-x0));
+    ctx.globalAlpha=.16;ctx.fillStyle=col;ctx.fillRect(Math.min(x0,x1),top,w,h);ctx.globalAlpha=.95;ctx.fillRect(Math.min(x0,x1),top,w,8*dpr);
+  }
+  ctx.restore();
 }
 function miniOverlayPlugin(){
   return {hooks:{drawClear:[u=>{
@@ -618,7 +632,7 @@ function logEntryOf(id){return state.logs.find(x=>(x.entryId||x.eventId)===id)||
 function logEntryRange(e){
   if(!e)return null;
   if(e.type==='tare'||e.type==='calibration')return{t0:e.effectiveFromTime,t1:e.effectiveFromTime,marker:true};
-  if(e.type==='selection'||e.type==='measurement')return{t0:e.t0,t1:e.t1};
+  if(e.type==='selection'||e.type==='measurement'||e.type==='overload')return{t0:e.t0,t1:e.t1};
   return null;
 }
 // ---- Event hit-testing and tooltip --------------------------------------------------------------------------
@@ -629,15 +643,18 @@ function describeEventHTML(e){
   if(e.type==='tare')return `<strong>${esc(e.eventId)} · Tare</strong><br>${esc(e.method)}<br>Tare mass ${formatMass(e.tareMassMg)} · effective from ${tt(e.effectiveFromTime)}`+(e.tareRaw==null?'':`<br>Raw reference ${fmtNumber(e.tareRaw,2)} counts`);
   if(e.type==='calibration')return `<strong>Calibration change</strong><br>${esc(e.profileName)} · revision ${esc(e.revisionId)}<br>Effective from ${tt(e.effectiveFromTime)}`;
   if(e.type==='measuring')return `<strong>Measurement in progress</strong><br>${e.collected.toLocaleString()} / ${e.target.toLocaleString()} samples`;
+  if(e.type==='overload')return overloadLineHTML(e);
   const val=raw?`${fmtNumber(e.rawEstimatorValue,0)} counts`:formatMass(e.originalValueMg),sig=raw?`${fmtNumber(e.rawSpread,2)} counts`:formatMass(e.spreadMg);
   return `<strong>${e.type==='measurement'?'Measurement':'Selection'} · ${e.totalSamples.toLocaleString()} samples</strong><br>${tt(e.t0)} – ${tt(e.t1)} (${((e.t1-e.t0)/1000).toFixed(2)} s)<br>Result ${val} · σ ${sig}${e.uncertainty&&e.uncertainty.status==='ok'&&!raw?'<br>'+uncertaintyLineText(e.uncertainty):''}<br>${esc(estimatorLabel(e.estimator))}`+analysisBadgeHTML(e.analysis,'<br>')+(e.crossesTare?'<br><span class="warning">spans a tare event</span>':'')+(e.crossesCalibration?'<br><span class="warning">spans a calibration change</span>':'');
 }
+function ovlMass(mg){return formatMass(mg,state.unitId==='raw'?'g':state.unitId);}
+function overloadLineHTML(e){return `<strong>${e.side==='under'?'Underload':'Overload'} · ${esc(e.peakLevel)}</strong><br>Peak ${esc(ovlMass(e.peakMg))} (limit ${esc(ovlMass(e.limitMg))}, ${e.side==='under'?'−':'+'}${(e.peakExcess*100).toFixed(0)} %) · ${fmtSpan(e.durationMs/1000)}`;}
 function hitTestEvents(u,x,y){
   const t=u.posToVal(x,'x')*1000,tol=6*Math.abs(u.posToVal(1,'x')-u.posToVal(0,'x'))*1000,lane=(u===state.miniPlot?10:14),hits=[],seen=new Set();
   const add=(prio,entry,range)=>{if(seen.has(entry))return;seen.add(entry);hits.push({prio,entry,range});};
   for(const e of state.tareEvents)if(Math.abs(e.effectiveFromTime-t)<=tol)add(0,e,logEntryRange({type:'tare',effectiveFromTime:e.effectiveFromTime}));
   for(const l of state.logs)if(l.type==='calibration'&&Math.abs(l.effectiveFromTime-t)<=tol)add(0,l,logEntryRange(l));
-  if(y<=lane)for(const l of state.logs)if((l.type==='selection'||l.type==='measurement')&&t>=l.t0-tol&&t<=l.t1+tol)add(1+(l.t1-l.t0)/1e12,l,logEntryRange(l));
+  if(y<=lane)for(const l of state.logs)if((l.type==='selection'||l.type==='measurement'||l.type==='overload')&&t>=l.t0-tol&&t<=l.t1+tol)add(1+(l.t1-l.t0)/1e12,l,logEntryRange(l));
   const inside=r=>r&&t>=r.t0&&t<=r.t1;
   if(state.measurement&&inside(state.highlight))add(2,{type:'measuring',collected:state.measurement.collected,target:state.measurement.target},state.highlight);
   else if(state.lastMeasurement&&inside(state.highlight))add(2,state.lastMeasurement,logEntryRange(state.lastMeasurement));
@@ -725,7 +742,7 @@ function bandLabels(){const s=spreadShort(state.estimator),on=!isEmaMethod(state
 function makeMainOptions() {
   const c=colors();
   return {
-    width:$('mainChart').clientWidth||800,height:mainChartHeight(),title:'',legend:{show:true},
+    width:$('mainChart').clientWidth||800,height:mainChartHeight(),title:'',pxAlign:subPixel?0:1,legend:{show:true},
     cursor:{show:true,x:true,y:false,drag:{x:false,y:false},focus:{prox:30}},
     select:{show:true,left:0,top:0,width:0,height:0},
     scales:{x:{time:false,auto:false},y:{auto:!state.manualY,range:(u,min,max)=>{
@@ -771,7 +788,7 @@ function makeMainOptions() {
 function makeMiniOptions(){
   const c=colors();
   return {
-    width:$('miniChart').clientWidth||800,height:125,legend:{show:true},
+    width:$('miniChart').clientWidth||800,height:125,pxAlign:subPixel?0:1,legend:{show:true},
     cursor:{show:true,x:true,y:false,drag:{x:false,y:false}},
     select:{show:true,left:0,top:0,width:0,height:0},
     scales:{x:{time:false,auto:false},y:{auto:true}},
@@ -803,12 +820,12 @@ function displayDigits(){const unit=unitById(state.unitId);return state.precisio
 
 function fitLiveWindow(){if(!state.count){state.viewMin=0;state.viewMax=PERIOD_MS;return;}const first=oldestTime(),last=newestTime();state.viewMax=Math.max(last,first+PERIOD_MS);state.viewMin=Math.max(first,state.viewMax-state.liveWindowSpan);}
 function clampHistoricalView(){const span=Math.max(PERIOD_MS,state.viewMax-state.viewMin),first=oldestTime(),last=newestTime();state.viewMin=clamp(state.viewMin,first,Math.max(first,last-span));state.viewMax=Math.min(last,state.viewMin+span);}
-function updateViewLabel(){const s=Math.max(0,state.viewMax-state.viewMin)/1000;$('viewLabel').textContent=(state.curveStride>1?`Curve every ${state.curveStride}th sample · `:'')+(state.live?`Live · ${(state.liveWindowSpan/1000).toFixed(2)} s window`:`Historical · ${s.toFixed(2)} s span`);$('trackBtn').classList.toggle('primary',state.live);$('trackBtn').setAttribute('aria-pressed',String(state.live));}
+function updateViewLabel(){const s=Math.max(0,state.viewMax-state.viewMin)/1000;$('viewLabel').textContent=(state.curveStride>1?`Curve every ${state.curveStride}th sample · `:'')+(state.live?`Live · ${(state.liveWindowSpan/1000).toFixed(2)} s window`:`Historical · ${s.toFixed(2)} s span`);$('trackBtn').classList.toggle('primary',state.live);$('trackBtn').setAttribute('aria-pressed',String(state.live));$('trackBtn').textContent=state.live?'Pause Tracking':'Track Live';}
 function scheduleRender(){if(renderPending)return;renderPending=true;requestAnimationFrame(()=>{renderPending=false;renderFrame();});}
 // v11: a historical view that has been moved to the far right edge switches Track Live back on. Not while an
 // interval is selected / pinned, so that selecting something near the newest data does not move the view.
 function autoTrackIfAtEnd(){
-  if(state.live||!state.count||state.selection||state.logPinned)return;
+  if(state.live||state.trackPaused||!state.count||state.selection||state.logPinned)return;
   const span=Math.max(PERIOD_MS,state.viewMax-state.viewMin);
   if(state.viewMax>=newestTime()-Math.max(2*PERIOD_MS,0.005*span))setLive(true);
 }
@@ -1107,7 +1124,9 @@ function updateMetrics(){
 }
 function estimatorLabel(method){return({mean:'Arithmetic mean',median:'Median',trimmed:'Trimmed mean',hampel:'Global MAD filter + mean',hampelLocal:'Sliding Hampel filter + mean',ema:'Exponential moving average (EMA, seeded)',emaNorm:'EMA, seed-normalised'})[method]||'Arithmetic mean';}
 
-function setLive(on){state.live=on;if(on)fitLiveWindow();updateViewLabel();}
+function setLive(on){state.live=on;if(on)state.trackPaused=false;if(on)fitLiveWindow();updateViewLabel();}
+function pauseTracking(){state.live=false;state.trackPaused=true;updateViewLabel();scheduleRender();}
+function trackToggle(){if(state.live)pauseTracking();else trackLive();}
 function trackLive(){setLive(true);state.selection=null;state.logPinned=null;$('selectionSummary').textContent='No interval selected.';scheduleRender();}
 function zoomBy(factor,anchorRatio=.5){const oldSpan=Math.max(PERIOD_MS,state.viewMax-state.viewMin),maxSpan=Math.max(500,state.capacity*PERIOD_MS),newSpan=clamp(state.liveWindowSpan*factor,250,maxSpan);state.liveWindowSpan=newSpan;if(state.live)fitLiveWindow();else{const anchor=state.viewMin+clamp(anchorRatio,0,1)*oldSpan;state.viewMin=clamp(anchor-anchorRatio*newSpan,oldestTime(),Math.max(oldestTime(),newestTime()-newSpan));state.viewMax=Math.min(newestTime(),state.viewMin+newSpan);}scheduleRender();}
 function wheelZoom(e){e.preventDefault();const rect=state.mainPlot.over.getBoundingClientRect(),x=clamp(e.clientX-rect.left,0,rect.width);zoomBy(e.deltaY<0?.8:1.25,rect.width?x/rect.width:.5);}
@@ -1720,6 +1739,7 @@ function renderLog(){
     const detail=e=>`${estimatorLabel(e.estimator)} · ${e.estimator==='trimmed'?e.trimPercent+'% trim · ':''}${(e.estimator==='ema'||e.estimator==='emaNorm')?'τ '+e.emaTau+' s · ':''}${e.estimator==='hampelLocal'?'k='+e.hampelHalf+', '+e.hampelSigma+'σ · ':''}${((e.t1-e.t0)/1000).toFixed(2)} s · Calibration ${esc(e.calibrationRevisionId)}`;
     if(entry.type==='tare')return row('event','tare',`<strong>${esc(entry.eventId)} · ${esc(entry.method)}</strong><br>Tare: ${formatMass(entry.tareMassMg)} · Raw reference: ${entry.tareRaw==null?'not applicable':fmtNumber(entry.tareRaw,2)+' counts'}${entry.outOfRangeCount?`<br><span class="warning">${entry.outOfRangeCount} of ${entry.sourceCount} tare samples were outside the calibrated range.</span>`:''}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s · Calibration ${esc(entry.calibrationRevisionId)}</span>`);
     if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
+    if(entry.type==='overload')return row('overload','overload',overloadLineHTML(entry)+`<br><span class="small">${(entry.t0/1000).toFixed(2)}–${(entry.t1/1000).toFixed(2)} s</span>`);
     if(entry.type==='note')return row('note','note',esc(entry.text));
     const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
     const title=entry.type==='measurement'?`Measurement · ${entry.totalSamples.toLocaleString()} samples (${entry.nominalDurationS.toFixed(2)} s nominal${Math.abs((entry.t1-entry.t0+PERIOD_MS)/1000-entry.nominalDurationS)>.02*entry.nominalDurationS?`, ${fmtSpan((entry.t1-entry.t0+PERIOD_MS)/1000)} actual`:''})${entry.tag?' · '+esc(entry.tag):''}`:`Selection · ${entry.totalSamples.toLocaleString()} samples (${fmtSpan((entry.t1-entry.t0+PERIOD_MS)/1000)})`;
@@ -1728,6 +1748,7 @@ function renderLog(){
 }
 function jumpToLogEntry(id,type){
   if(type==='note')return;
+  if(type==='overload'){const e=logEntryOf(id);if(!e)return;{const r=logEntryRange(e);state.logPinned=r?{...r,id}:null;}if(e.t0<oldestTime()||e.t1>newestTime()){$('selectionSummary').innerHTML='<span class="warning">The samples of this event are no longer retained. The log record remains.</span>';return;}const sp=Math.max(e.t1-e.t0,PERIOD_MS),vs=Math.max(sp*3,state.liveWindowSpan);state.live=false;state.liveWindowSpan=vs;state.viewMin=clamp((e.t0+e.t1)/2-vs/2,oldestTime(),Math.max(oldestTime(),newestTime()-vs));state.viewMax=Math.min(newestTime(),state.viewMin+vs);state.selection=null;$('selectionSummary').innerHTML=overloadLineHTML(e);scheduleRender();return;}
   {const pe=logEntryOf(id),r=logEntryRange(pe);state.logPinned=r?{...r,id}:null;}   // blue highlight in both graphs
   if(type==='tare'||type==='calibration'){
     const point=type==='tare'?state.tareEvents.find(item=>item.eventId===id):state.logs.find(item=>item.entryId===id);if(!point)return;
@@ -1763,11 +1784,14 @@ function exportCSV(){
   downloadBlob(new Blob(parts,{type:'text/csv;charset=utf-8'}),`mass-telemetry-${String(activeSensor.id).replace(/[^\w.-]+/g,'_')}-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`);
 }
 
+const WINDOW_MIN=2,WINDOW_MAX=10000;
+function sliderToWindow(p){return clamp(Math.round(WINDOW_MIN*Math.pow(WINDOW_MAX/WINDOW_MIN,clamp(Number(p)||0,0,1000)/1000)),WINDOW_MIN,WINDOW_MAX);}
+function windowToSlider(n){return clamp(Math.round(1000*Math.log(Math.max(WINDOW_MIN,n)/WINDOW_MIN)/Math.log(WINDOW_MAX/WINDOW_MIN)),0,1000);}
 function syncWindowSeconds(){const e=$('windowSeconds');if(e)e.value=Number((state.window/RATE_HZ).toFixed(3));const r=$('windowRateText');if(r)r.textContent=String(RATE_HZ);}
 function setMovingAverageWindow(rawValue,immediate=false,preserveInput=false,preserveSeconds=false){
   if(rawValue===''||!Number.isFinite(Number(rawValue)))return;
   const value=clamp(Math.floor(Number(rawValue)),2,10000);state.window=Math.min(value,state.capacity);
-  if(!preserveInput)$('windowInput').value=state.window;$('windowRange').value=state.window;if(!preserveSeconds)syncWindowSeconds();
+  if(!preserveInput)$('windowInput').value=state.window;$('windowRange').value=windowToSlider(state.window);if(!preserveSeconds)syncWindowSeconds();
   if(state.maRebuildTimer)clearTimeout(state.maRebuildTimer);
   state.maRebuildTimer=setTimeout(()=>{state.maRebuildTimer=null;rebuildDerived();scheduleRender();},immediate?0:70);
 }
@@ -1778,7 +1802,7 @@ function applyBufferSize(){
     const cap=clamp(Math.floor(Number(choice)||100000),1000,2000000);
     if(cap!==state.capacity){if(state.measurement&&state.measurement.target>cap)cancelMeasurement('buffer limit reduced below the measurement size');resizeBuffers(cap);}
   }
-  $('windowInput').value=state.window;$('windowRange').value=state.window;syncWindowSeconds();
+  $('windowInput').value=state.window;$('windowRange').value=windowToSlider(state.window);syncWindowSeconds();
   if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;}rebuildDerived();scheduleRender();
 }
 function addTestSamples(){
@@ -1829,6 +1853,7 @@ function validateCalibrationConfig(config){
   const errors=[],warnings=[];let prepared=null;
   if(!config||typeof config!=='object'||Array.isArray(config))return{errors:['The top level must be a JSON object.'],warnings,prepared};
   if(config.schemaVersion!==1)errors.push('schemaVersion must be 1.');
+  if(config.sensorId!=null&&(typeof config.sensorId!=='string'||!config.sensorId.trim()))errors.push('"sensorId" must be a non-empty text.');
   for(const key of['profileId','profileName'])if(typeof config[key]!=='string'||!config[key].trim())errors.push(`"${key}" must be a non-empty text.`);
   if(!UNIT_CONFIG.units.some(u=>u.id===config.calibrationUnit&&u.id!=='raw'))errors.push('"calibrationUnit" must be one of the supported mass units.');
   if(config.calibrationMethod!=='piecewise-linear')errors.push('Only calibrationMethod "piecewise-linear" is supported.');
@@ -1845,18 +1870,28 @@ function validateCalibrationConfig(config){
   if(!errors.length&&config.validation?.status!=='validated')warnings.push('Not metrologically validated: no uncertainty is claimed.');
   return{errors,warnings,prepared};
 }
+// v15: a calibration file belongs to ONE sensor (top-level "sensorId"; older files have none and are bound to the sensor they are first used on).
+// File name: calibration_<profileId>.json. calLibrary keeps the files known in this session (by file name); the file that is active for a
+// sensor is stored in sensor_settings.json ("calibrationFile").
+const CALIBRATION_FILES_URL = null;   // optional: GET <url>/<file name> returns a calibration file (a server library)
+const calLibrary = new Map();
+function calFileName(config){return `calibration_${String(config.profileId).replace(/[^\w.-]+/g,'_')}.json`;}
+function calLibraryAdd(config,sensorId){const name=calFileName(config);calLibrary.set(name,{name,config:JSON.parse(JSON.stringify(config)),sensorId:config.sensorId||sensorId,profileName:config.profileName});return name;}
 async function activateCalibration(config,source){
   const checked=validateCalibrationConfig(config);
   if(checked.errors.length)return checked;
+  if(config.sensorId&&config.sensorId!==activeSensor.id){checked.errors.push(`This calibration belongs to sensor “${config.sensorId}”, but “${activeSensor.id}” is shown. Show that sensor first.`);return checked;}
+  const calName=calLibraryAdd(config,activeSensor.id);
   const target=state,fp=await fingerprintConfig(config);
   if(state!==target){checked.errors.push('The shown sensor changed while the calibration was being checked; nothing was applied. Select the sensor again and retry.');return checked;}
-  if(fp.id===state.revisionId){checked.warnings.push('This calibration is already active; nothing changed.');checked.unchanged=true;return checked;}
+  if(fp.id===state.revisionId){checked.warnings.push('This calibration is already active; nothing changed.');checked.unchanged=true;activeSensor.settings.calibrationFile=calName;return checked;}
   if(config.contentHash&&fp.full&&config.contentHash!==fp.full)checked.warnings.push('The file’s contentHash does not match its content (edited after export?). The recalculated fingerprint is used.');
   CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
   state.calibrations.push({effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,hashType:fp.type,config:calibration,source});
   cancelMeasurement('calibration changed');
   addTareEvent(0,{method:'Tare reset · calibration changed'});
   appendLogEntry({type:'calibration',entryId:`calibration-${Date.now()}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,profileName:config.profileName,source});
+  activeSensor.settings.calibrationFile=calName;
   state.autoYMin=null;state.autoYMax=null;updateCalibrationInfo();updateSelectionForNewContext();scheduleRender();
   return checked;
 }
@@ -1866,37 +1901,61 @@ function showCalibrationMessages(errors,warnings,okText){
 async function importCalibrationFile(file){
   try{
     if(file.size>2e6)throw new Error('File is larger than 2 MB.');
-    const result=await activateCalibration(JSON.parse(await file.text()),`file: ${file.name}`);
-    showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Calibration imported and activated. Structure checked only; this is not a metrological validation.');
+    const cfg=JSON.parse(await file.text());
+    if(cfg&&cfg.sensorId&&cfg.sensorId!==activeSensor.id){
+      if(!sensors.has(cfg.sensorId)){showCalibrationMessages([`This calibration belongs to sensor “${cfg.sensorId}”, which is not in the sensor list.`],[],'');return;}
+      activateSensor(cfg.sensorId);
+    }
+    const result=await activateCalibration(cfg,`file: ${file.name}`);
+    if(!result.errors.length&&cfg&&!cfg.sensorId)result.warnings.push(`This file names no sensor. It is now used for “${activeSensor.name}”; exporting it again stores that link.`);
+    showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':`Calibration imported and activated on “${activeSensor.name}”. Structure checked only; this is not a metrological validation.`);
   }catch(error){showCalibrationMessages([`Could not import the file: ${error.message}`],[],'');}
 }
 async function restoreDemoCalibration(){
   const result=await activateCalibration(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)),'embedded demo');
+  if(!result.errors.length)activeSensor.settings.calibrationFile=null;
   showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Embedded illustrative demo calibration restored.');
 }
-function exportCalibration(){
-  const out={...CALIBRATION,revisionId:state.revisionId};if(state.fullHash)out.contentHash=state.fullHash;
-  downloadBlob(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),`calibration-${String(CALIBRATION.profileId).replace(/[^\w.-]+/g,'_')}-${state.revisionId}.json`);
+async function exportCalibration(){
+  // v15: the file always names its sensor; a file without one is stamped with the shown sensor (and fingerprinted again).
+  const out={...CALIBRATION};if(!out.sensorId)out.sensorId=activeSensor.id;
+  const fp=out.sensorId===CALIBRATION.sensorId?{id:state.revisionId,full:state.fullHash}:await fingerprintConfig(out);
+  out.revisionId=fp.id;if(fp.full)out.contentHash=fp.full;else delete out.contentHash;
+  downloadBlob(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),calFileName(out));
+}
+// Makes the file `name` the active calibration of sensor `id` ('' = the embedded demo). Shows that sensor first (changes are only possible on the shown sensor).
+async function selectCalibrationFile(id,name){
+  const s=sensors.get(id);if(!s)return'Unknown sensor.';
+  if(s!==activeSensor)activateSensor(id);
+  if(!name){await restoreDemoCalibration();return'Embedded demo calibration is active.';}
+  let e=calLibrary.get(name);
+  if(!e&&CALIBRATION_FILES_URL){try{const r=await fetch(`${CALIBRATION_FILES_URL}/${encodeURIComponent(name)}`,{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);const cfg=await r.json();calLibraryAdd(cfg,id);e=calLibrary.get(name);}catch(err){return`Could not load ${name} from the server: ${err.message}`;}}
+  if(!e){s.settings.calibrationFile=name;s.settings.calibrationPending=true;return`${name} is not loaded in this session. Import the file in Settings → Calibration (it is then used for “${s.name}”).`;}
+  if(e.sensorId&&e.sensorId!==id)return`${name} belongs to sensor “${e.sensorId}”.`;
+  const r=await activateCalibration(JSON.parse(JSON.stringify(e.config)),`file: ${name}`);
+  if(!r.errors.length)delete s.settings.calibrationPending;
+  return r.errors.length?r.errors.join(' '):`${name} is active for “${s.name}”.`;
 }
 function updateCalibrationInfo(){
   const weights=CALIBRATION.referenceWeights||[],count=state.calibrations.length;
-  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong><br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
+  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
 }
 
 function initEvents(){
   $('pauseBtn').addEventListener('click',()=>setSensorPaused(activeSensor,!activeSensor.state.paused));
   $('pauseAllBtn').addEventListener('click',pauseAllToggle);
+  $('clearChartsBtn').addEventListener('click',clearCharts);$('clearAllChartsBtn').addEventListener('click',clearAllCharts);$('clearAllBtn').addEventListener('click',clearAll);
   $('sensorSelect').addEventListener('change',e=>activateSensor(e.target.value));
   $('sensorReloadBtn').addEventListener('click',()=>loadSensorList());
   $('navPanelToggle').addEventListener('change',e=>setNavPanelVisible(e.target.checked));
   // remember which validity lists the user opened / closed ('toggle' does not bubble, hence capture)
   document.addEventListener('toggle',e=>{const d=e.target;if(d&&d.classList&&d.classList.contains('an')&&d.dataset&&d.dataset.key)state.detailsOpen[d.dataset.key]=!!d.open;},true);
-  $('trackBtn').addEventListener('click',trackLive);$('selectModeBtn').addEventListener('click',()=>setSelectMode(!state.selectMode));
+  $('trackBtn').addEventListener('click',trackToggle);$('selectModeBtn').addEventListener('click',()=>setSelectMode(!state.selectMode));
   $('tareBtn').addEventListener('click',autoTare);$('manualTareBtn').addEventListener('click',manualTare);$('exportBtn').addEventListener('click',exportCSV);$('testSamplesBtn').addEventListener('click',addTestSamples);$('bufferInput').addEventListener('change',applyBufferSize);
   $('measureBtn').addEventListener('click',startMeasurement);$('measSlider').addEventListener('input',()=>syncMeasurementInputs('slider'));$('measDuration').addEventListener('input',()=>syncMeasurementInputs('duration'));$('measSamples').addEventListener('input',()=>syncMeasurementInputs('samples'));
   $('calImportBtn').addEventListener('click',()=>$('calFile').click());$('calFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)importCalibrationFile(f);});
   $('calExportBtn').addEventListener('click',exportCalibration);$('calDemoBtn').addEventListener('click',restoreDemoCalibration);
-  $('windowRange').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
+  $('windowRange').addEventListener('input',e=>setMovingAverageWindow(sliderToWindow(e.target.value),false,false));$('windowRange').addEventListener('change',e=>setMovingAverageWindow(sliderToWindow(e.target.value),true,false));$('windowInput').addEventListener('input',e=>setMovingAverageWindow(e.target.value,false,true));$('windowInput').addEventListener('change',e=>setMovingAverageWindow(e.target.value,true,false));
   $('windowSeconds').addEventListener('input',e=>{const s=Number(e.target.value);if(s>0)setMovingAverageWindow(Math.max(2,Math.round(s*RATE_HZ)),false,false,true);});$('windowSeconds').addEventListener('change',e=>{const s=Number(e.target.value);if(s>0)setMovingAverageWindow(Math.max(2,Math.round(s*RATE_HZ)),true,false,false);else syncWindowSeconds();});
   $('estimatorSelect').addEventListener('change',e=>{state.estimator=e.target.value;updateEstimatorFields();recreateMainChart();scheduleRender();});
   $('hampelHalf').addEventListener('change',e=>{state.hampelHalf=clamp(Math.round(Number(e.target.value)||HAMPEL_DEFAULT_HALF),2,50);e.target.value=state.hampelHalf;scheduleRender();});
@@ -1911,6 +1970,7 @@ function initEvents(){
   $('settingsBtn').addEventListener('click',()=>openSettings($('settingsMenu').hidden));document.addEventListener('pointerdown',e=>{if(!$('settingsMenu').hidden&&!e.target.closest('.settings-wrap'))openSettings(false);});
   $('themeBtn').addEventListener('click',()=>{setTheme(uiTheme!=='light');uiSaveSoon();});
   $('yResponseRange').addEventListener('input',e=>{$('yResponseText').textContent=`${e.target.value}%`;scheduleRender();});
+  $('subPixelToggle').addEventListener('change',e=>setSubPixel(e.target.checked));
   ['zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
   $('yControlsToggle').addEventListener('change',e=>{$('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;if(state.manualY)initializeManualYAxis();else{state.autoYMin=null;state.autoYMax=null;}scheduleRender();});
   $('yMinRange').addEventListener('input',e=>{state.yMin=Number(e.target.value);$('yMinText').textContent=fmtNumber(state.yMin,3);if(state.manualY)scheduleRender();});$('yMaxRange').addEventListener('input',e=>{state.yMax=Number(e.target.value);$('yMaxText').textContent=fmtNumber(state.yMax,3);if(state.manualY)scheduleRender();});
@@ -1951,6 +2011,106 @@ function simulateSensor(sensor){
   st.simEmitted+=due;if(sensor===activeSensor)scheduleRender();
 }
 
+// ===== v15: OVERLOAD / UNDERLOAD MONITOR ===============================================================================
+// Per sensor. The load is the ABSOLUTE calibrated mass (gross, not tare-corrected: the cell does not know about the tare), averaged over the
+// newest `averageS` seconds (default 0.1 s) of samples. Limits are weights (mg inside): max, and min (default -max). The EXCESS is
+// (avg - max) / max above the maximum, or (min - avg) / |min| below the minimum. Level: yellow when the excess is above yellowPct, orange
+// above orangePct, red above redPct (all adjustable; defaults 10 / 20 / 40 %). An EVENT starts at the first sample with a level and lasts
+// until no level was seen for breakS seconds (default 0.5 s): shorter dips do not start a new event. Time is the sample time of the device.
+const OVL_COLORS = {yellow: '#f6c85f', orange: '#ff9a3c', red: '#e5384a'}, OVL_RANK = {yellow: 1, orange: 2, red: 3};
+function overloadLevel(avgMg, c) {
+  if (!(c.maxMg > 0) || !Number.isFinite(avgMg)) return {level: null, excess: 0, side: null};
+  const lo = c.minMg != null ? c.minMg : -c.maxMg;
+  let ex = 0, side = null;
+  if (avgMg > c.maxMg) { ex = (avgMg - c.maxMg) / c.maxMg; side = 'over'; }
+  else if (avgMg < lo) { ex = (lo - avgMg) / (Math.abs(lo) || c.maxMg); side = 'under'; }
+  const p = ex * 100;
+  return {level: side && p > c.redPct ? 'red' : side && p > c.orangePct ? 'orange' : side && p > c.yellowPct ? 'yellow' : null, excess: ex, side};
+}
+function closeOverload(sensor) {
+  const o = sensor.ovl, a = o.active; if (!a) return;
+  const per = 1000 / sensor.state.rateHz, c = o.cfg;
+  const entry = {type: 'overload', entryId: `overload-${Date.now()}-${o.events.length}`, createdAt: new Date().toISOString(), t0: a.t0, t1: a.lastOverT, durationMs: a.lastOverT - a.t0 + per,
+    peakLevel: a.peakLevel, peakMg: a.peakMg, peakExcess: a.peakExcess, side: a.side, limitMg: a.side === 'under' ? (c.minMg != null ? c.minMg : -c.maxMg) : c.maxMg, samples: a.samples};
+  o.events.push(entry); o.lastEnd = entry; o.lastEndWall = performance.now(); o.active = null;
+  sensor.state.logs.unshift(entry); if (sensor === activeSensor) renderLog();
+}
+function overloadStep(sensor, t, massMg) {
+  const o = sensor.ovl, c = o.cfg; if (!(c.maxMg > 0)) { o.current = null; return; }
+  o.q.push(t, massMg);
+  while (o.q.length > 2 && t - o.q[0] > c.averageS * 1000) o.q.splice(0, 2);
+  let s = 0, n = o.q.length / 2; for (let i = 1; i < o.q.length; i += 2) s += o.q[i];
+  const avg = s / n, r = overloadLevel(avg, c);
+  o.current = {level: r.level, excess: r.excess, side: r.side, avgMg: avg, t};
+  const a = o.active, brk = c.breakS * 1000;
+  if (r.level) {
+    if (a && t - a.lastOverT <= brk) {
+      a.lastOverT = t; a.samples++;
+      if (r.excess > a.peakExcess) { a.peakExcess = r.excess; a.peakMg = avg; a.peakLevel = r.level; a.side = r.side; }
+      else if (OVL_RANK[r.level] > OVL_RANK[a.peakLevel]) a.peakLevel = r.level;
+    } else {
+      if (a) closeOverload(sensor);
+      o.active = {t0: t, lastOverT: t, peakExcess: r.excess, peakMg: avg, peakLevel: r.level, side: r.side, samples: 1};
+    }
+  } else if (a && t - a.lastOverT > brk) closeOverload(sensor);
+}
+// Applies the typed settings of sensor.settings.overload ({maxLoad:{value,unit}, minLoad, averageS, yellowPercent, ...}) to sensor.ovl.cfg.
+function overloadApplySettings(sensor, s) {
+  const out = {errors: []}, o = sensor.ovl, c = {...OVL_DEFAULTS};
+  const mass = (v, label) => { if (v == null || v.value === '' || v.value == null) return null; const x = Number(v.value); if (!Number.isFinite(x)) { out.errors.push(`${label}: not a number.`); return null; } try { return massToMg(x, v.unit || 'g'); } catch (_) { out.errors.push(`${label}: unknown unit.`); return null; } };
+  s = s || {};
+  c.maxMg = mass(s.maxLoad, 'Maximum load'); c.minMg = mass(s.minLoad, 'Minimum load');
+  if (c.maxMg != null && !(c.maxMg > 0)) { out.errors.push('The maximum load must be greater than 0.'); c.maxMg = null; }
+  if (c.minMg != null && c.maxMg != null && !(c.minMg < c.maxMg)) { out.errors.push('The minimum load must be below the maximum load.'); c.minMg = null; }
+  const num = (k, d, lo, hi, label) => { const v = s[k] == null || s[k] === '' ? d : Number(s[k]); if (!Number.isFinite(v) || v < lo || v > hi) { out.errors.push(`${label} must be between ${lo} and ${hi}.`); return d; } return v; };
+  c.averageS = num('averageS', OVL_DEFAULTS.averageS, 0.001, 5, 'Averaging time (s)');
+  c.yellowPct = num('yellowPercent', OVL_DEFAULTS.yellowPct, 0, 1000, 'Yellow threshold (%)');
+  c.orangePct = num('orangePercent', OVL_DEFAULTS.orangePct, 0, 1000, 'Orange threshold (%)');
+  c.redPct = num('redPercent', OVL_DEFAULTS.redPct, 0, 1000, 'Red threshold (%)');
+  if (!(c.yellowPct <= c.orangePct && c.orangePct <= c.redPct)) { out.errors.push('The thresholds must rise: yellow ≤ orange ≤ red.'); c.yellowPct = OVL_DEFAULTS.yellowPct; c.orangePct = OVL_DEFAULTS.orangePct; c.redPct = OVL_DEFAULTS.redPct; }
+  c.breakS = num('breakS', OVL_DEFAULTS.breakS, 0, 60, 'Break time (s)');
+  c.holdS = num('holdS', OVL_DEFAULTS.holdS, 1, 600, 'Show the warning for (s)');
+  if (out.errors.length) return out;
+  o.cfg = c; o.q = []; o.current = null; if (o.active && !(c.maxMg > 0)) o.active = null;
+  sensor.settings.overload = s; return out;
+}
+function overloadDoc(sensor) { const s = sensor.settings.overload; return s ? JSON.parse(JSON.stringify(s)) : null; }
+// What the banner shows for one sensor: null (nothing), or {level, side, now, ...}. nowWall = performance.now().
+function overloadStatus(sensor, nowWall) {
+  const o = sensor.ovl, c = o.cfg; if (!(c.maxMg > 0)) return null;
+  const stale = sensorStaleMs(sensor, nowWall) > 0;
+  if (o.active) { const a = o.active; return {sensor, level: a.peakLevel, side: a.side, peakMg: a.peakMg, peakExcess: a.peakExcess, durationMs: a.lastOverT - a.t0 + 1000 / sensor.state.rateHz, limitMg: a.side === 'under' ? (c.minMg != null ? c.minMg : -c.maxMg) : c.maxMg, now: !!(o.current && o.current.level) && !stale, stale}; }
+  if (o.lastEnd && o.lastEndWall != null && nowWall - o.lastEndWall < c.holdS * 1000) { const e = o.lastEnd; return {sensor, level: e.peakLevel, side: e.side, peakMg: e.peakMg, peakExcess: e.peakExcess, durationMs: e.durationMs, limitMg: e.limitMg, now: false, stale, endedAgoS: (nowWall - o.lastEndWall) / 1000}; }
+  return null;
+}
+function updateOverloadBanner() {
+  const el = $('overloadBanner'); if (!el) return;
+  const now = performance.now(), items = [];
+  for (const s of sensors.values()) { const r = overloadStatus(s, now); if (r) items.push(r); }
+  items.sort((a, b) => OVL_RANK[b.level] - OVL_RANK[a.level]);
+  el.hidden = !items.length;
+  const unit = x => { const u = x.sensor.state.unitId === 'raw' ? 'g' : x.sensor.state.unitId; return v => esc(formatMass(v, u)); };
+  setHTML(el, items.map(r => { const f = unit(r);
+    return `<div class="ovl-item ovl-${r.level}${r.now ? ' ovl-now' : ''}" data-sensor="${esc(r.sensor.id)}" title="Click to show this sensor"><strong>⚠ ${esc(r.sensor.name)}: ${r.side === 'under' ? 'UNDERLOAD' : 'OVERLOAD'}</strong> peak ${f(r.peakMg)} (limit ${f(r.limitMg)}, ${r.side === 'under' ? '−' : '+'}${(r.peakExcess * 100).toFixed(0)} %) · ${fmtSpan(r.durationMs / 1000)} · <strong>${r.stale ? 'no data (status unknown)' : r.now ? 'STILL OVERLOADED' : `ended ${r.endedAgoS == null ? 'just now' : r.endedAgoS.toFixed(0) + ' s ago'}`}</strong></div>`; }).join(''));
+}
+// ===== v15: CONNECTION TIMEOUT ===========================================================================================
+// A sensor that should be streaming (not paused, listed, connection open or test signal) but delivered no sample for
+// max(STREAM_TIMEOUT_MIN_MS, STREAM_TIMEOUT_PERIODS x nominal period) is shown as "no data for N s".
+const STREAM_TIMEOUT_MIN_MS = 2000, STREAM_TIMEOUT_PERIODS = 20;
+function sensorStaleMs(s, nowWall) {
+  if (s.state.paused || s.unlisted) return 0;
+  let base = s.state.lastWall;
+  if (s.kind === 'server') { const c = s.sseUrl && sseConnections.get(s.sseUrl); if (!c) return 0; if (base == null || (c.since != null && c.since > base)) base = c.since; }
+  if (base == null) return 0;
+  const limit = Math.max(STREAM_TIMEOUT_MIN_MS, STREAM_TIMEOUT_PERIODS * 1000 / s.state.rateHz), age = nowWall - base;
+  return age > limit ? age : 0;
+}
+let housekeepingSig = '';
+function housekeeping() {
+  const now = performance.now(), sig = [...sensors.values()].map(s => sensorLink(s).key).join(',');
+  if (sig !== housekeepingSig) { housekeepingSig = sig; renderSensorSelect(); }
+  updateStatusUI(); updateOverloadBanner();
+}
 // ===== MULTI-SENSOR LAYER (v11) ======================================================================
 // Ingest. All data of all sensors enters here. A sensor that is paused THROWS AWAY what arrives for it
 // (counted in state.dropped). Only the shown sensor is processed; the others just store time + raw counts.
@@ -1960,6 +2120,7 @@ function lastStoredId(st){return st.count?st.ids[(st.head+st.count-1)%st.capacit
 function ingestSample(sensor,raw,timeMs,force=false,sampleId){
   const st=sensor.state;
   if(st.paused&&!force){st.dropped++;return false;}
+  st.lastWall=performance.now();
   if(timeMs!=null&&st.count&&timeMs<=st.times[(st.head+st.count-1)%st.capacity]){st.rejected++;return false;}
   if(Number.isFinite(sampleId)){
     // v14: the device's monotonic sample id. A repeat is rejected; a jump is a gap (filled from the history server if there is one).
@@ -1967,7 +2128,9 @@ function ingestSample(sensor,raw,timeMs,force=false,sampleId){
     if(Number.isFinite(last)){if(sampleId<=last){st.rejected++;return false;}if(sampleId>last+1&&!sensor.skipNextGap)noteGap(sensor,last+1,sampleId-1);}
     sensor.skipNextGap=false;if(sensor.firstLiveId==null){sensor.firstLiveId=sampleId;historyScheduleInitial(sensor);}
   }
+  const tt=timeMs==null?st.nextTime:timeMs;
   if(sensor===activeSensor)appendSample(raw,timeMs,sampleId);else appendRawOnly(st,raw,timeMs,sampleId);
+  if(sensor.ovl.cfg.maxMg>0)overloadStep(sensor,tt,calibrateAbsolute(raw,st.calPrepared).valueMg);
   return true;
 }
 function appendRawOnly(st,raw,timeMs,sampleId){
@@ -2018,7 +2181,7 @@ function syncUIFromState(){
   $('tareUnitLabel').textContent=displayUnitSymbol();$('manualTareInput').value='';$('precisionSelect').value=state.precision;
   $('estimatorSelect').value=state.estimator;$('trimPercent').value=state.trimPercent;$('trimPercentText').textContent=`${state.trimPercent}%`;
   $('emaTau').value=state.emaTau;$('hampelHalf').value=state.hampelHalf;$('hampelSigma').value=state.hampelSigma;updateEstimatorFields();
-  $('windowRange').value=state.window;$('windowInput').value=state.window;syncWindowSeconds();$('bufferInput').value=state.unlimited?'unlimited':String(state.capacity);
+  $('windowRange').value=windowToSlider(state.window);$('windowInput').value=state.window;syncWindowSeconds();$('bufferInput').value=state.unlimited?'unlimited':String(state.capacity);
   $('yControlsToggle').checked=state.manualY;$('yControls').hidden=!state.manualY;
   if(state.manualY){$('yMinRange').value=state.yMin;$('yMaxRange').value=state.yMax;$('yMinText').textContent=fmtNumber(state.yMin,3);$('yMaxText').textContent=fmtNumber(state.yMax,3);}
   $('bandModeSelect').value=bandMode;$('simModeSelect').value=state.simMode;$('simControls').hidden=!sim;$('testSamplesBtn').hidden=!sim;
@@ -2029,20 +2192,45 @@ function syncUIFromState(){
   if(state.selection)updateSelectionReadout();else $('selectionSummary').innerHTML=SELECTION_DEFAULT_HTML;
   renderLog();updateCalibrationInfo();updateStatusUI();renderSensorSelect();updateViewLabel();updateMeasurementUI();
 }
+function setSubPixel(on){subPixel=!!on;const t=$('subPixelToggle');if(t)t.checked=subPixel;if(state&&state.mainPlot){destroyCharts();createCharts();}scheduleRender();}
 function setBandMode(m){bandMode=BAND_MODES[m]?m:'symmetric';if(state){state.curveCache={key:'',map:new Map()};recreateMainChart();}const s=$('bandModeSelect');if(s)s.value=bandMode;scheduleRender();}
+// ---- clearing (v15) -------------------------------------------------------------------------------------------------------
+// scope 'data': the sample buffer of one sensor is emptied (tares, calibrations, logs, settings stay; time keeps running).
+// scope 'all' : additionally tares, log, measurements, overload events, gaps. Calibrations are never touched.
+function clearSensorData(sensor,scope){
+  const st=sensor.state;
+  if(sensor===activeSensor)cancelMeasurement('charts cleared');
+  withState(st,()=>{
+    state.count=0;state.head=0;state.appended=0;state.unprocessed=0;
+    state.rawSum=state.rawSumSq=state.rawCount=0;state.rawRef=null;state.massSum=state.massSumSq=state.massCount=0;state.massRef=null;
+    state.rawEma=state.rawEmaTime=state.massEma=state.massEmaTime=null;state.rollingTareId=null;
+    state.curveCache={key:'',map:new Map()};state.miniCache={key:'',map:new Map()};state.pmNeff=null;state.pmStab=null;
+    state.selection=null;state.pendingSelection=null;state.highlight=null;state.logPinned=null;state.hoverRange=null;state.measurement=null;
+    state.autoYMin=null;state.autoYMax=null;state.snapY=true;state.viewMin=0;state.viewMax=1000/state.rateHz;state.live=true;state.trackPaused=false;
+    sensor.gaps=[];sensor.gapCount=0;sensor.skipNextGap=true;
+    if(scope==='all'){state.tareEvents=[];state.logs=[];state.lastMeasurement=null;state.detailsOpen={};sensor.ovl.events=[];}
+    sensor.ovl.active=null;sensor.ovl.q=[];sensor.ovl.current=null;
+  });
+  if(sensor===activeSensor){renderLog();$('selectionSummary').innerHTML=SELECTION_DEFAULT_HTML;updateMeasurementUI();updateViewLabel();updateOverloadBanner();scheduleRender();}
+}
+function uiConfirm(text){return typeof confirm==='function'?confirm(text):true;}
+function clearCharts(){if(uiConfirm('Clear the chart data of the shown sensor? Calibration, tares and the log stay.'))clearSensorData(activeSensor,'data');}
+function clearAllCharts(){if(uiConfirm('Clear the chart data of ALL sensors? Calibrations, tares and logs stay.'))for(const s of sensors.values())clearSensorData(s,'data');}
+function clearAll(){if(uiConfirm('Clear EVERYTHING of ALL sensors: chart data, tares, logs, measurements and overload events? Calibrations stay.'))for(const s of sensors.values())clearSensorData(s,'all');}
 function setNavPanelVisible(on){$('navPanel').hidden=!on;$('sidePanels').classList.toggle('nav-hidden',!on);$('navPanelToggle').checked=on;}
 
 // ---- pause, links, status -----------------------------------------------------------------------
 function sensorLink(s){
   if(s.state.paused)return{key:'paused',text:'Paused'};
-  if(s.kind==='test')return{key:'live',text:'Streaming'};
+  if(s.kind==='test'){const age=sensorStaleMs(s,performance.now());return age>0?{key:'timeout',text:`No data for ${(age/1000).toFixed(0)} s`}:{key:'live',text:'Streaming'};}
   if(s.unlisted)return{key:'unlisted',text:'Not in the server list (no data)'};
   if(!s.sseUrl)return{key:'idle',text:'No SSE URL'};
   const c=sseConnections.get(s.sseUrl);
   if(!c)return{key:'idle',text:'Not connected'};
+  if(c.status==='live'){const age=sensorStaleMs(s,performance.now());if(age>0)return{key:'timeout',text:`No data for ${(age/1000).toFixed(0)} s`};}
   return c.status==='live'?{key:'live',text:'Streaming'}:c.status==='error'?{key:'error',text:'Connection failed'}:{key:'connecting',text:'Connecting…'};
 }
-const LINK_ICON={live:'●',connecting:'◌',paused:'Ⅱ',error:'⚠',idle:'○',unlisted:'⊘'};
+const LINK_ICON={timeout:'⏱',live:'●',connecting:'◌',paused:'Ⅱ',error:'⚠',idle:'○',unlisted:'⊘'};
 function updateStatusUI(){
   // v13: "streaming" counts only sensors whose link is really live (test signal running, or a server connection that
   // is open). Before, every listed, un-paused sensor counted as recording even when its URL could not be reached.
@@ -2059,7 +2247,7 @@ function renderSensorSelect(){
   sel.value=activeSensor.id;
 }
 function setSensorPaused(s,paused,quiet=false){
-  s.state.paused=paused;s.state.simBase=null;if(!paused)s.skipNextGap=true;   // data thrown away while paused is not a gap to be refilled
+  s.state.paused=paused;s.state.simBase=null;if(!paused){s.skipNextGap=true;s.state.lastWall=performance.now();}   // data thrown away while paused is not a gap to be refilled
   if(!quiet){syncConnections();renderSensorSelect();updateStatusUI();}
 }
 // Pause all / resume all. If anything is recording, everything is paused; otherwise everything resumes.
@@ -2091,7 +2279,7 @@ function syncConnections(){
   for(const [url,ids] of want){
     let c=sseConnections.get(url);
     if(c){c.ids=ids;continue;}
-    c={es:null,ids,status:'connecting'};sseConnections.set(url,c);
+    c={es:null,ids,status:'connecting',since:performance.now()};sseConnections.set(url,c);
     if(typeof EventSource==='undefined'){c.status='error';continue;}
     try{
       c.es=new EventSource(url);
@@ -2170,8 +2358,8 @@ function initSensorCalibration(st,fp){
 const UI_SETTINGS_URL = null;
 const SENSOR_SETTINGS_URL = null;
 const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
-const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric' });
-const UI_CONTROL_IDS = new Set(['wizMode', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
+const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false });
+const UI_CONTROL_IDS = new Set(['wizMode', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
 let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = UI_SETTINGS_URL ? 'not loaded yet' : 'not configured';
 const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
 
@@ -2181,7 +2369,7 @@ function sanitizeUiSettings(o) {
   const out = { ...UI_DEFAULTS }, errors = [];
   if (o.schemaVersion !== 1) errors.push('schemaVersion must be 1.');
   if (o.theme !== undefined) { if (o.theme === 'dark' || o.theme === 'light') out.theme = o.theme; else errors.push('theme must be "dark" or "light".'); }
-  for (const k of ['navPanelVisible', 'downsample', 'zeroFill', 'zeroRawFill', 'zeroLine'])
+  for (const k of ['navPanelVisible', 'downsample', 'zeroFill', 'zeroRawFill', 'zeroLine', 'subPixel'])
     if (o[k] !== undefined) { if (typeof o[k] === 'boolean') out[k] = o[k]; else errors.push(`${k} must be true or false.`); }
   if (o.wizardMode !== undefined) { if (o.wizardMode === 'simple' || o.wizardMode === 'advanced') out.wizardMode = o.wizardMode; else errors.push('wizardMode must be "simple" or "advanced".'); }
   if (o.bandMode !== undefined) { if (BAND_MODES[o.bandMode]) out.bandMode = o.bandMode; else errors.push('bandMode must be "symmetric", "asymmetric" or "stepaware".'); }
@@ -2190,7 +2378,7 @@ function sanitizeUiSettings(o) {
 }
 function collectUiSettings() {
   return { schemaVersion: 1, theme: uiTheme, navPanelVisible: !$('navPanel').hidden, yResponsePercent: clamp(Math.round(Number($('yResponseRange').value) || 5), 1, 100),
-    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode };
+    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode, subPixel };
 }
 function setTheme(light) {
   uiTheme = light ? 'light' : 'dark';
@@ -2205,6 +2393,7 @@ function applyUiSettings(s) {
   $('downsampleToggle').checked = !!s.downsample; $('zeroFillToggle').checked = !!s.zeroFill; $('zeroRawFillToggle').checked = !!s.zeroRawFill; $('zeroLineToggle').checked = !!s.zeroLine;
   wizMode = s.wizardMode === 'advanced' ? 'advanced' : 'simple'; if (wiz.open) wizRender(); else { const m = wq('wizMode'); if (m) m.value = wizMode; }
   if (state) { state.autoYMin = null; state.autoYMax = null; }
+  subPixel = !!s.subPixel; { const t = $('subPixelToggle'); if (t) t.checked = subPixel; }
   setBandMode(s.bandMode || 'symmetric');
   scheduleRender();
 }
@@ -2271,11 +2460,11 @@ function initUiSettings() {
 let ssSelectedId = null;
 function sensorSettingsDoc() {
   return { schemaVersion: 1, generatedAt: new Date().toISOString(),
-    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '' })) };
+    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '', calibrationFile: s.settings.calibrationFile || null, overload: overloadDoc(s) })) };
 }
 function sensorSettingsRender() {
-  const server = [...sensors.values()].filter(s => s.kind === 'server');
-  if (!ssSelectedId || !sensors.has(ssSelectedId) || sensors.get(ssSelectedId).kind !== 'server') ssSelectedId = server.length ? (activeSensor.kind === 'server' ? activeSensor.id : server[0].id) : null;
+  const server = [...sensors.values()];   // v15: the test signal is listed too (overload and calibration file apply to it as well)
+  if (!ssSelectedId || !sensors.has(ssSelectedId)) ssSelectedId = activeSensor.id;
   const sel = $('ssSensor'); sel.innerHTML = '';
   for (const s of server) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.name + (s.unlisted ? ' (not in list)' : ''); sel.appendChild(o); }
   if (ssSelectedId) sel.value = ssSelectedId;
@@ -2284,15 +2473,46 @@ function sensorSettingsRender() {
   if (none) return;
   $('ssName').value = s.name; $('ssRate').value = s.state.rateHz; $('ssNotes').value = s.settings.notes || '';
   $('ssHistoryInfo').textContent = historyStatusText(s); $('ssHistoryBtn').disabled = !historyUrlFor(s);
-  $('ssRate').disabled = s.state.count > 0; $('ssRateNote').textContent = s.state.count > 0 ? 'Fixed: this sensor already holds samples.' : 'Can still be changed: no samples yet.';
+  $('ssRate').disabled = s.state.count > 0 || s.kind !== 'server'; $('ssRateNote').textContent = s.kind !== 'server' ? 'Fixed for the test signal.' : s.state.count > 0 ? 'Fixed: this sensor already holds samples.' : 'Can still be changed: no samples yet.';
+  const ov = s.settings.overload || {}, ml = ov.maxLoad, nl = ov.minLoad;
+  $('ssMaxLoad').value = ml ? ml.value : ''; $('ssLoadUnit').value = (ml && ml.unit) || 'g'; $('ssMinLoad').value = nl ? nl.value : '';
+  $('ssAvgS').value = ov.averageS ?? OVL_DEFAULTS.averageS; $('ssYellow').value = ov.yellowPercent ?? OVL_DEFAULTS.yellowPct; $('ssOrange').value = ov.orangePercent ?? OVL_DEFAULTS.orangePct; $('ssRed').value = ov.redPercent ?? OVL_DEFAULTS.redPct;
+  $('ssBreak').value = ov.breakS ?? OVL_DEFAULTS.breakS; $('ssHold').value = ov.holdS ?? OVL_DEFAULTS.holdS;
+  const cs = $('ssCalFile'); cs.innerHTML = ''; const addOpt = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; cs.appendChild(o); };
+  addOpt('', 'Embedded demo calibration');
+  for (const e of calLibrary.values()) if (e.sensorId === s.id) addOpt(e.name, `${e.name} (${e.profileName})`);
+  const want = s.settings.calibrationFile || ''; if (want && !calLibrary.has(want)) addOpt(want, `${want} (file not loaded)`);
+  cs.value = want;
+}
+function ssReadOverload() {
+  const v = id => $(id).value, nn = id => (v(id) === '' ? null : Number(v(id))), u = v('ssLoadUnit') || 'g';
+  return { maxLoad: v('ssMaxLoad') === '' ? null : { value: Number(v('ssMaxLoad')), unit: u }, minLoad: v('ssMinLoad') === '' ? null : { value: Number(v('ssMinLoad')), unit: u },
+    averageS: nn('ssAvgS'), yellowPercent: nn('ssYellow'), orangePercent: nn('ssOrange'), redPercent: nn('ssRed'), breakS: nn('ssBreak'), holdS: nn('ssHold') };
+}
+// Reads a sensor_settings.json (overload settings, names, notes, the active calibration file per sensor).
+async function applySensorSettingsDoc(doc) {
+  const msgs = [], list = doc && Array.isArray(doc.sensors) ? doc.sensors : null;
+  if (!list) return ['The file must contain a "sensors" array.'];
+  const shown = activeSensor;
+  for (const e of list) {
+    const s = e && sensors.get(String(e.id)); if (!s) { msgs.push(`Sensor “${e && e.id}” is not in the sensor list: skipped.`); continue; }
+    if (typeof e.name === 'string' && e.name.trim()) s.name = e.name.trim();
+    if (typeof e.notes === 'string') s.settings.notes = e.notes;
+    if (e.overload) { const r = overloadApplySettings(s, e.overload); if (r.errors.length) msgs.push(`${s.name}: overload settings not applied (${r.errors.join(' ')})`); }
+    if (typeof e.calibrationFile === 'string' && e.calibrationFile) msgs.push(`${s.name}: ${await selectCalibrationFile(s.id, e.calibrationFile)}`);
+  }
+  if (activeSensor !== shown && sensors.has(shown.id)) activateSensor(shown.id);
+  renderSensorSelect(); sensorSettingsRender();
+  return msgs.length ? msgs : ['sensor_settings.json applied.'];
 }
 function ssMsg(t) { $('ssMessages').textContent = t; }
 async function sensorSettingsApply() {
   const s = ssSelectedId && sensors.get(ssSelectedId); if (!s) return;
   const rate = Number($('ssRate').value);
-  if (s.state.count === 0 && !(rate > 0 && rate <= 10000)) { ssMsg('The nominal rate must be between 0 and 10,000 Hz.'); return; }
+  if (s.kind === 'server' && s.state.count === 0 && !(rate > 0 && rate <= 10000)) { ssMsg('The nominal rate must be between 0 and 10,000 Hz.'); return; }
+  { const ovr = overloadApplySettings(s, ssReadOverload()); if (ovr.errors.length) { ssMsg('Not applied: ' + ovr.errors.join(' ')); return; } }
   s.name = ($('ssName').value || '').trim() || s.id; s.settings.notes = $('ssNotes').value || '';
-  if (s.state.count === 0 && rate !== s.state.rateHz) {
+  if (s.kind === 'server' && s.state.count === 0 && rate !== s.state.rateHz) {
     s.state.rateHz = rate;
     if (s === activeSensor) { RATE_HZ = rate; PERIOD_MS = 1000 / rate; syncUIFromState(); }
   }
@@ -2320,6 +2540,10 @@ function initSettingsMenu() {
   $('smTab_ui').addEventListener('click', () => settingsMenuTab('ui')); $('smTab_sensor').addEventListener('click', () => settingsMenuTab('sensor'));
   $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
   $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
+  { const u = $('ssLoadUnit'); if (u) for (const x of UNIT_CONFIG.units.filter(x => x.id !== 'raw')) { const o = document.createElement('option'); o.value = x.id; o.textContent = x.symbol; u.appendChild(o); } }
+  $('ssCalFile').addEventListener('change', async e => { ssMsg(await selectCalibrationFile(ssSelectedId, e.target.value)); sensorSettingsRender(); });
+  $('ssLoadBtn').addEventListener('click', () => $('ssFile').click());
+  $('ssFile').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { ssMsg((await applySensorSettingsDoc(JSON.parse(await f.text()))).join(' ')); } catch (err) { ssMsg(`Could not read the file: ${err.message}`); } });
   $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorSettingsDoc(), null, 2)], { type: 'application/json' }), 'sensor_settings.json'));
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('authModal').hidden) $('authCancel').click(); else if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
 }
@@ -2642,7 +2866,7 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
   const rel = id => { for (const s of stats) { const m = s.members.find(x => x.weightId === id); if (m && m.relMassMg != null) return { valueMg: m.relMassMg, standardErrorMg: m.relMassSeMg, basis: 'sensor comparison within the weight group; approximate' }; } return null; };
   const w5 = v => (Number.isFinite(v) ? v : null);
   return {
-    schemaVersion: 1, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '13.0-wizard',
+    schemaVersion: 1, sensorId: W.sensorId || null, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '13.0-wizard',
     calibrationUnit: unit, calibrationMethod: 'piecewise-linear',
     sensor: { model: W.profile.sensorModel || '', hardwareId: W.sensorId || '', adcResolutionBits: null, samplingRateHz: W.rateHz || null },
     environment: { temperatureC: numOrNull(W.profile.temperatureC), relativeHumidityPercent: numOrNull(W.profile.humidityPercent), notes: W.profile.notes || '' },
@@ -3207,7 +3431,7 @@ function wizOnClick(e) {
     case 'useSel': return wizUseSelection();
     case 'addManual': return wizAddManual();
     case 'delObs': wiz.observations.splice(i, 1); break;
-    case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), `calibration-${String(r.cfg.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
+    case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), calFileName(r.cfg)); return; }
     case 'exportReport': { const rep = wizFitReport(); downloadBlob(new Blob([JSON.stringify(rep, null, 2)], { type: 'application/json' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
     case 'exportReportText': { const rep = wizFitReport(); downloadBlob(new Blob([wizFitReportText(rep)], { type: 'text/markdown' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.md`); return; }
     case 'activate': return wizActivate();
@@ -3642,7 +3866,7 @@ async function boot(){
   embeddedFp=await fingerprintConfig(EMBEDDED_CALIBRATION);
   initSensorCalibration(testSensor.state,embeddedFp);
   updateCalibrationInfo();updateEstimatorFields();syncMeasurementInputs('samples');updateMeasurementUI();updateStatusUI();
-  tickTimer=setInterval(tick,PERIOD_MS);
+  tickTimer=setInterval(tick,PERIOD_MS);setInterval(housekeeping,500);
   if(SENSOR_LIST_URL)loadSensorList();
   // Display the shell and start acquisition before the chart library download completes.
   requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{chartsPending=false;createCharts();updateStatusUI();scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection and reload the file.</p>';console.error(error);})));
