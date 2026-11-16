@@ -144,7 +144,8 @@ function createSensorState(opts = {}) {
   miniCache: {key:'', map:new Map()},                  // navigator min/max buckets aligned to absolute sample numbers
   snapY: false, wasHidden: false, lastFrameTs: 0, autoYLatch: [false,false],   // Y-axis dead-band / snap
   hoverRange: null, logPinned: null,                   // log / graph hover highlight, clicked log entry
-  simMode: 'wander', simOffset: 0, simN: 0
+  simMode: 'wander', simOffset: 0, simN: 0,
+  auxHidden: new Set(), auxSig: '', auxHasData: false, auxColsAny: [], auxSeriesShown: [], charRec: null   // v16
   };
 }
 // Module-level (not per-sensor) render bookkeeping: one render loop serves whichever sensor is shown.
@@ -162,12 +163,13 @@ let renderPending = false, miniLastRender = 0, testBatchRunning = false, tickTim
 //  * a second chart for another sensor would need only a second container and its own plot pair:
 //    plots live in the sensor's state (state.mainPlot / state.miniPlot).
 const sensors = new Map();
+const auxChannels = new Map(), deviceOrigins = new Map();   // v16: auxiliary channels; shared time origin per device
 let activeSensor = null;
 let state = null;
 function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
-  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
+  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, deviceId: def.deviceId || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
     ovl: newOverloadState(), firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
@@ -257,6 +259,7 @@ function appendSample(rawValue, timeMs, sampleId) {
   if (state.unlimited && state.count === state.capacity) resizeBuffers(state.capacity + 100000);
   const sampleTime = timeMs == null ? state.nextTime : timeMs;
   if (state.measurement && state.count && sampleTime - newestTime() > ANALYSIS_THRESHOLDS.gapFactor * PERIOD_MS) cancelMeasurement('sampling gap');
+  if (state.charRec && state.count && sampleTime - newestTime() > ANALYSIS_THRESHOLDS.gapFactor * PERIOD_MS) cancelCharRec('sampling gap');
 
   // Maintain the raw rolling statistics independently of calibration and tare.
   if (state.rawCount >= state.activeWindow) {
@@ -335,6 +338,7 @@ function appendSample(rawValue, timeMs, sampleId) {
   state.nextTime = sampleTime + PERIOD_MS;
   if ((++state.appended & 8191) === 0) refreshRollingSums();
   if (state.measurement) measurementSampleAdded(sampleTime);
+  if (state.charRec) charRecSample(sampleTime, rawValue, sampleId);
 }
 // Every 8192 samples the shifted sums are recomputed exactly from the retained window and
 // re-centred on the current mean. This bounds the rounding error that add/subtract updates
@@ -486,7 +490,7 @@ function chartSDAt(i, diagnostic) { return diagnostic ? getRawSD(i) : getMassSD(
 // simply skipping points. Full-resolution mode plots every visible sample.
 function buildVisibleData() {
   const [lo, hi] = visibleIndices();
-  if (hi < lo) return [[], [], [], [], []];
+  if (hi < lo) return emptyMainData();
   const count = hi - lo + 1;
   const diagnostic = state.unitId === 'raw';
   const pixelWidth = Math.max(320, Math.floor(state.mainPlot?.bbox?.width || $('mainChart').clientWidth || 800));
@@ -524,7 +528,8 @@ function buildVisibleData() {
       else { write(maxIndex); write(minIndex); }
     }
   }
-  return [buf.x.subarray(0,out),buf.value.subarray(0,out),buf.ma.subarray(0,out),buf.upper.subarray(0,out),buf.lower.subarray(0,out)];
+  const xs=buf.x.subarray(0,out),cols=auxShownChannels().map(ch=>auxColumn(ch,xs,out));state.auxColsAny=cols.map(c=>c.any);state.auxHasData=cols.some(c=>c.any);
+  return [xs,buf.value.subarray(0,out),buf.ma.subarray(0,out),buf.upper.subarray(0,out),buf.lower.subarray(0,out),...cols.map(c=>c.col)];
 }
 // Navigator data (v10). The old stride sampling (every k-th sample, k = ceil(n / 1600)) changed k and the
 // sampling phase as the buffer grew or wrapped, so the curve flickered. Now the history is cut into
@@ -740,7 +745,9 @@ function axisWidthFit(self,values,axisIdx,cycleNum){
 }
 function bandLabels(){const s=spreadShort(state.estimator),on=!isEmaMethod(state.estimator);if(bandMode==='asymmetric'&&on)return['Upper (mean of samples above)','Lower (mean of samples below)'];const t=bandMode==='stepaware'&&on?`${s}, step-aware`:s;return[`Upper +1σ (${t})`,`Lower −1σ (${t})`];}
 function makeMainOptions() {
-  const c=colors();
+  const c=colors(),auxList=auxShownChannels();
+  const auxSeries=auxList.map((ch,k)=>({label:`${ch.name} (${ch.unit||'—'})`,scale:'aux',stroke:AUX_COLORS[k%AUX_COLORS.length],width:1.5,dash:[5,3],points:{show:false},value:(u,v)=>v==null?'—':`${fmtNumber(v,2)} ${ch.unit}`}));
+  const auxAxes=auxList.length?[{scale:'aux',side:1,stroke:AUX_COLORS[0],grid:{show:false},ticks:{stroke:c.line},size:(self,values,i,cyc)=>state.auxHasData?axisWidthFit(self,values,i,cyc):0,values:(u,vals)=>state.auxHasData?vals.map(v=>`${fmtNumber(v,1)} ${auxList[0].unit}`):vals.map(()=>'')}]:[];
   return {
     width:$('mainChart').clientWidth||800,height:mainChartHeight(),title:'',pxAlign:subPixel?0:1,legend:{show:true},
     cursor:{show:true,x:true,y:false,drag:{x:false,y:false},focus:{prox:30}},
@@ -755,18 +762,18 @@ function makeMainOptions() {
       const response=clamp(Number($('yResponseRange').value||5)/100,.01,1);
       const next=autoYStep(state.autoYMin==null?null:{min:state.autoYMin,max:state.autoYMax},{min:targetMin,max:targetMax},pad,response,state.autoYLatch,state.snapY);
       state.autoYMin=next.min;state.autoYMax=next.max;state.yBusy=!!(state.autoYLatch[0]||state.autoYLatch[1]);return[next.min,next.max];
-    }}},
+    }},...(auxList.length?{aux:{auto:true}}:{})},
     axes:[
       {stroke:c.muted,grid:{stroke:'rgba(130,150,180,.12)'},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>`${v.toFixed(1)}s`)},
       {stroke:c.muted,size:axisWidthFit,grid:{stroke:'rgba(130,150,180,.12)',filter:(u,splits)=>splits.map(v=>(state.unitId!=='raw'&&!$('zeroLineToggle').checked&&Math.abs(v)<1e-12)?null:v)},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>state.unitId==='raw'?fmtNumber(v,0):fmtNumber(v,displayDigits()))}
-    ],
+    ,...auxAxes],
     series:[
       {label:'Time',value:(u,v)=>v==null?'—':`${v.toFixed(2)} s`},
       {label:state.unitId==='raw'?'Raw sensor counts':'Measured mass',stroke:c.raw,width:1.25,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
       {label:centerLabel(),stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
       {label:bandLabels()[0],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
       {label:bandLabels()[1],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
-    ],
+    ,...auxSeries],
     bands:[{series:[3,4],fill:'rgba(190,112,220,.16)'}],
     hooks:{drawAxes:[u=>{
       const ctx=u.ctx;
@@ -803,7 +810,7 @@ function makeMiniOptions(){
 // The main chart and the navigator are created and destroyed independently (v10): changing the
 // estimator only relabels the main chart's series, so only that chart is rebuilt.
 function createMainChart(){
-  state.mainPlot=new uPlot(makeMainOptions(),[[],[],[],[],[]],$('mainChart'));
+  state.auxSig=auxSigNow();state.auxSeriesShown=[];state.mainPlot=new uPlot(makeMainOptions(),emptyMainData(),$('mainChart'));
   wireMainInteractions();wireEventHover(state.mainPlot);wireCrosshairSync(state.mainPlot,'main');
 }
 function createMiniChart(){
@@ -834,20 +841,22 @@ function renderEmpty(){
   $('currentValue').textContent='—';$('currentSpread').textContent='—';$('tareValue').textContent='—';
   $('currentValueDetail').textContent='Waiting for data…';$('spreadDetail').textContent='—';$('tareDetail').textContent='—';$('rangeStatus').hidden=true;
   $('sampleCount').textContent='0 samples';updateViewLabel();updateMeasurementUI();
-  if(state.mainPlot)state.mainPlot.setData([[],[],[],[],[]]);if(state.miniPlot)state.miniPlot.setData([[],[]]);
+  if(state.mainPlot)state.mainPlot.setData(emptyMainData());if(state.miniPlot)state.miniPlot.setData([[],[]]);
 }
 function renderFrame(){
   if(wiz.open)wizTick();
+  if(state.mainPlot&&auxSigNow()!==state.auxSig)recreateMainChart();   // an auxiliary channel was attached, detached or switched
   if(!state.count){renderEmpty();return;}
   if(!state.live)autoTrackIfAtEnd();
   if(state.live)fitLiveWindow();
-  updateMetrics();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
+  updateMetrics();updateAuxReadout();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
   const ts=performance.now();
   if(state.lastFrameTs&&ts-state.lastFrameTs>2000)state.snapY=true;   // rendering was suspended (background tab): do not damp
   state.lastFrameTs=ts;
   if(!state.mainPlot)return;
   const data=buildVisibleData(),minX=state.viewMin/1000,maxX=Math.max(minX+PERIOD_MS/1000,state.viewMax/1000);
   state.mainPlot.batch(()=>{state.mainPlot.setData(data,true);state.mainPlot.setScale('x',{min:minX,max:maxX});if(state.manualY)state.mainPlot.setScale('y',{min:state.yMin,max:state.yMax});});
+  auxApplySeriesVisibility();
   state.snapY=false;   // damping resumes immediately after the one undamped frame
   // v11 fix: the Y damping advances once per RENDERED frame. While streaming that is every 12.5 ms, but a
   // paused chart renders only on interaction, so the axis stopped part-way to its target. As long as an
@@ -1085,7 +1094,8 @@ function uncertaintyHTML(u,key){
 function intervalUncertainty(cal,o){
   if(!cal||!cal.config||!Number.isFinite(o.rawEstimatorValue))return null;
   const conf=cal.config,m=calibrateAbsolute(o.rawEstimatorValue,conf).valueMg,slope=Math.abs(calibrateAbsolute(o.rawEstimatorValue+.5,conf).valueMg-calibrateAbsolute(o.rawEstimatorValue-.5,conf).valueMg);
-  return computeUncertainty(conf.uncertainty,{massMg:m,sigmaMg:o.spreadMg,neff:o.neff,sigmaCounts:o.rawSpread,slopeMgPerCount:slope});
+  const tch=activeSensor?primaryTempChannel(activeSensor):null,ts=tch&&Number.isFinite(o.t0)?auxStatsRange(tch,o.t0,o.t1):null;
+  return computeUncertainty(conf.uncertainty,{massMg:m,sigmaMg:o.spreadMg,neff:o.neff,sigmaCounts:o.rawSpread,slopeMgPerCount:slope,char:conf.characterization,uc:useConditionsOf(activeSensor),tempStats:ts,calibrationProfileId:conf.profileId});
 }
 function updateMetrics(){
   if(!state.count)return;
@@ -1118,7 +1128,7 @@ function updateMetrics(){
   $('manualTareBtn').disabled=diagnostic;
   $('manualTareInput').disabled=diagnostic;
   { const up=calibration.uncertainty;
-    $('uncertaintyStatus').textContent=up&&up.status==='estimated'?`Measurement uncertainty: estimated from this calibration (${up.basis}) and shown as ± U (95 %) with measurements. Not traceable, not validated. Not included: ${(up.notIncluded||[]).join(', ')}.`
+    $('uncertaintyStatus').textContent=up&&up.status==='estimated'?`Measurement uncertainty: estimated from this calibration (${up.basis}) and shown as ± U (95 %) with measurements. Not traceable, not validated. Characterization: ${charSummaryText(calibration.characterization)}. Not included: ${charNotIncluded(up.notIncluded,calibration.characterization).join(', ')}.`
       :up&&up.status==='not-estimable'?`Measurement uncertainty: not estimated. ${up.reason||''}`
       :calibration.validation?.status==='validated'?'Measurement uncertainty: see calibration validation metadata.':'Measurement uncertainty: not characterized by the embedded demonstration calibration. Sensor spread is repeatability information, not a complete uncertainty statement.'; }
 }
@@ -1225,7 +1235,7 @@ function calculateSelection(first,end,settings={}){
   }
   const calFirst=calibrationAt(getTime(first)),calLast=calibrationAt(getTime(end-1));
   const analysis=analyzeInterval(first,end),acf=(analysis.checks||[]).find(c=>c.id==='autocorrelation');
-  const uncertainty=intervalUncertainty(calLast,{rawEstimatorValue,spreadMg,rawSpread,neff:acf&&Number.isFinite(acf.neff)?acf.neff:null});
+  const uncertainty=intervalUncertainty(calLast,{rawEstimatorValue,spreadMg,rawSpread,neff:acf&&Number.isFinite(acf.neff)?acf.neff:null,t0:getTime(first),t1:getTime(end-1)});
   return {
     originalValueMg,currentValueMg,rawEstimatorValue,spreadMg,rawSpread,usedSamples,totalSamples:total,rawMean,
     firstIndex:first,lastIndex:end-1,t0:getTime(first),t1:getTime(end-1),
@@ -1273,7 +1283,7 @@ function addTareEvent(tareMassMg,{method='manual',tareRaw=null,tareRawSamples=nu
   const event={type:'tare',eventId:`tare-${String(state.tareEvents.length+1).padStart(4,'0')}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,tareMassMg,tareRaw,method,sourceCount,outOfRangeCount,previousTareMassMg:previous?previous.tareMassMg:0,calibrationRevisionId:state.revisionId,tareRawSamples:tareRawSamples?Int32Array.from(tareRawSamples):null};
   // A new tare affects only future samples. Previously stored calibrated masses and
   // their tare-adjusted display values remain unchanged and can be reproduced from events.
-  cancelMeasurement('tare event');   // a tare changes the zero reference, so a running measurement would mix epochs
+  cancelMeasurement('tare event'); cancelCharRec('tare event');   // a tare changes the zero reference, so a running measurement would mix epochs
   state.tareEvents.push(event);
   // Reset the calibrated MA window so it does not mix values relative to two tare epochs.
   state.massSum=0;state.massSumSq=0;state.massCount=0;state.massRef=null;state.massEma=null;state.massEmaTime=null;state.rollingTareId=event.eventId;
@@ -1773,11 +1783,12 @@ function exportCSV(){
   if(!state.count)return;
   const csvField=v=>/[",\n\r]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':v;
   // Built in chunks of 20,000 rows so a multi-million-row export never needs one giant string array.
-  const parts=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range\n'];
+  const auxCh=attachedAux(activeSensor);
+  const parts=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range'+auxCh.map(c=>',aux_'+csvField(c.id)).join('')+'\n'];
   let rows=[];
   for(let i=0;i<state.count;i++){
     const time=getTime(i),event=tareEventAt(time),cal=calibrationAt(time),raw=getRaw(i);   // per-row: the calibration the sample was RECORDED with
-    rows.push([time,raw,getMassMg(i),event?event.tareMassMg:0,getNetMg(i),getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(cal.profileId),csvField(cal.revisionId),calibrateAbsolute(raw,cal.config).outOfRange?1:0].join(','));
+    rows.push([time,raw,getMassMg(i),event?event.tareMassMg:0,getNetMg(i),getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(cal.profileId),csvField(cal.revisionId),calibrateAbsolute(raw,cal.config).outOfRange?1:0].concat(auxCh.map(c=>{const v=auxValueAt(c,time);return Number.isFinite(v)?v:'';})).join(','));
     if(rows.length>=20000){parts.push(rows.join('\n')+'\n');rows=[];}
   }
   if(rows.length)parts.push(rows.join('\n')+'\n');
@@ -1802,6 +1813,7 @@ function applyBufferSize(){
     const cap=clamp(Math.floor(Number(choice)||100000),1000,2000000);
     if(cap!==state.capacity){if(state.measurement&&state.measurement.target>cap)cancelMeasurement('buffer limit reduced below the measurement size');resizeBuffers(cap);}
   }
+  for(const c of attachedAux(activeSensor)){c.unlimited=state.unlimited;if(!state.unlimited){const cap=Math.max(1000,Math.min(state.capacity,2000000));if(cap!==c.buf.cap){const nb=auxNewBuffer(cap),n=Math.min(c.buf.count,cap),sk=c.buf.count-n;for(let i=0;i<n;i++){const q=auxP(c.buf,sk+i);nb.t[i]=c.buf.t[q];nb.raw[i]=c.buf.raw[q];nb.id[i]=c.buf.id[q];nb.val[i]=c.buf.val[q];}nb.count=n;c.buf=nb;}}}
   $('windowInput').value=state.window;$('windowRange').value=windowToSlider(state.window);syncWindowSeconds();
   if(state.maRebuildTimer){clearTimeout(state.maRebuildTimer);state.maRebuildTimer=null;}rebuildDerived();scheduleRender();
 }
@@ -1857,6 +1869,19 @@ function validateCalibrationConfig(config){
   for(const key of['profileId','profileName'])if(typeof config[key]!=='string'||!config[key].trim())errors.push(`"${key}" must be a non-empty text.`);
   if(!UNIT_CONFIG.units.some(u=>u.id===config.calibrationUnit&&u.id!=='raw'))errors.push('"calibrationUnit" must be one of the supported mass units.');
   if(config.calibrationMethod!=='piecewise-linear')errors.push('Only calibrationMethod "piecewise-linear" is supported.');
+  for(const o of (Array.isArray(config.observations)?config.observations:[]))if(o&&o.purpose!=null&&!['calibration','eccentricity','creep','zero-drift'].includes(o.purpose))errors.push(`Observation "${o.observationId}": unknown purpose "${o.purpose}".`);
+  if(config.characterization!=null){
+    const c=config.characterization,fin=(v,l)=>{if(v!=null&&!Number.isFinite(v))errors.push(`characterization.${l} must be a number.`);};
+    if(typeof c!=='object'||Array.isArray(c))errors.push('"characterization" must be an object.');
+    else{
+      if(!['measured','partly measured','user-estimate','none'].includes(c.status))errors.push('characterization.status must be measured, partly measured, user-estimate or none.');
+      const srcOk=(t,l)=>{if(t&&t.source!=='measured'&&t.source!=='user-estimate')errors.push(`characterization.${l}.source must be "measured" or "user-estimate".`);};
+      const e=c.eccentricity;if(e){fin(e.fractionOfLoad,'eccentricity.fractionOfLoad');if(Number.isFinite(e.fractionOfLoad)&&e.fractionOfLoad<0)errors.push('characterization.eccentricity.fractionOfLoad must not be negative.');srcOk(e,'eccentricity');}
+      const k=c.creep;if(k){if(!Array.isArray(k.samples))errors.push('characterization.creep.samples must be a list.');else for(const q of k.samples){if(!q||!Number.isFinite(q.tS)||!Number.isFinite(q.fraction))errors.push('characterization.creep.samples: every entry needs tS and fraction as numbers.');}srcOk(k,'creep');}
+      const z=c.zeroDrift;if(z){fin(z.rateMgPerH,'zeroDrift.rateMgPerH');fin(z.seMgPerH,'zeroDrift.seMgPerH');srcOk(z,'zeroDrift');}
+      const t=c.temperature;if(t){for(const f of['referenceC','zeroMgPerK','zeroSe','spanPpmPerK','spanSe'])fin(t[f],'temperature.'+f);srcOk(t,'temperature');}
+    }
+  }
   const list=v=>Array.isArray(v)?v:[];
   const ids=(items,key,label)=>{const seen=new Set();for(const item of list(items)){const id=item&&item[key];if(seen.has(id))errors.push(`Duplicate ${label} "${id}".`);seen.add(id);}return seen;};
   const weightIds=ids(config.referenceWeights,'weightId','weightId');ids(config.referenceLoads,'loadId','loadId');
@@ -1888,7 +1913,7 @@ async function activateCalibration(config,source){
   if(config.contentHash&&fp.full&&config.contentHash!==fp.full)checked.warnings.push('The file’s contentHash does not match its content (edited after export?). The recalculated fingerprint is used.');
   CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
   state.calibrations.push({effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,hashType:fp.type,config:calibration,source});
-  cancelMeasurement('calibration changed');
+  cancelMeasurement('calibration changed'); cancelCharRec('calibration changed');
   addTareEvent(0,{method:'Tare reset · calibration changed'});
   appendLogEntry({type:'calibration',entryId:`calibration-${Date.now()}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,profileName:config.profileName,source});
   activeSensor.settings.calibrationFile=calName;
@@ -1938,7 +1963,7 @@ async function selectCalibrationFile(id,name){
 }
 function updateCalibrationInfo(){
   const weights=CALIBRATION.referenceWeights||[],count=state.calibrations.length;
-  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
+  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Characterization: ${esc(charSummaryText(CALIBRATION.characterization))}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
 }
 
 function initEvents(){
@@ -1971,6 +1996,8 @@ function initEvents(){
   $('themeBtn').addEventListener('click',()=>{setTheme(uiTheme!=='light');uiSaveSoon();});
   $('yResponseRange').addEventListener('input',e=>{$('yResponseText').textContent=`${e.target.value}%`;scheduleRender();});
   $('subPixelToggle').addEventListener('change',e=>setSubPixel(e.target.checked));
+  $('tempRateWindow').addEventListener('change',()=>scheduleRender());
+  $('auxToggles').addEventListener('change',e=>{const id=e.target&&e.target.dataset&&e.target.dataset.aux;if(!id)return;if(e.target.checked)state.auxHidden.delete(id);else state.auxHidden.add(id);scheduleRender();});
   ['zeroFillToggle','zeroRawFillToggle','zeroLineToggle','downsampleToggle'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='zeroLineToggle'){state.autoYMin=null;state.autoYMax=null;}scheduleRender();}));
   $('yControlsToggle').addEventListener('change',e=>{$('yControls').hidden=!e.target.checked;state.manualY=e.target.checked;if(state.manualY)initializeManualYAxis();else{state.autoYMin=null;state.autoYMax=null;}scheduleRender();});
   $('yMinRange').addEventListener('input',e=>{state.yMin=Number(e.target.value);$('yMinText').textContent=fmtNumber(state.yMin,3);if(state.manualY)scheduleRender();});$('yMaxRange').addEventListener('input',e=>{state.yMax=Number(e.target.value);$('yMaxText').textContent=fmtNumber(state.yMax,3);if(state.manualY)scheduleRender();});
@@ -2107,8 +2134,8 @@ function sensorStaleMs(s, nowWall) {
 }
 let housekeepingSig = '';
 function housekeeping() {
-  const now = performance.now(), sig = [...sensors.values()].map(s => sensorLink(s).key).join(',');
-  if (sig !== housekeepingSig) { housekeepingSig = sig; renderSensorSelect(); }
+  const now = performance.now(), sig = [...sensors.values()].map(s => sensorLink(s).key).join(',') + '|' + [...auxChannels.values()].map(c => auxLink(c).key).join(',');
+  if (sig !== housekeepingSig) { housekeepingSig = sig; renderSensorSelect(); renderAuxToggles(); }
   updateStatusUI(); updateOverloadBanner();
 }
 // ===== MULTI-SENSOR LAYER (v11) ======================================================================
@@ -2161,7 +2188,7 @@ function activateSensor(id){
   const next=sensors.get(id);if(!next||next===activeSensor)return;
   if(activeSensor){
     const old=activeSensor.state;
-    withState(old,()=>{if(old.maRebuildTimer){clearTimeout(old.maRebuildTimer);old.maRebuildTimer=null;if(old.derivedReady)rebuildDerived();}cancelMeasurement('another sensor was selected');});
+    withState(old,()=>{if(old.maRebuildTimer){clearTimeout(old.maRebuildTimer);old.maRebuildTimer=null;if(old.derivedReady)rebuildDerived();}cancelMeasurement('another sensor was selected');cancelCharRec('another sensor was selected');});
     old.hoverRange=null;hideEventTip();destroyCharts();
   }
   activeSensor=next;state=next.state;CALIBRATION=state.calConfig;calibration=state.calPrepared;RATE_HZ=state.rateHz;PERIOD_MS=1000/RATE_HZ;
@@ -2190,7 +2217,7 @@ function syncUIFromState(){
   $('measRateText').textContent=String(RATE_HZ);syncMeasurementInputs('samples');
   setSelectMode(false);
   if(state.selection)updateSelectionReadout();else $('selectionSummary').innerHTML=SELECTION_DEFAULT_HTML;
-  renderLog();updateCalibrationInfo();updateStatusUI();renderSensorSelect();updateViewLabel();updateMeasurementUI();
+  renderLog();updateCalibrationInfo();updateStatusUI();renderSensorSelect();updateViewLabel();updateMeasurementUI();renderAuxToggles();
 }
 function setSubPixel(on){subPixel=!!on;const t=$('subPixelToggle');if(t)t.checked=subPixel;if(state&&state.mainPlot){destroyCharts();createCharts();}scheduleRender();}
 function setBandMode(m){bandMode=BAND_MODES[m]?m:'symmetric';if(state){state.curveCache={key:'',map:new Map()};recreateMainChart();}const s=$('bandModeSelect');if(s)s.value=bandMode;scheduleRender();}
@@ -2199,7 +2226,7 @@ function setBandMode(m){bandMode=BAND_MODES[m]?m:'symmetric';if(state){state.cur
 // scope 'all' : additionally tares, log, measurements, overload events, gaps. Calibrations are never touched.
 function clearSensorData(sensor,scope){
   const st=sensor.state;
-  if(sensor===activeSensor)cancelMeasurement('charts cleared');
+  if(sensor===activeSensor){cancelMeasurement('charts cleared');cancelCharRec('charts cleared');}
   withState(st,()=>{
     state.count=0;state.head=0;state.appended=0;state.unprocessed=0;
     state.rawSum=state.rawSumSq=state.rawCount=0;state.rawRef=null;state.massSum=state.massSumSq=state.massCount=0;state.massRef=null;
@@ -2215,8 +2242,8 @@ function clearSensorData(sensor,scope){
 }
 function uiConfirm(text){return typeof confirm==='function'?confirm(text):true;}
 function clearCharts(){if(uiConfirm('Clear the chart data of the shown sensor? Calibration, tares and the log stay.'))clearSensorData(activeSensor,'data');}
-function clearAllCharts(){if(uiConfirm('Clear the chart data of ALL sensors? Calibrations, tares and logs stay.'))for(const s of sensors.values())clearSensorData(s,'data');}
-function clearAll(){if(uiConfirm('Clear EVERYTHING of ALL sensors: chart data, tares, logs, measurements and overload events? Calibrations stay.'))for(const s of sensors.values())clearSensorData(s,'all');}
+function clearAllCharts(){if(uiConfirm('Clear the chart data of ALL sensors and auxiliary channels? Calibrations, tares and logs stay.')){for(const s of sensors.values())clearSensorData(s,'data');for(const c of auxChannels.values())auxClear(c);}}
+function clearAll(){if(uiConfirm('Clear EVERYTHING of ALL sensors: chart data, tares, logs, measurements and overload events? Calibrations stay.')){for(const s of sensors.values())clearSensorData(s,'all');for(const c of auxChannels.values())auxClear(c);}}
 function setNavPanelVisible(on){$('navPanel').hidden=!on;$('sidePanels').classList.toggle('nav-hidden',!on);$('navPanelToggle').checked=on;}
 
 // ---- pause, links, status -----------------------------------------------------------------------
@@ -2237,7 +2264,7 @@ function updateStatusUI(){
   const s=activeSensor,link=sensorLink(s),all=[...sensors.values()],live=all.filter(x=>sensorLink(x).key==='live').length;
   $('statusText').textContent=link.text+(chartsPending?' · loading chart':'')+(all.length>1?` · ${live} of ${all.length} sensors streaming`:'');
   $('statusDot').classList.toggle('paused',link.key!=='live');
-  const anyOn=all.some(x=>!x.state.paused&&!x.unlisted);
+  const anyOn=all.some(x=>!x.state.paused&&!x.unlisted)||[...auxChannels.values()].some(c=>!c.paused&&!c.unlisted);
   $('pauseBtn').textContent=s.state.paused?'▶ Resume':'Ⅱ Pause';
   $('pauseAllBtn').textContent=anyOn?'Ⅱ Pause all':'▶ Resume all';
 }
@@ -2252,8 +2279,9 @@ function setSensorPaused(s,paused,quiet=false){
 }
 // Pause all / resume all. If anything is recording, everything is paused; otherwise everything resumes.
 function pauseAllToggle(){
-  const anyRunning=[...sensors.values()].some(s=>!s.state.paused);
+  const anyRunning=[...sensors.values()].some(s=>!s.state.paused)||[...auxChannels.values()].some(c=>!c.paused);
   for(const s of sensors.values())setSensorPaused(s,anyRunning,true);
+  for(const c of auxChannels.values())setAuxPaused(c,anyRunning,true);
   syncConnections();renderSensorSelect();updateStatusUI();
 }
 
@@ -2271,6 +2299,7 @@ const sseStats={unknown:0,bad:0};
 function wantedConnections(){
   const want=new Map();
   for(const s of sensors.values()){if(s.kind!=='server'||s.unlisted||s.state.paused||!s.sseUrl)continue;if(!want.has(s.sseUrl))want.set(s.sseUrl,new Set());want.get(s.sseUrl).add(s.id);}
+  for(const c of auxChannels.values()){if(c.unlisted||c.paused||!c.sseUrl)continue;if(!want.has(c.sseUrl))want.set(c.sseUrl,new Set());want.get(c.sseUrl).add(c.id);}
   return want;
 }
 function syncConnections(){
@@ -2295,11 +2324,12 @@ function handleSseMessage(url,data){
   let touched=false;
   for(const it of items){
     const s=it&&sensors.get(String(it.id));
-    if(!s||s.kind!=='server'||s.sseUrl!==url){sseStats.unknown++;continue;}
+    if(!s){const ac=it&&auxChannels.get(String(it.id));if(ac&&ac.sseUrl===url){handleAuxSample(ac,it);continue;}sseStats.unknown++;continue;}
+    if(s.kind!=='server'||s.sseUrl!==url){sseStats.unknown++;continue;}
     const raw=Math.round(Number(it.raw)),t=Number(it.t);
     if(!Number.isFinite(raw)||!Number.isFinite(t)){s.state.rejected++;continue;}
     if(s.state.paused){s.state.dropped++;continue;}
-    if(s.state.timeOrigin==null)s.state.timeOrigin=t;
+    if(s.state.timeOrigin==null)s.state.timeOrigin=claimDeviceOrigin(deviceIdOf(s),t);
     const sid=it.n==null?undefined:Number(it.n);
     if(ingestSample(s,raw,t-s.state.timeOrigin,false,sid)&&s===activeSensor)touched=true;
   }
@@ -2311,7 +2341,7 @@ function handleSseMessage(url,data){
 // SSE URL and details are updated. New ids are added. Sensors missing from the new list are NOT deleted:
 // they are marked 'not in list', stop receiving data and keep what was collected.
 function applySensorList(list){
-  const result={added:[],updated:[],unlisted:[],errors:[]};
+  const result={added:[],updated:[],unlisted:[],errors:[],auxAdded:[],auxUpdated:[],auxUnlisted:[]};
   const entries=Array.isArray(list)?list:(list&&Array.isArray(list.sensors)?list.sensors:null);
   if(!entries){result.errors.push('The sensor list must be a JSON array (or an object with a "sensors" array).');return result;}
   const seen=new Set();
@@ -2320,16 +2350,19 @@ function applySensorList(list){
     if(!id){result.errors.push('An entry without an id was skipped.');continue;}
     if(id===TEST_SENSOR_ID){result.errors.push(`The id "${id}" is reserved for the test signal.`);continue;}
     if(seen.has(id)){result.errors.push(`Duplicate id "${id}" skipped.`);continue;}
+    if(e.kind!=null&&e.kind!=='loadcell'){if(applyAuxEntry(e,id,result))seen.add(id);continue;}
+    if(auxChannels.has(id)){result.errors.push(`The id "${id}" is already an auxiliary channel.`);continue;}
     const url=String(e.sseUrl??e.sse_url??'').trim();
     if(url){try{const u=new URL(url,typeof location!=='undefined'?location.href:'http://localhost/');if(!/^https?:$/.test(u.protocol))throw new Error();}catch(_){result.errors.push(`Sensor "${id}": invalid SSE URL, skipped.`);continue;}}
     seen.add(id);
     const name=typeof e.name==='string'&&e.name.trim()?e.name.trim():id;
     const known=sensors.get(id);
-    if(known){known.name=name;known.sseUrl=url||null;if(typeof e.historyUrl==='string'&&e.historyUrl.trim())known.historyUrl=e.historyUrl.trim();known.details={...known.details,...(e.details||{})};known.unlisted=false;result.updated.push(id);}
-    else{const s=makeSensor({id,name,kind:'server',sseUrl:url||null,historyUrl:typeof e.historyUrl==='string'&&e.historyUrl.trim()?e.historyUrl.trim():null,details:e.details,rateHz:Number(e.rateHz)});if(embeddedFp)initSensorCalibration(s.state,embeddedFp);result.added.push(id);}
+    if(known){known.name=name;known.sseUrl=url||null;if(typeof e.historyUrl==='string'&&e.historyUrl.trim())known.historyUrl=e.historyUrl.trim();known.details={...known.details,...(e.details||{})};known.unlisted=false;if(typeof e.deviceId==='string'&&e.deviceId.trim())known.deviceId=e.deviceId.trim();result.updated.push(id);}
+    else{const s=makeSensor({id,name,kind:'server',sseUrl:url||null,historyUrl:typeof e.historyUrl==='string'&&e.historyUrl.trim()?e.historyUrl.trim():null,details:e.details,deviceId:typeof e.deviceId==='string'&&e.deviceId.trim()?e.deviceId.trim():null,rateHz:Number(e.rateHz)});if(embeddedFp)initSensorCalibration(s.state,embeddedFp);result.added.push(id);}
   }
   for(const s of sensors.values())if(s.kind==='server'&&!seen.has(s.id)&&!s.unlisted){s.unlisted=true;result.unlisted.push(s.id);}
-  syncConnections();renderSensorSelect();updateStatusUI();
+  for(const c of auxChannels.values())if(!seen.has(c.id)&&!c.unlisted){c.unlisted=true;result.auxUnlisted.push(c.id);}
+  syncConnections();renderSensorSelect();updateStatusUI();renderAuxToggles();
   updateSourceNote();
   return result;
 }
@@ -2358,8 +2391,8 @@ function initSensorCalibration(st,fp){
 const UI_SETTINGS_URL = null;
 const SENSOR_SETTINGS_URL = null;
 const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
-const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false });
-const UI_CONTROL_IDS = new Set(['wizMode', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
+const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false, tempRateWindowS: 60 });
+const UI_CONTROL_IDS = new Set(['wizMode', 'tempRateWindow', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
 let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = UI_SETTINGS_URL ? 'not loaded yet' : 'not configured';
 const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
 
@@ -2373,12 +2406,13 @@ function sanitizeUiSettings(o) {
     if (o[k] !== undefined) { if (typeof o[k] === 'boolean') out[k] = o[k]; else errors.push(`${k} must be true or false.`); }
   if (o.wizardMode !== undefined) { if (o.wizardMode === 'simple' || o.wizardMode === 'advanced') out.wizardMode = o.wizardMode; else errors.push('wizardMode must be "simple" or "advanced".'); }
   if (o.bandMode !== undefined) { if (BAND_MODES[o.bandMode]) out.bandMode = o.bandMode; else errors.push('bandMode must be "symmetric", "asymmetric" or "stepaware".'); }
+  if (o.tempRateWindowS !== undefined) { if (Number.isFinite(o.tempRateWindowS)) out.tempRateWindowS = clamp(Math.round(o.tempRateWindowS), 5, 3600); else errors.push('tempRateWindowS must be a number.'); }
   if (o.yResponsePercent !== undefined) { if (Number.isFinite(o.yResponsePercent)) out.yResponsePercent = clamp(Math.round(o.yResponsePercent), 1, 100); else errors.push('yResponsePercent must be a number.'); }
   return { value: errors.length ? null : out, errors };
 }
 function collectUiSettings() {
   return { schemaVersion: 1, theme: uiTheme, navPanelVisible: !$('navPanel').hidden, yResponsePercent: clamp(Math.round(Number($('yResponseRange').value) || 5), 1, 100),
-    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode, subPixel };
+    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode, subPixel, tempRateWindowS: auxRateWindowS() };
 }
 function setTheme(light) {
   uiTheme = light ? 'light' : 'dark';
@@ -2395,6 +2429,7 @@ function applyUiSettings(s) {
   if (state) { state.autoYMin = null; state.autoYMax = null; }
   subPixel = !!s.subPixel; { const t = $('subPixelToggle'); if (t) t.checked = subPixel; }
   setBandMode(s.bandMode || 'symmetric');
+  $('tempRateWindow').value = s.tempRateWindowS || AUX_RATE_WINDOW_DEFAULT_S;
   scheduleRender();
 }
 function uiLocalRead() { try { if (typeof localStorage === 'undefined') return null; const t = localStorage.getItem(UI_LOCAL_KEY); return t ? sanitizeUiSettings(JSON.parse(t)).value : null; } catch (_) { return null; } }
@@ -2457,10 +2492,11 @@ function initUiSettings() {
 // ---- sensor settings -------------------------------------------------------------------------------------
 // One document for all server sensors (the test signal has no settings). The nominal rate can be changed
 // locally only while the sensor has no samples: every statistic of the stored samples assumes it.
-let ssSelectedId = null;
+let ssSelectedId = null, ssAuxId = null;
 function sensorSettingsDoc() {
   return { schemaVersion: 1, generatedAt: new Date().toISOString(),
-    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '', calibrationFile: s.settings.calibrationFile || null, overload: overloadDoc(s) })) };
+    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '', calibrationFile: s.settings.calibrationFile || null, overload: overloadDoc(s), useConditions: s.settings.useConditions ? { ...s.settings.useConditions } : null })),
+    auxChannels: [...auxChannels.values()].map(c => ({ id: c.id, name: c.name, kind: c.kind, conversion: c.userConversion || null })) };
 }
 function sensorSettingsRender() {
   const server = [...sensors.values()];   // v15: the test signal is listed too (overload and calibration file apply to it as well)
@@ -2483,6 +2519,11 @@ function sensorSettingsRender() {
   for (const e of calLibrary.values()) if (e.sensorId === s.id) addOpt(e.name, `${e.name} (${e.profileName})`);
   const want = s.settings.calibrationFile || ''; if (want && !calLibrary.has(want)) addOpt(want, `${want} (file not loaded)`);
   cs.value = want;
+  const uc = useConditionsOf(s); $('ssReadDelay').value = uc.readingDelayS; $('ssSessionS').value = uc.sessionSinceTareS; $('ssTempDelta').value = uc.temperatureDeltaK;
+  const pt = $('ssPrimaryTemp'); pt.innerHTML = ''; { const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'first attached channel'; pt.appendChild(o0); for (const c of attachedAux(s, 'temperature')) { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; pt.appendChild(o); } pt.value = uc.primaryTemperature || ''; }
+  $('ssUseNote').textContent = useConditionsNote(s);
+  const alist = [...auxChannels.values()]; $('ssAuxBox').hidden = !alist.length;
+  if (alist.length) { if (!ssAuxId || !auxChannels.has(ssAuxId)) ssAuxId = alist[0].id; const as = $('ssAuxSelect'); as.innerHTML = ''; for (const c of alist) { const o = document.createElement('option'); o.value = c.id; o.textContent = `${c.name} (${c.kind})`; as.appendChild(o); } as.value = ssAuxId; const ac = auxChannels.get(ssAuxId); $('ssAuxConv').value = JSON.stringify(auxConversion(ac)); $('ssAuxInfo').textContent = `${ac.userConversion ? 'your correction is active' : 'firmware conversion'} · unit ${ac.unit || '—'} · attached to ${ac.attachedTo.join(', ') || 'no sensor'} · ${ac.buf.count.toLocaleString()} samples${ac.invalid ? ` · ${ac.invalid} invalid` : ''} · ${historyStatusText(ac)}`; }
 }
 function ssReadOverload() {
   const v = id => $(id).value, nn = id => (v(id) === '' ? null : Number(v(id))), u = v('ssLoadUnit') || 'g';
@@ -2499,8 +2540,10 @@ async function applySensorSettingsDoc(doc) {
     if (typeof e.name === 'string' && e.name.trim()) s.name = e.name.trim();
     if (typeof e.notes === 'string') s.settings.notes = e.notes;
     if (e.overload) { const r = overloadApplySettings(s, e.overload); if (r.errors.length) msgs.push(`${s.name}: overload settings not applied (${r.errors.join(' ')})`); }
+    if (e.useConditions) { const r = applyUseConditions(s, e.useConditions); if (r.errors.length) msgs.push(`${s.name}: use conditions not applied (${r.errors.join(' ')})`); }
     if (typeof e.calibrationFile === 'string' && e.calibrationFile) msgs.push(`${s.name}: ${await selectCalibrationFile(s.id, e.calibrationFile)}`);
   }
+  if (Array.isArray(doc.auxChannels)) for (const e of doc.auxChannels) { const c = e && auxChannels.get(String(e.id)); if (!c) { msgs.push(`Channel “${e && e.id}” is not in the sensor list: skipped.`); continue; } const er = auxSetUserConversion(c, e.conversion == null ? null : e.conversion); if (er.length) msgs.push(`${c.name}: conversion not applied (${er.join(' ')})`); }
   if (activeSensor !== shown && sensors.has(shown.id)) activateSensor(shown.id);
   renderSensorSelect(); sensorSettingsRender();
   return msgs.length ? msgs : ['sensor_settings.json applied.'];
@@ -2511,6 +2554,7 @@ async function sensorSettingsApply() {
   const rate = Number($('ssRate').value);
   if (s.kind === 'server' && s.state.count === 0 && !(rate > 0 && rate <= 10000)) { ssMsg('The nominal rate must be between 0 and 10,000 Hz.'); return; }
   { const ovr = overloadApplySettings(s, ssReadOverload()); if (ovr.errors.length) { ssMsg('Not applied: ' + ovr.errors.join(' ')); return; } }
+  { const r = applyUseConditions(s, { readingDelayS: $('ssReadDelay').value, sessionSinceTareS: $('ssSessionS').value, temperatureDeltaK: $('ssTempDelta').value, primaryTemperature: $('ssPrimaryTemp').value }); if (r.errors.length) { ssMsg('Not applied: ' + r.errors.join(' ')); return; } }
   s.name = ($('ssName').value || '').trim() || s.id; s.settings.notes = $('ssNotes').value || '';
   if (s.kind === 'server' && s.state.count === 0 && rate !== s.state.rateHz) {
     s.state.rateHz = rate;
@@ -2540,6 +2584,9 @@ function initSettingsMenu() {
   $('smTab_ui').addEventListener('click', () => settingsMenuTab('ui')); $('smTab_sensor').addEventListener('click', () => settingsMenuTab('sensor'));
   $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
   $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
+  $('ssAuxSelect').addEventListener('change', e => { ssAuxId = e.target.value; sensorSettingsRender(); });
+  $('ssAuxApply').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; let conv; try { conv = JSON.parse($('ssAuxConv').value); } catch (err) { ssMsg(`The conversion is not valid JSON: ${err.message}`); return; } const er = auxSetUserConversion(c, conv); ssMsg(er.length ? 'Not applied: ' + er.join(' ') : 'Conversion applied to the stored samples of this channel. “Download sensor_settings.json” keeps it.'); sensorSettingsRender(); scheduleRender(); });
+  $('ssAuxReset').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; auxSetUserConversion(c, null); ssMsg('The firmware conversion is used again.'); sensorSettingsRender(); scheduleRender(); });
   { const u = $('ssLoadUnit'); if (u) for (const x of UNIT_CONFIG.units.filter(x => x.id !== 'raw')) { const o = document.createElement('option'); o.value = x.id; o.textContent = x.symbol; u.appendChild(o); } }
   $('ssCalFile').addEventListener('change', async e => { ssMsg(await selectCalibrationFile(ssSelectedId, e.target.value)); sensorSettingsRender(); });
   $('ssLoadBtn').addEventListener('click', () => $('ssFile').click());
@@ -2782,7 +2829,7 @@ function wizObsWeightId(load) { return load.weightRef || (load.components.length
 function wizPoints(W, opts = {}) {
   const points = [], errors = [], use = opts.all ? 'both' : (W.hysteresisUse || 'both');
   for (const o of W.observations) {
-    if (!o.include) continue;
+    if (!o.include || !isCalObs(o)) continue;
     if (use !== 'both' && (o.loadingDirection || 'up') !== use) continue;
     const load = W.loads.find(l => l.loadId === o.loadId);
     if (!load) { errors.push(`Observation ${o.observationId} refers to a missing load.`); continue; }
@@ -2807,7 +2854,7 @@ function weightGroupStats(W, fit) {
     const members = W.weights.filter(w => w.groupId === g.groupId), res = { groupId: g.groupId, name: g.name, a: 0, N: 0, reason: '', members: [] };
     const per = members.map(w => {
       const raws = [];
-      for (const o of W.observations) { if (!o.include || !Number.isFinite(o.rawMean)) continue; const l = W.loads.find(x => x.loadId === o.loadId); if (l && wizObsWeightId(l) === w.weightId) raws.push(o.rawMean); }
+      for (const o of W.observations) { if (!o.include || !isCalObs(o) || !Number.isFinite(o.rawMean)) continue; const l = W.loads.find(x => x.loadId === o.loadId); if (l && wizObsWeightId(l) === w.weightId) raws.push(o.rawMean); }
       return { w, raws };
     });
     res.members = per.map(p => ({ weightId: p.w.weightId, name: p.w.name, n: p.raws.length, meanRaw: p.raws.length ? mean(p.raws) : null, relMassMg: null, relMassSeMg: null }));
@@ -2857,7 +2904,7 @@ function parseWeightSpec(text) {
 const numOrNull = v => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
   const unit = W.profile.unit, pad = (n, w) => String(n).padStart(w, '0'), stats = extra.groupStats || [];
-  const included = W.observations.filter(o => o.include), groups = W.groups || [];
+  const included = wizCalObs(W).filter(o => o.include), groups = W.groups || [];
   const anchors = fit.anchors.map((a, i) => {
     const base = { anchorId: `anchor-${pad(i, 3)}`, referenceValue: mgToUnit(a.massMg, unit), referenceUnit: unit, rawMean: a.raw };
     if (fit.model === 'anchors') return { ...base, sourceObservationIds: a.sourceIds, aggregationMethod: a.count > 1 ? 'arithmetic-mean-of-observation-raw-means' : 'single-observation', replicateCount: a.count };
@@ -2866,7 +2913,7 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
   const rel = id => { for (const s of stats) { const m = s.members.find(x => x.weightId === id); if (m && m.relMassMg != null) return { valueMg: m.relMassMg, standardErrorMg: m.relMassSeMg, basis: 'sensor comparison within the weight group; approximate' }; } return null; };
   const w5 = v => (Number.isFinite(v) ? v : null);
   return {
-    schemaVersion: 1, sensorId: W.sensorId || null, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '13.0-wizard',
+    schemaVersion: 1, sensorId: W.sensorId || null, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '16.0-wizard',
     calibrationUnit: unit, calibrationMethod: 'piecewise-linear',
     sensor: { model: W.profile.sensorModel || '', hardwareId: W.sensorId || '', adcResolutionBits: null, samplingRateHz: W.rateHz || null },
     environment: { temperatureC: numOrNull(W.profile.temperatureC), relativeHumidityPercent: numOrNull(W.profile.humidityPercent), notes: W.profile.notes || '' },
@@ -2881,7 +2928,8 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
       const v = o.validity || {};
       const r = { observationId: o.observationId, weightId: wizObsWeightId(W.loads.find(l => l.loadId === o.loadId) || { components: [] }), loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId, placementIndex: o.placementIndex, removedAndReplaced: !!o.removedAndReplaced, loadingDirection: o.loadingDirection || null,
         rawMean: o.rawMean, rawStdDev: o.rawStdDev, rawMedian: o.rawMedian, rawMAD: o.rawMAD, sampleCount: o.sampleCount, durationMs: o.durationMs, outlierMethod: null,
-        validityStatus: v.status || 'n/a', validityFlags: v.flagged || [], included: !!o.include };
+        validityStatus: v.status || 'n/a', validityFlags: v.flagged || [], included: !!o.include, purpose: o.purpose || 'calibration' };
+      if (o.position) r.position = o.position; if (o.series) r.series = o.series; if (o.settleS != null) r.settleS = o.settleS; if (o.temperatures) r.temperatures = o.temperatures; if (o.recordedUnderRevision) r.recordedUnderRevision = o.recordedUnderRevision;
       if (v.analysis && v.analysis.checks) r.validityChecks = v.analysis.checks;
       if (!o.include) { r.excluded = true; r.exclusionReason = o.exclusionReason || 'excluded in the fitting editor'; }
       else if (o.override) { r.overrideReason = o.override.reason; r.overrideAt = o.override.at; }
@@ -2900,6 +2948,7 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
       hysteresisUse: W.hysteresisUse || 'both',
       overriddenObservations: included.filter(o => o.override).map(o => o.observationId) },
     ...(extra.uncertainty ? { uncertainty: extra.uncertainty } : {}),
+    ...(extra.characterization ? { characterization: extra.characterization } : {}),
     validation: { status: 'not-characterized', method: null, checks: [{ id: 'fit-residuals', status: 'informational', note: 'observed scatter of the observations around the model; not an uncertainty' }], modelUncertainty: null },
     reserved: { warmUpDurationSeconds: numOrNull(W.profile.warmUpMinutes) == null ? null : numOrNull(W.profile.warmUpMinutes) * 60, loadApproach: 'not-recorded',
       loadingDirection: W.observations.some(o => o.loadingDirection) ? (W.hysteresisUse || 'both') : 'not-determined', hysteresisAnalysis: extra.hysteresis || null, temperatureCompensation: null, humidityCompensation: null }
@@ -2919,11 +2968,11 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
 let wizMode = 'simple';
 const SIMPLE_CAPTURE_SECONDS = 10, SIMPLE_PLACEMENTS = 3, SIMPLE_PLACEMENTS_MIN = 2, SIMPLE_PLACEMENTS_MAX = 10, SIMPLE_LINEAR_TOL = 0.005;   // Simple mode: recording length; placements per mass; "straight line" if no residual exceeds 0.5 % of the mass span
 const wiz = { open: false, tab: 'weights', minimised: false, sensorId: null, rateHz: null, profile: null, weights: [], groups: [], loads: [], observations: [], runId: null,
-  captureSeconds: 10, capture: null, fitModel: 'anchors', weighting: 'equal', message: '', selLoad: null, replaced: true, nextNum: 1, comboOpen: false, comboPick: {}, manualOpen: false, simpleSpec: null, placements: 3, returnRun: false, hysteresisUse: 'both', direction: null };
+  captureSeconds: 10, capture: null, fitModel: 'anchors', weighting: 'equal', message: '', selLoad: null, replaced: true, nextNum: 1, comboOpen: false, comboPick: {}, manualOpen: false, simpleSpec: null, placements: 3, returnRun: false, hysteresisUse: 'both', direction: null, char: null };
 const WIZ_EMPTY_WEIGHT = () => ({ weightId: 'ref-empty', name: 'Empty platform / zero reference', nominalMass: 0, assignedMass: null, unit: 'g', referenceUncertainty: null, groupId: null });
 function wizNew() {
   Object.assign(wiz, { tab: 'weights', profile: { profileId: `scale-profile-${wizStamp()}`, profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '', temperatureC: '', humidityPercent: '', warmUpMinutes: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', weighting: 'equal', message: '',
-    weights: [WIZ_EMPTY_WEIGHT()], groups: [], loads: [], comboOpen: false, comboPick: {}, runId: `run-${wizStamp()}`, selLoad: null, simpleSpec: null, returnRun: false, hysteresisUse: 'both', direction: null });
+    weights: [WIZ_EMPTY_WEIGHT()], groups: [], loads: [], comboOpen: false, comboPick: {}, runId: `run-${wizStamp()}`, selLoad: null, simpleSpec: null, returnRun: false, hysteresisUse: 'both', direction: null, char: wizCharNew() });
   wizSyncLoads(); wiz.selLoad = wiz.loads[0].loadId;
 }
 // Every weight has an automatic single-weight load; the empty platform has none (components: []). Also keeps the group membership consistent.
@@ -2970,11 +3019,12 @@ function wizLoadFromConfig(cfg) {
     return { observationId: o.observationId, loadId: o.loadId, recordedAt: o.recordedAt, placementRunId: o.placementRunId || 'imported', placementIndex: o.placementIndex || 0, removedAndReplaced: !!o.removedAndReplaced,
       loadingDirection: o.loadingDirection === 'up' || o.loadingDirection === 'down' ? o.loadingDirection : null, rawMean: Number(o.rawMean), rawStdDev: num(o.rawStdDev), rawMedian: num(o.rawMedian), rawMAD: num(o.rawMAD), sampleCount: num(o.sampleCount), durationMs: num(o.durationMs),
       validity: { status: st, flagged: o.validityFlags || [], analysis: Array.isArray(o.validityChecks) ? { status: st, analyzedN: num(o.sampleCount) || 0, note: '', checks: o.validityChecks } : null },
-      include, exclusionReason: o.exclusionReason, override: include && o.overrideReason ? { reason: o.overrideReason, at: o.overrideAt || null } : undefined, source: 'imported' };
+      include, exclusionReason: o.exclusionReason, override: include && o.overrideReason ? { reason: o.overrideReason, at: o.overrideAt || null } : undefined, source: 'imported',
+      purpose: ['eccentricity', 'creep', 'zero-drift'].includes(o.purpose) ? o.purpose : 'calibration', position: o.position || null, series: Array.isArray(o.series) ? o.series : null, settleS: num(o.settleS), temperatures: o.temperatures && typeof o.temperatures === 'object' ? o.temperatures : null, recordedUnderRevision: o.recordedUnderRevision || null };
   });
   wiz.fitModel = (cfg.fit && FIT_MODELS[cfg.fit.model]) ? cfg.fit.model : 'anchors';
   wiz.weighting = (cfg.fit && cfg.fit.weighting && WEIGHTINGS[cfg.fit.weighting.requested]) ? cfg.fit.weighting.requested : 'equal';
-  wiz.hysteresisUse = cfg.fit && ['both', 'up', 'down'].includes(cfg.fit.hysteresisUse) ? cfg.fit.hysteresisUse : 'both'; wiz.direction = null;
+  wiz.hysteresisUse = cfg.fit && ['both', 'up', 'down'].includes(cfg.fit.hysteresisUse) ? cfg.fit.hysteresisUse : 'both'; wiz.direction = null; wiz.char = wizCharFromConfig(cfg);
   wiz.comboOpen = false; wiz.comboPick = {}; wiz.runId = `run-${wizStamp()}`; wiz.nextNum = wiz.weights.length + 1; wiz.capture = null; wiz.tab = wizMode === 'simple' ? 'review' : 'fit';
   wizSyncLoads();
 }
@@ -2984,6 +3034,7 @@ function wizLoadMassSafe(load) { try { return wizLoadMassMg(wiz, load); } catch 
 function wizBlock() {
   if (wiz.sensorId !== activeSensor.id) return 'The wizard belongs to another sensor than the one shown. Select that sensor or use “Use the shown sensor”.';
   if (state.measurement) return 'A measurement is running; wait for it to finish or cancel it.';
+  if (state.charRec) return 'A recording is running; wait for it to finish or cancel it.';
   return '';
 }
 // ---- Simple mode: weights from a typed list, the placement plan, plain-language wording ------------------------------
@@ -3008,7 +3059,7 @@ function wizPlan() {
     const w = wiz.weights.find(x => x.weightId === l.weightRef); if (!w) continue;
     let req = P;
     if (w.groupId) { const mem = wiz.weights.filter(x => x.groupId === w.groupId), k = mem.length, idx = mem.indexOf(w); req = Math.floor(P / k) + (idx < P % k ? 1 : 0); }
-    rows.push({ load: l, req, done: wiz.observations.filter(o => o.loadId === l.loadId && o.loadingDirection !== 'down').length, mass: wizLoadMassSafe(l), direction: 'up' });
+    rows.push({ load: l, req, done: wizCalObs(wiz).filter(o => o.loadId === l.loadId && o.loadingDirection !== 'down').length, mass: wizLoadMassSafe(l), direction: 'up' });
   }
   rows.sort((a, b) => a.mass - b.mass);
   return rows;
@@ -3020,7 +3071,7 @@ function wizPlanDown() {
   for (const l of wiz.loads) { if (!l.auto) continue; const m = wizLoadMassSafe(l); if (!Number.isFinite(m)) continue; const k = fitKey(m); if (!by.has(k)) by.set(k, []); by.get(k).push(l); }
   const rows = [];
   for (const [k, ls] of by) {
-    const cnt = l => wiz.observations.filter(o => o.loadId === l.loadId && o.loadingDirection === 'down').length, pick = ls.slice().sort((a, b) => cnt(a) - cnt(b))[0], done = ls.reduce((s, l) => s + cnt(l), 0);
+    const cnt = l => wizCalObs(wiz).filter(o => o.loadId === l.loadId && o.loadingDirection === 'down').length, pick = ls.slice().sort((a, b) => cnt(a) - cnt(b))[0], done = ls.reduce((s, l) => s + cnt(l), 0);
     rows.push({ load: pick, req: 1, done, mass: wizLoadMassSafe(pick), direction: 'down' });
   }
   return rows.sort((a, b) => b.mass - a.mass);
@@ -3039,24 +3090,26 @@ function compactAnalysis(an) {
   return { status: an.status, analyzedN: an.analyzedN || 0, note: an.note || '', checks: (an.checks || []).map(c => ({ id: c.id, label: c.label, verdict: c.verdict, valueText: c.valueText || '', detail: c.detail || '',
     threshold: { warn: c.threshold && c.threshold.warn != null ? c.threshold.warn : null, fail: c.threshold && c.threshold.fail != null ? c.threshold.fail : null, failText: c.threshold && c.threshold.failText || undefined, direction: c.threshold && c.threshold.direction || undefined } })) };
 }
-function wizObservationFromRange(first, end, loadId, source, direction = null) {
+function wizObservationFromRange(first, end, loadId, source, direction = null, purpose = 'calibration', position = null) {
   const raws = new Array(end - first); for (let i = first; i < end; i++) raws[i - first] = getRaw(i);
-  const st = rawStats(raws), an = analyzeInterval(first, end);
-  const flagged = (an.checks || []).filter(c => c.verdict === 'suspect' || c.verdict === 'invalid').map(c => c.label.split(' / ')[0]);
+  const st = rawStats(raws), an = analyzeInterval(first, end), status = charStatus(an, purpose);
+  const flagged = charRelevantChecks(an, purpose).filter(c => c.verdict === 'suspect' || c.verdict === 'invalid').map(c => c.label.split(' / ')[0]);
   return { observationId: wizNextObsId(), loadId, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: wiz.replaced, loadingDirection: direction,
     rawMean: st.mean, rawStdDev: st.sd, rawMedian: st.median, rawMAD: st.mad, sampleCount: st.n, durationMs: getTime(end - 1) - getTime(first) + PERIOD_MS,
-    validity: { status: an.status, flagged, analysis: compactAnalysis(an) }, include: an.status !== 'invalid', exclusionReason: an.status === 'invalid' ? 'validity check: invalid' : undefined, source };
+    validity: { status, flagged, analysis: compactAnalysis(an) }, include: status !== 'invalid', exclusionReason: status === 'invalid' ? 'validity check: invalid' : undefined, source,
+    purpose, position, series: null, settleS: null, temperatures: auxTemperaturesFor(activeSensor, getTime(first), getTime(end - 1)), recordedUnderRevision: state.revisionId };
 }
-function wizRecord() {
+function wizRecord(opts = {}) {
   const why = wizBlock(); if (why) { wiz.message = why; wizRender(); return; }
-  let load = wiz.loads.find(l => l.loadId === wiz.selLoad);
-  if (wizMode === 'simple') { const nx = wizFullPlan().find(r => r.done < r.req); if (nx) { load = nx.load; wiz.selLoad = load.loadId; } }   // Simple mode always records the placement it proposes
+  const purpose = opts.purpose || 'calibration';
+  let load = wiz.loads.find(l => l.loadId === (opts.loadId || wiz.selLoad));
+  if (purpose === 'calibration' && wizMode === 'simple') { const nx = wizFullPlan().find(r => r.done < r.req); if (nx) { load = nx.load; wiz.selLoad = load.loadId; } }   // Simple mode always records the placement it proposes
   if (!load) { wiz.message = 'Choose a load first.'; wizRender(); return; }
   if (wizMode === 'simple') wiz.captureSeconds = SIMPLE_CAPTURE_SECONDS;
   const n = clamp(Math.round(wiz.captureSeconds * RATE_HZ), 2, MEASUREMENT_MAX_SAMPLES);
-  let dir = wiz.direction || null;
-  if (wizMode === 'simple') { dir = null; if (wiz.returnRun) { const nx = wizFullPlan().find(r => r.done < r.req); dir = nx ? nx.direction : 'up'; } }
-  wiz.capture = { loadId: load.loadId, target: n, direction: dir };
+  let dir = purpose === 'calibration' ? (wiz.direction || null) : null;
+  if (purpose === 'calibration' && wizMode === 'simple') { dir = null; if (wiz.returnRun) { const nx = wizFullPlan().find(r => r.done < r.req); dir = nx ? nx.direction : 'up'; } }
+  wiz.capture = { loadId: load.loadId, target: n, direction: dir, purpose, position: opts.position || null };
   const ok = beginMeasurement(n, { tag: 'calibration wizard', onDone: wizCaptureDone, onCancel: r => { wiz.capture = null; wiz.message = `Capture cancelled: ${r}`; if (wiz.open) wizRender(); } });
   if (!ok) { wiz.capture = null; wiz.message = $('measProgress').textContent; }
   else wiz.message = `Recording ${n.toLocaleString()} samples (${(n / RATE_HZ).toFixed(1)} s). Do not touch the platform.`;
@@ -3064,7 +3117,7 @@ function wizRecord() {
 }
 function wizCaptureDone(entry, first, end) {
   const cap = wiz.capture; wiz.capture = null; if (!cap) return;
-  const o = wizObservationFromRange(first, end, cap.loadId, 'capture', cap.direction || null); wiz.observations.push(o);
+  const o = wizObservationFromRange(first, end, cap.loadId, 'capture', cap.direction || null, cap.purpose || 'calibration', cap.position || null); wiz.observations.push(o);
   wiz.message = wizMode === 'simple' ? `Recorded: ${wizPlainVerdict(o.validity)}${o.include ? '' : ' (left out until you choose “include anyway”)'}.`
     : `Observation ${o.observationId} recorded: mean ${fmtNumber(o.rawMean, 2)} counts, SD ${fmtNumber(o.rawStdDev, 2)}, validity ${STATUS_TEXT[o.validity.status] || o.validity.status}${o.include ? '' : ' (excluded by default)'}.`;
   wiz.replaced = true; if (wiz.open) wizRender();
@@ -3093,8 +3146,8 @@ function wizSetInclude(o, on) {
   else { o.exclusionReason = 'excluded in the fitting editor'; delete o.override; }
 }
 // ---- rendering -------------------------------------------------------------------------------------------------------
-const WIZ_TABS = [['weights', '1 Weights'], ['observations', '2 Observations'], ['fit', '3 Fit'], ['review', '4 Review']];
-const WIZ_TABS_SIMPLE = [['weights', '1 Weights'], ['observations', '2 Measure'], ['review', '3 Finish']];
+const WIZ_TABS = [['weights', '1 Weights'], ['observations', '2 Observations'], ['fit', '3 Fit'], ['review', '4 Review'], ['char', '5 Characterization']];
+const WIZ_TABS_SIMPLE = [['weights', '1 Weights'], ['observations', '2 Measure'], ['review', '3 Finish'], ['extra', '4 Extra checks']];
 function wizInput(a, i, f, v, type = 'text', extra = '') { return `<input type="${type}" ${type === 'number' ? 'step="any" ' : ''}data-w="${a}" data-i="${i}" data-f="${f}" value="${esc(v == null ? '' : v)}" ${extra}>`; }
 function wizUnitSelect(a, i, f, cur) { return `<select data-w="${a}" data-i="${i}" data-f="${f}">${UNIT_CONFIG.units.filter(u => u.id !== 'raw').map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${esc(u.symbol)}</option>`).join('')}</select>`; }
 function wizValidityBadge(v) { const st = (v && v.status) || 'n/a'; return `<span class="vbadge ${st === 'n/a' ? 'na' : st}">${VERDICT_ICON[st] || '–'} ${esc(STATUS_TEXT[st] || st)}${v && v.flagged && v.flagged.length ? ' (' + esc(v.flagged.join(', ')) + ')' : ''}</span>`; }
@@ -3121,7 +3174,7 @@ function wizFitReport() {
     comparison: Object.entries(fits).map(([id, f]) => ({ model: id, ok: f.ok, errors: f.errors, parameters: f.params, dof: f.dof, residualSdCounts: Number.isFinite(f.sdRawRes) ? f.sdRawRes : null, reducedChiSquare: f.reducedChi2, rmsResidualMassMg: Number.isFinite(f.rmsMassMg) ? f.rmsMassMg : null, maxAbsResidualMassMg: Number.isFinite(f.maxAbsMassMg) ? f.maxAbsMassMg : null })),
     observations: wiz.observations.map(o => ({ observationId: o.observationId, loadId: o.loadId, loadingDirection: o.loadingDirection || null, rawMean: o.rawMean, rawStdDev: o.rawStdDev, sampleCount: o.sampleCount, durationMs: o.durationMs, validityStatus: (o.validity || {}).status, included: !!o.include, override: o.override || null })),
     residuals: fit.ok ? fit.residuals.map(r => ({ ...r, looResidualCounts: (looBy.get(r.id) || {}).looRaw ?? null, looResidualMg: (looBy.get(r.id) || {}).looMassMg ?? null })) : [],
-    weightGroups: b.stats, hysteresis: b.hyst, uncertainty: b.unc, warnings: b.warnings.map(w => w.text), errors: b.errors };
+    weightGroups: b.stats, hysteresis: b.hyst, uncertainty: b.unc, characterization: b.char, warnings: b.warnings.map(w => w.text), errors: b.errors };
 }
 function wizFitReportText(rep) {
   const L = [`# Fit report: ${rep.profile.profileName}`, '', `Generated ${rep.generatedAt} · sensor ${rep.sensorId} · mode ${rep.mode}`, '', `Model: ${rep.model.label}`, `Weighting: ${rep.weighting ? rep.weighting.scheme : ''}${rep.weighting && rep.weighting.reason ? ' (' + rep.weighting.reason + ')' : ''}`, `Loading directions used: ${rep.hysteresisUse}`, '', '## Model comparison', '', '| model | p | dof | SD (counts) | red. chi2 | RMS (mg) | largest (mg) |', '|---|---|---|---|---|---|---|'];
@@ -3165,7 +3218,7 @@ function wizPaneWeights() {
 function wizPaneObs() {
   const w = wiz, p = w.profile, why = wizBlock(), busy = !!w.capture, li = w.loads.findIndex(l => l.loadId === w.selLoad);
   const opts = w.loads.map(l => `<option value="${esc(l.loadId)}"${l.loadId === w.selLoad ? ' selected' : ''}>${esc(l.name)} · ${wizMassText(wizLoadMassSafe(l), p.unit)}</option>`).join('');
-  const rows = w.observations.map((o, i) => { const l = w.loads.find(x => x.loadId === o.loadId);
+  const rows = w.observations.map((o, i) => { if (!isCalObs(o)) return ''; const l = w.loads.find(x => x.loadId === o.loadId);
     return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(o.observationId)}</td><td>${esc(l ? l.name : '?')}</td><td>${l ? wizMassText(wizLoadMassSafe(l), p.unit) : '—'}</td><td>${fmtNumber(o.rawMean, 3)}</td><td>${o.rawStdDev == null ? '—' : fmtNumber(o.rawStdDev, 3)}</td><td>${o.sampleCount == null ? '—' : o.sampleCount.toLocaleString()}${o.durationMs ? ' · ' + fmtSpan(o.durationMs / 1000) : ''}</td><td>${wizValidityCell(o)}</td><td><select data-w="obsDir" data-i="${i}" aria-label="Loading direction"><option value=""${!o.loadingDirection ? ' selected' : ''}>–</option><option value="up"${o.loadingDirection === 'up' ? ' selected' : ''}>up</option><option value="down"${o.loadingDirection === 'down' ? ' selected' : ''}>down</option></select></td><td><input type="checkbox" data-w="obsInclude" data-i="${i}" ${o.include ? 'checked' : ''} aria-label="Include in the fit">${o.override ? '<div class="small warning">included anyway</div>' : ''}</td><td><button data-wa="delObs" data-i="${i}">✕</button></td></tr>`; }).join('');
   return `<div class="small">Put the load on the platform, wait until the reading has settled, then record. Observations store raw counts of the shown sensor (<strong>${esc(activeSensor.name)}</strong>). Place and remove a weight repeatedly for replicates: the scatter between placements is what the fit can resolve.</div>
   <div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Load on the platform</label><div class="inline" style="flex-wrap:nowrap"><button data-wa="loadPrev" title="Previous load" aria-label="Previous load" ${li <= 0 ? 'disabled' : ''}>◀</button><select data-w="selLoad">${opts}</select><button data-wa="loadNext" title="Next load" aria-label="Next load" ${li < 0 || li >= w.loads.length - 1 ? 'disabled' : ''}>▶</button></div></div>
@@ -3222,21 +3275,22 @@ function wizBuild() {
     if (fit.dof <= 0) W(fit.warnings.find(x => /degrees of freedom/.test(x)) || 'No degrees of freedom.', 'Not enough repeats to judge the scatter. Record each weight 3 times if you can.', 'dof');
     if (fit.distinct < 3) W('Only two different reference masses: linearity cannot be checked.', 'Only two different masses: a bent response cannot be seen.', 'masses');
     if (fit.weighting.reason && fit.weighting.requested !== 'equal') W(fit.weighting.reason, 'Too few repeats to weight the points: all of them count the same.', 'weighting');
-    const flagged = wiz.observations.filter(o => o.include && !o.override && o.validity && (o.validity.status === 'invalid' || o.validity.status === 'suspect')).length;
+    const flagged = wizCalObs(wiz).filter(o => o.include && !o.override && o.validity && (o.validity.status === 'invalid' || o.validity.status === 'suspect')).length;
     if (flagged) W(`${flagged} included observation(s) have a validity flag (suspect or invalid).`, `${flagged} measurement(s) used were not quite steady.`, 'validity');
-    const over = wiz.observations.filter(o => o.include && o.override).length;
+    const over = wizCalObs(wiz).filter(o => o.include && o.override).length;
     if (over) W(`${over} observation(s) whose validity check failed were included anyway by the user (recorded in the file).`, `${over} measurement(s) that looked unsteady were used anyway (you chose “include anyway”).`, 'override');
-    if (!wiz.observations.some(o => o.removedAndReplaced && o.placementIndex > 1)) W('No placement is marked as removed and replaced: placement repeatability was not sampled.', 'The weights were not taken off and put back between recordings.', 'replace');
+    if (!wizCalObs(wiz).some(o => o.removedAndReplaced && o.placementIndex > 1)) W('No placement is marked as removed and replaced: placement repeatability was not sampled.', 'The weights were not taken off and put back between recordings.', 'replace');
     if (!wiz.weights.some(x => x.assignedMass != null)) W('No certificate (assigned) masses were entered: the calibration rests on the nominal values of the weights and is not traceable; its accuracy cannot be better than the weights’ own tolerance.', 'The weights are not certified. The scale can only be as accurate as the weights themselves.', 'nominal');
     for (const s of stats) if (s.verdict === 'differ') W(`Weight group “${s.name}”: the weights differ from each other (between-weight SD ${fmtNumber(s.sB, 2)} counts) by more than the placement scatter (${fmtNumber(s.sW, 2)} counts).`, `The weights of “${s.name}” are not equal in practice.`, 'group');
     const allPts = wizPoints(wiz, { all: true }).points, hyst = fit.slopeAt ? hysteresisAnalysis(allPts, fit.slopeAt) : null, unc = buildUncertaintyProfile(wiz, fit, hyst, wiz.hysteresisUse || 'both');
     if (unc.status === 'not-estimable') W(unc.reason, 'The uncertainty cannot be estimated yet: record each weight several times (taking it off and putting it back).', 'uncertainty');
     else if (!unc.components.find(c => c.id === 'weight-tolerance').included) W('No (or not for every weight) typed tolerance or certificate uncertainty: the estimated uncertainty covers repeatability only and is not traceable.', 'The estimated uncertainty only reflects how repeatable your placements were, not how accurate the weights are. Type the weights’ tolerance if you know it.', 'noTolerance');
     if (hyst && hyst.levels.length && (wiz.hysteresisUse || 'both') !== 'both') W('The fit uses one loading direction only; hysteresis is reported but not included in the uncertainty.', 'Only one loading direction is used for the calibration.', 'hystOne');
-    cfg = buildCalibrationConfig(Object.assign({}, wiz, { sensorId: wiz.sensorId, rateHz: wiz.rateHz }), fit, new Date().toISOString(), { warnings: warnings.map(x => x.text), groupStats: stats, uncertainty: unc, hysteresis: hyst });
+    const chBlock = buildCharacterization(wiz, fit);
+    cfg = buildCalibrationConfig(Object.assign({}, wiz, { sensorId: wiz.sensorId, rateHz: wiz.rateHz }), fit, new Date().toISOString(), { warnings: warnings.map(x => x.text), groupStats: stats, uncertainty: unc, hysteresis: hyst, characterization: chBlock });
     const checked = validateCalibrationConfig(cfg); errors.push(...checked.errors); for (const t of checked.warnings) W(t, 'This is not a certified calibration; no uncertainty is claimed.', 'validate');
   }
-  return { cfg, fit, model, errors, warnings, stats, unc: cfg ? cfg.uncertainty : null, hyst: cfg ? cfg.reserved.hysteresisAnalysis : null };
+  return { cfg, fit, model, errors, warnings, stats, unc: cfg ? cfg.uncertainty : null, hyst: cfg ? cfg.reserved.hysteresisAnalysis : null, char: cfg ? cfg.characterization : null };
 }
 function wizId(prefix, list, key) { let n = wiz.nextNum++; while (list.some(x => x[key] === `${prefix}${n}`)) n = wiz.nextNum++; return `${prefix}${n}`; }
 function wizStamp() { return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12); }
@@ -3248,7 +3302,7 @@ function wizPaneFit() {
   const wsel = Object.entries(WEIGHTINGS).map(([id, t]) => `<option value="${id}"${id === wiz.weighting ? ' selected' : ''}>${esc(t)}</option>`).join('');
   const cmp = Object.entries(FIT_MODELS).map(([id, m]) => { const f = fits[id]; return `<tr class="${id === wiz.fitModel ? 'sel' : ''}"><td>${esc(m.label)}</td>${f.ok ? `<td>${f.params}</td><td>${f.dof}</td><td>${Number.isFinite(f.sdRawRes) ? fmtNumber(f.sdRawRes, 3) : '—'}</td><td>${f.reducedChi2 == null ? '—' : fmtNumber(f.reducedChi2, 2)}</td><td>${wizMassText(f.rmsMassMg, u)}</td><td>${wizMassText(f.maxAbsMassMg, u)}</td>` : `<td colspan="6" class="warning">${esc(f.errors[0] || 'not possible')}</td>`}</tr>`; }).join('');
   let plots = '';
-  const all = wiz.observations.map(o => { const l = wiz.loads.find(x => x.loadId === o.loadId); return l ? { o, m: wizLoadMassSafe(l) } : null; }).filter(x => x && Number.isFinite(x.m));
+  const all = wizCalObs(wiz).map(o => { const l = wiz.loads.find(x => x.loadId === o.loadId); return l ? { o, m: wizLoadMassSafe(l) } : null; }).filter(x => x && Number.isFinite(x.m));
   if (all.length >= 2 && fit.g) {
     const xs = all.map(a => uf(a.m)), lo = Math.min(...xs), hi = Math.max(...xs), cur = [];
     for (let k = 0; k <= 60; k++) { const m = fit.mRange[0] + (fit.mRange[1] - fit.mRange[0]) * k / 60; cur.push([uf(m), fit.g(m)]); }
@@ -3286,6 +3340,7 @@ function wizPaneReview() {
   return `<div class="readout"><strong>${esc(wiz.profile.profileName)}</strong> · ${esc(FIT_MODELS[b.model].label)} · ${esc(WEIGHTINGS[b.fit.weighting.scheme] || '')} · unit ${esc(unitById(u).symbol)} · ${b.fit.anchors.length} anchors for sensor <strong>${esc(wiz.sensorId)}</strong></div>
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.text)}</div>`).join('')}
   ${uncSummaryHTML(b.unc, u)}
+  <div class="readout" style="margin:6px 0">Characterization: <strong>${esc(charSummaryText(b.char))}</strong> <span class="small">(tab 5)</span></div>
   ${over.length ? `<div class="small warning">Overridden observations (included although the validity check failed): ${over.map(esc).join(', ')}</div>` : ''}
   <div class="small" style="margin:6px 0">Activating starts a new calibration epoch on the shown sensor: the tare is reset, a running measurement is aborted, and earlier samples keep the calibration they were recorded with. The file claims no uncertainty (validation status “not-characterized”); only its structure and monotonicity are checked.</div>
   <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button></div>
@@ -3318,7 +3373,7 @@ function wizSimpleMeasure() {
   const isEmpty = next && next.load.weightRef === 'ref-empty';
   const instr = next ? `<div class="status-note"><strong>Next${next.direction === 'down' ? ' (way down)' : ''}:</strong> ${isEmpty ? 'clear the platform completely (nothing on it)' : `put <strong>${esc(next.load.name)}</strong> on the platform`}. Take it off and put it back before each recording, and wait a few seconds until the reading has settled. Each recording takes ${SIMPLE_CAPTURE_SECONDS} s; do not touch the platform.</div>`
     : '<div class="status-note">All placements are recorded. Continue with step 3 (Finish) or record more.</div>';
-  const rows = wiz.observations.map((o, i) => { const l = wiz.loads.find(x => x.loadId === o.loadId);
+  const rows = wiz.observations.map((o, i) => { if (!isCalObs(o)) return ''; const l = wiz.loads.find(x => x.loadId === o.loadId);
     const use = o.include ? (o.override ? '<span class="warning">used anyway</span>' : 'used') : (o.validity && o.validity.status === 'invalid' ? `<button data-wa="inclAnyway" data-i="${i}" title="Use it although the check failed. This is recorded in the file.">include anyway</button>` : 'not used');
     return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(l ? l.name : '?')}</td><td>${esc(wizPlainVerdict(o.validity))}${o.validity && o.validity.analysis ? wizValidityCell(o) : ''}</td><td>${use}</td><td><button data-wa="delObs" data-i="${i}" aria-label="Delete this measurement">✕</button></td></tr>`; }).join('');
   return `<div class="small">Step 2 of 3 · ${done} of ${total} placements recorded</div><progress max="${total}" value="${done}"></progress>${instr}
@@ -3336,25 +3391,27 @@ function wizSimpleFinish() {
   ${modelText ? `<div class="readout" style="margin:6px 0">${esc(modelText)}<br>${scatter}</div>` : ''}
   ${b.unc && b.unc.status === 'estimated' ? `<div class="status-note" style="margin:6px 0">Typical uncertainty of a weighing in the middle of the range: <strong>± ${esc(formatMassSig(wizUncAt(b.unc, (b.unc.combined.table[0].massMg + b.unc.combined.table[b.unc.combined.table.length - 1].massMg) / 2), u))}</strong> (${esc(uncProfileLabel(b.unc))}; 95 %). Each measurement adds its own reading noise. “Repeatability” is how well the scale repeats when you put the same weight back; it is not the same as being accurate.</div>` : (b.unc ? `<div class="status-note" style="margin:6px 0">${esc(b.unc.reason || '')}</div>` : '')}
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.plain)}</div>`).join('')}
+  <div class="small" style="margin:6px 0">Characterization (optional, tab 4 Extra checks): <strong>${esc(charSummaryText(b.char))}</strong>.</div>
   <div class="small" style="margin:6px 0">After activating, put a weight you know on the scale and check that it reads right. Activating starts a new calibration period: the tare is reset and earlier readings keep the calibration they were recorded with.</div>
   <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration file</button></div>
   ${block ? `<div class="warning small">${esc(block)}</div>` : ''}`;
 }
 function wizRender() {
   const body = wq('wizBody'); if (!body || !wiz.profile) return;
-  const keep = body.scrollTop, simple = wizMode === 'simple', tabsDef = simple ? WIZ_TABS_SIMPLE : WIZ_TABS, tab = simple && wiz.tab === 'fit' ? 'review' : wiz.tab;
+  const keep = body.scrollTop, simple = wizMode === 'simple', tabsDef = simple ? WIZ_TABS_SIMPLE : WIZ_TABS, tab = simple ? (wiz.tab === 'fit' ? 'review' : wiz.tab === 'char' ? 'extra' : wiz.tab) : (wiz.tab === 'extra' ? 'char' : wiz.tab);
   const mode = wq('wizMode'); if (mode) mode.value = wizMode;
   const tabs = `<div class="tabs" role="tablist">${tabsDef.map(([id, t]) => `<button role="tab" data-wa="tab" data-id="${id}" aria-selected="${tab === id}">${t}</button>`).join('')}</div>`;
   const banner = (wiz.sensorId !== activeSensor.id ? `<div class="warning small">This wizard was started for sensor “${esc(wiz.sensorId)}”, but “${esc(activeSensor.id)}” is shown. <button data-wa="useShown">Use the shown sensor</button></div>` : '') + (wiz.message ? `<div class="status-note" style="margin:6px 0">${esc(wiz.message)}</div>` : '');
-  const pane = tab === 'weights' ? (simple ? wizSimpleWeights() : wizPaneWeights()) : tab === 'observations' ? (simple ? wizSimpleMeasure() : wizPaneObs()) : tab === 'fit' ? wizPaneFit() : (simple ? wizSimpleFinish() : wizPaneReview());
+  const pane = tab === 'weights' ? (simple ? wizSimpleWeights() : wizPaneWeights()) : tab === 'observations' ? (simple ? wizSimpleMeasure() : wizPaneObs()) : tab === 'fit' ? wizPaneFit() : (tab === 'char' || tab === 'extra') ? wizPaneChar(simple) : (simple ? wizSimpleFinish() : wizPaneReview());
   body.innerHTML = tabs + banner + `<div class="wiz-pane">${pane}</div>`; body.scrollTop = keep;
 }
 function wizTick() {   // called every rendered frame while the wizard is open: only the progress readouts change
-  const m = state.measurement, on = !!(wiz.capture && m && m.tag === 'calibration wizard');
+  const m = state.measurement, cr = state.charRec, on = !!(wiz.capture && ((m && m.tag === 'calibration wizard') || (cr && cr.tag === 'calibration wizard')));
   const bar = wq('wizRecBar'), txt = wq('wizRecProgress'), badge = wq('wizRecBadge');
-  if (bar && on) { bar.hidden = false; bar.value = m.collected / m.target; }
-  if (txt && on) txt.textContent = `Recording ${m.collected.toLocaleString()} / ${m.target.toLocaleString()} samples`;
-  if (badge) badge.textContent = on ? `● ${Math.round(100 * m.collected / m.target)} %` : '';
+  const done = cr && !m ? cr.count : (m ? m.collected : 0), tot = cr && !m ? Math.round(cr.durationS * RATE_HZ) : (m ? m.target : 1);
+  if (bar && on) { bar.hidden = false; bar.value = Math.min(1, done / tot); }
+  if (txt && on) txt.textContent = `Recording ${done.toLocaleString()} / ${tot.toLocaleString()} samples`;
+  if (badge) badge.textContent = on ? `● ${Math.round(100 * Math.min(1, done / tot))} %` : '';
 }
 function wizOpen(fresh) {
   if (!wiz.profile || fresh) { wizNew(); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; }
@@ -3392,6 +3449,7 @@ function wizOnChange(e) {
   else if (a === 'direction') wiz.direction = v || null;
   else if (a === 'obsDir') { const o = wiz.observations[i]; if (o) o.loadingDirection = v || null; render = true; }
   else if (a === 'hystUse') { wiz.hysteresisUse = v; render = true; }
+  else if (a === 'char') { const C = wizChar(); C[f] = v; if (wizMode === 'simple' && (f === 'tempZero10K' || f === 'tempSpanPpm')) C.tempMode = (C.tempZero10K !== '' || C.tempSpanPpm !== '') ? 'typed' : 'auto'; render = t.tagName === 'SELECT' || t.type === 'select-one' || f.startsWith('temp'); }
   else if (a === 'selLoad') wiz.selLoad = v;
   else if (a === 'replaced') wiz.replaced = v;
   else if (a === 'obsInclude') { const o = wiz.observations[i]; if (o) wizSetInclude(o, v); render = true; }
@@ -3427,7 +3485,9 @@ function wizOnClick(e) {
       wizSimpleSetWeights(r.items); wiz.message = `${r.items.reduce((s, x) => s + x.qty, 0)} weight(s) set. Continue with step 2.`; wiz.tab = 'observations'; break; }
     case 'inclAnyway': { const o = wiz.observations[i]; if (o) { wizSetInclude(o, true); wiz.message = 'Included anyway. This choice is recorded in the calibration file.'; } break; }
     case 'record': return wizRecord();
-    case 'cancelRec': cancelMeasurement('cancelled by user'); return;
+    case 'cancelRec': cancelCharRec('cancelled by user'); cancelMeasurement('cancelled by user'); return;
+    case 'recordChar': return wizRecord({ purpose: b.dataset.purpose, position: b.dataset.pos, loadId: wizChar().eccLoadId });
+    case 'recordLong': return wizRecordLong(b.dataset.purpose);
     case 'useSel': return wizUseSelection();
     case 'addManual': return wizAddManual();
     case 'delObs': wiz.observations.splice(i, 1); break;
@@ -3508,7 +3568,7 @@ function uncertaintyGrid(fit, n = UNC_TABLE_POINTS) {   // uniform grid over the
 function weightToleranceTable(W) {
   const levels = new Map(), missing = new Set();
   for (const o of W.observations) {
-    if (!o.include) continue;
+    if (!o.include || !isCalObs(o)) continue;
     const load = W.loads.find(l => l.loadId === o.loadId); if (!load) continue;
     let m; try { m = wizLoadMassMg(W, load); } catch (_) { continue; }
     const key = fitKey(m); let lv = levels.get(key); if (!lv) { lv = { massMg: m, loads: new Map() }; levels.set(key, lv); }
@@ -3586,8 +3646,12 @@ function combineUncertainties(parts) {
 }
 function uncertaintyLabel(u) {
   if (!u || u.status !== 'ok') return '';
-  if (u.includesWeights) return 'estimated, not traceable';
-  return `estimated, ${u.includesHysteresis ? 'repeatability and hysteresis' : 'repeatability'} only, not traceable`;
+  const cp = u.charParts || {}, keys = ['offCentre', 'creep', 'zeroDrift', 'temperature'].filter(k => cp[k]);
+  if (!keys.length) { if (u.includesWeights) return 'estimated, not traceable'; return `estimated, ${u.includesHysteresis ? 'repeatability and hysteresis' : 'repeatability'} only, not traceable`; }
+  const names = { offCentre: 'off-centre loading', creep: 'creep', zeroDrift: 'zero drift', temperature: 'temperature' }, measured = ['repeatability'], est = [];
+  if (u.includesHysteresis) measured.push('hysteresis');
+  for (const k of keys) (cp[k] === 'measured' ? measured : est).push(names[k]);
+  return `estimated, ${joinAnd(measured)} measured${u.includesWeights ? '; weight tolerance typed' : ''}${est.map(x => `; ${x} your estimate`).join('')}; not traceable`;
 }
 // ---- the uncertainty of ONE measurement result (stage 2 + 3) ------------------------------------------------------------
 // profile: the calibration's `uncertainty` block. inp: {massMg: absolute mass of the result, sigmaMg: spread of the measured samples (mg),
@@ -3595,7 +3659,7 @@ function uncertaintyLabel(u) {
 function computeUncertainty(profile, inp) {
   if (!profile || typeof profile !== 'object') return { status: 'unavailable', reason: 'This calibration holds no repeatability data (it was made before v14, or without replicates).' };
   if (profile.status !== 'estimated') return { status: 'unavailable', reason: profile.reason || 'The calibration could not estimate the placement repeatability.' };
-  const comp = id => (profile.components || []).find(c => c.id === id), m = inp.massMg, parts = [], list = [];
+  const comp = id => (profile.components || []).find(c => c.id === id), m = inp.massMg, parts = [], list = [], addedNames = [];
   const add = (id, label, u, dof, note) => { list.push({ id, label, uMg: u, dof, note: note || '' }); parts.push({ u, dof }); };
   const a = comp('placement-repeatability'); add(a.id, a.label, interpTable(a.table, m), a.dof, a.note);
   const o = comp('object-placement'); if (o && o.included) add(o.id, o.label, interpTable(o.table, m), o.dof, o.note);
@@ -3605,7 +3669,29 @@ function computeUncertainty(profile, inp) {
   if (Number.isFinite(inp.slopeMgPerCount)) add('resolution', 'resolution (one count)', Math.abs(inp.slopeMgPerCount) / Math.sqrt(12) / (dith ? Math.sqrt(neff) : 1), Infinity, dith ? 'reading noise dithers the quantisation: averaged out' : 'the noise is below one count: quantisation is not averaged');
   const w = comp('weight-tolerance'); if (w && w.included) add(w.id, w.label, interpTable(w.table, m), Infinity, w.note);
   const h = comp('hysteresis'); if (h && h.included) add(h.id, h.label, interpTable(h.table, m), Infinity, h.note);
-  const c = combineUncertainties(parts), res = { status: 'ok', components: list, combinedMg: c.u, dof: c.dof, k: c.k, expandedMg: c.U, includesWeights: !!(w && w.included), includesHysteresis: !!(h && h.included), notIncluded: profile.notIncluded || UNC_NOT_INCLUDED, traceable: false, basis: profile.basis, massMg: m };
+  // v16: components from the calibration's `characterization` block (measured or user estimate), the use conditions and, if there is one, the temperature channel
+  const ch = inp.char, charParts = {}, uc = { ...USE_COND_DEFAULTS, ...(inp.uc || {}) }, mAbs = Math.abs(m), s3 = Math.sqrt(3);
+  const src = s => (s === 'measured' ? 'measured' : 'your estimate'), kind = s => (s === 'measured' ? 'measured' : 'estimate');
+  const other = t => (t && t.calibrationProfileId && inp.calibrationProfileId && t.calibrationProfileId !== inp.calibrationProfileId ? `; converted with another calibration (profile ${t.calibrationProfileId}) than the one in use` : '');
+  const mg = x => `${Number(x).toPrecision(3)} mg`;
+  if (ch && typeof ch === 'object' && ch.status && ch.status !== 'none') {
+    const e = ch.eccentricity;
+    if (e && Number.isFinite(e.fractionOfLoad)) { const hw = e.fractionOfLoad * mAbs; add('off-centre', `off-centre loading (${src(e.source)})`, hw / s3, Infinity, `half-width ${mg(hw)} = ${(e.fractionOfLoad * 100).toFixed(3)} % of the load, rectangular${other(e)}`); charParts.offCentre = kind(e.source); addedNames.push('off-centre loading'); }
+    const c = ch.creep;
+    if (c && Array.isArray(c.samples) && c.samples.length) { const f = creepFractionAt(c, uc.readingDelayS), hw = Math.abs(f.value) * mAbs; add('creep', `creep after ${uc.readingDelayS} s (${src(c.source)})`, hw / s3, Infinity, `half-width ${mg(hw)} (${(Math.abs(f.value) * 100).toFixed(3)} % of the load)${f.flagged ? '; the reading delay is beyond the recorded curve: its last value is used' : ''}${other(c)}`); charParts.creep = kind(c.source); addedNames.push('creep'); }
+    const z = ch.zeroDrift;
+    if (z && Number.isFinite(z.rateMgPerH)) { const tH = uc.sessionSinceTareS / 3600, hw = Math.hypot(Math.abs(z.rateMgPerH) * tH, (Number.isFinite(z.seMgPerH) ? z.seMgPerH : 0) * tH); add('zero-drift', `zero drift ${fmtSpan(uc.sessionSinceTareS)} after the tare (${src(z.source)})`, hw / s3, Infinity, `half-width ${mg(hw)} from ${fmtNumber(z.rateMgPerH, 3)} mg/h (standard error of the rate included)${other(z)}`); charParts.zeroDrift = kind(z.source); addedNames.push('drift between calibration and use'); }
+    const T = ch.temperature;
+    if (T && (Number.isFinite(T.zeroMgPerK) || Number.isFinite(T.spanPpmPerK))) {
+      let dT, fromSensor = false;
+      if (inp.tempStats && Number.isFinite(T.referenceC)) { dT = Math.max(Math.abs(inp.tempStats.min - T.referenceC), Math.abs(inp.tempStats.max - T.referenceC)); fromSensor = true; } else dT = uc.temperatureDeltaK;
+      const hw = Math.hypot((T.zeroMgPerK || 0) * dT, (T.spanPpmPerK || 0) * 1e-6 * mAbs * dT), measuredAll = T.source === 'measured' && fromSensor;
+      add('temperature', `temperature (${measuredAll ? 'measured' : 'your estimate'})`, hw / s3, Infinity, `ΔT = ${dT.toFixed(2)} K ${fromSensor ? 'from the temperature channel' : 'typed (use conditions)'}; sensitivity ${T.source === 'measured' ? 'measured' : 'your estimate'}; half-width ${mg(hw)}${other(T)}`);
+      charParts.temperature = measuredAll ? 'measured' : 'estimate'; addedNames.push('temperature');
+    }
+  }
+  const c = combineUncertainties(parts), res = { status: 'ok', components: list, combinedMg: c.u, dof: c.dof, k: c.k, expandedMg: c.U, includesWeights: !!(w && w.included), includesHysteresis: !!(h && h.included), charParts,
+    notIncluded: (profile.notIncluded || UNC_NOT_INCLUDED).filter(x => !addedNames.includes(x)), traceable: false, basis: profile.basis, massMg: m, conditions: uc };
   res.label = uncertaintyLabel(res); return res;
 }
 // ---- spread band modes (v14, display option) ----------------------------------------------------------------------------
@@ -3661,10 +3747,10 @@ const HISTORY_MAGIC = 0x54534948;
 function decodeHistoryBinary(buf) {
   const dv = new DataView(buf.buffer ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : buf);
   if (dv.byteLength < 12 || dv.getUint32(0, true) !== HISTORY_MAGIC) throw new Error('not a history chunk (bad magic)');
-  if (dv.getUint16(4, true) !== 1) throw new Error('unknown history layout version');
-  const n = dv.getUint32(8, true); if (dv.byteLength < 12 + 12 * n) throw new Error('truncated history chunk');
+  const ver = dv.getUint16(4, true); if (ver !== 1 && ver !== 2) throw new Error('unknown history layout version');
+  const rec = ver === 2 ? 16 : 12, n = dv.getUint32(8, true); if (dv.byteLength < 12 + rec * n) throw new Error('truncated history chunk');
   const id = new Array(n), t = new Array(n), raw = new Array(n);
-  for (let k = 0; k < n; k++) { const o = 12 + 12 * k; id[k] = dv.getUint32(o, true); t[k] = dv.getUint32(o + 4, true); raw[k] = dv.getInt32(o + 8, true); }
+  for (let k = 0; k < n; k++) { const o = 12 + rec * k; id[k] = dv.getUint32(o, true); t[k] = dv.getUint32(o + 4, true); raw[k] = ver === 2 ? dv.getFloat64(o + 8, true) : dv.getInt32(o + 8, true); }
   return { id, t, raw };
 }
 function encodeHistoryBinary(ids, ts, raws) {
@@ -3673,11 +3759,12 @@ function encodeHistoryBinary(ids, ts, raws) {
   for (let k = 0; k < n; k++) { const o = 12 + 12 * k; dv.setUint32(o, ids[k], true); dv.setUint32(o + 4, ts[k], true); dv.setInt32(o + 8, raws[k], true); }
   return buf;
 }
-function decodeHistoryJson(msg) {   // {samples:[{n,t,raw}]} or {ids:[],t:[],raw:[]} or a bare array of {n,t,raw}
+function decodeHistoryJson(msg, float = false) {
+  const rr = v => (float ? Number(v) : Math.round(Number(v)));   // {samples:[{n,t,raw}]} or {ids:[],t:[],raw:[]} or a bare array of {n,t,raw}
   const out = { id: [], t: [], raw: [] };
-  if (msg && Array.isArray(msg.ids)) { for (let k = 0; k < msg.ids.length; k++) { out.id.push(Number(msg.ids[k])); out.t.push(Number(msg.t[k])); out.raw.push(Math.round(Number(msg.raw[k]))); } return out; }
+  if (msg && Array.isArray(msg.ids)) { for (let k = 0; k < msg.ids.length; k++) { out.id.push(Number(msg.ids[k])); out.t.push(Number(msg.t[k])); out.raw.push(rr(msg.raw[k])); } return out; }
   const arr = Array.isArray(msg) ? msg : (msg && Array.isArray(msg.samples) ? msg.samples : []);
-  for (const s of arr) { out.id.push(Number(s.n)); out.t.push(Number(s.t)); out.raw.push(Math.round(Number(s.raw))); }
+  for (const s of arr) { out.id.push(Number(s.n)); out.t.push(Number(s.t)); out.raw.push(rr(s.raw)); }
   return out;
 }
 // ===== END v14 pure block ==============================================================================================
@@ -3700,7 +3787,7 @@ function mergeHistory(sensor, chunk) {
   const st = sensor.state;
   return withState(st, () => {
     const n = chunk.t.length; if (!n) return { added: 0, duplicates: 0, dropped: 0, count: st.count };
-    if (st.timeOrigin == null) { let mn = Infinity; for (const v of chunk.t) if (v < mn) mn = v; st.timeOrigin = mn; }
+    if (st.timeOrigin == null) { let mn = Infinity; for (const v of chunk.t) if (v < mn) mn = v; st.timeOrigin = claimDeviceOrigin(deviceIdOf(sensor), mn); }
     if (st.derivedReady && st.unprocessed > 0) {   // finish the samples that were stored while the sensor was hidden (they keep the sensor's current calibration)
       for (let i = st.count - Math.min(st.unprocessed, st.count); i < st.count; i++) st.massMg[physicalIndex(i)] = calibrateAbsolute(getRaw(i), st.calPrepared).valueMg;
       st.unprocessed = 0;
@@ -3735,7 +3822,7 @@ async function historyFetchChunk(sensor, fromId, toId) {
   const base = historyUrlFor(sensor), r = await fetch(historyRequestUrl(base, sensor.id, fromId, toId), { cache: 'no-store' });   // a READ: no Authorization header
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
-  return /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer())) : decodeHistoryJson(await r.json());
+  return /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer())) : decodeHistoryJson(await r.json(), sensor.kind === 'temperature' || sensor.kind === 'generic');
 }
 function historyStatusText(sensor) {
   const h = sensor.history; if (!historyUrlFor(sensor)) return 'no history server configured';
@@ -3847,6 +3934,537 @@ async function uploadCalibration() {
     if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
     showCalibrationMessages([], [], 'The active calibration was sent to the server.');
   } catch (e) { showCalibrationMessages([`Could not send the calibration: ${e.message}`], [], ''); }
+}
+
+// ===== v16: AUXILIARY CHANNELS, CHARACTERIZATION, USE CONDITIONS ===================================================
+// (handout v14.1, implemented in one round). Pure functions first (no DOM, no state), then the channel registry, then the UI glue.
+const AUX_MAX_GAP_FACTOR = 2.5, AUX_CAPACITY = 100000, AUX_RATE_WINDOW_DEFAULT_S = 60;   // aux value is never interpolated across a gap longer than 2.5 channel periods
+const CREEP_TIMES_S = [30, 60, 120, 300, 600, 900, 1200, 1800], CREEP_AVG_HALF_S = 2, CREEP_SETTLE_DEFAULT_S = 10, CREEP_MINUTES_DEFAULT = 5, CREEP_MINUTES_MAX = 30;
+const DRIFT_MINUTES_DEFAULT = 10, DRIFT_MINUTES_MAX = 60, DRIFT_BLOCKS = 20;
+const TEMP_FIT_MIN_RANGE_K = 2, TEMP_FIT_MIN_POINTS = 5, CHAR_MAX_SAMPLES = 600000;   // rules of thumb; revisit after real measurements
+const ECC_POSITIONS = ['centre', 'front', 'back', 'left', 'right'];
+const USE_COND_DEFAULTS = Object.freeze({ readingDelayS: 30, sessionSinceTareS: 3600, temperatureDeltaK: 3, primaryTemperature: null });
+const AUX_COLORS = ['#4fc3f7', '#81c784', '#ff8a65', '#ba68c8', '#fff176'];
+const isCalObs = o => !o.purpose || o.purpose === 'calibration';
+function wizCalObs(W) { return W.observations.filter(isCalObs); }
+
+// ---- conversions (applied to the channel's native raw value) ---------------------------------------------------------------
+// polynomial: c0 + c1 x + c2 x^2 ...   steinhart-hart {a,b,c}: raw = resistance in ohm, 1/T = a + b ln R + c (ln R)^3, T in K -> degC
+// beta {beta, r0, t0, rSeries}: raw = measured resistance in ohm, R_ntc = raw - rSeries (leads), t0 in degC: 1/T = 1/T0 + ln(R/r0)/beta
+// (the meaning of rSeries is an ASSUMPTION to be confirmed with the firmware). direct: no conversion. A failed conversion is NaN (invalid sample), never 0.
+function validateAuxConversion(conv) {
+  if (conv == null) return [];
+  if (typeof conv !== 'object' || Array.isArray(conv)) return ['"conversion" must be an object.'];
+  const t = conv.type || 'direct', n = v => typeof v === 'number' && Number.isFinite(v);
+  if (t === 'direct') return [];
+  if (t === 'polynomial') return Array.isArray(conv.coefficients) && conv.coefficients.length > 0 && conv.coefficients.every(n) ? [] : ['A polynomial conversion needs "coefficients": a list of numbers [c0, c1, …].'];
+  if (t === 'steinhart-hart') return n(conv.a) && n(conv.b) && n(conv.c) ? [] : ['A steinhart-hart conversion needs the numbers a, b and c.'];
+  if (t === 'beta') return n(conv.beta) && conv.beta > 0 && n(conv.r0) && conv.r0 > 0 && n(conv.t0) && (conv.rSeries == null || (n(conv.rSeries) && conv.rSeries >= 0)) ? [] : ['A beta conversion needs beta > 0, r0 > 0, t0 (°C) and optionally rSeries ≥ 0.'];
+  return [`Unknown conversion type “${t}”. Use direct, polynomial, steinhart-hart or beta.`];
+}
+function convertAux(conv, raw) {
+  if (!Number.isFinite(raw)) return NaN;
+  const t = (conv && conv.type) || 'direct';
+  if (t === 'direct') return raw;
+  if (t === 'polynomial') { let s = 0; for (let k = conv.coefficients.length - 1; k >= 0; k--) s = s * raw + conv.coefficients[k]; return Number.isFinite(s) ? s : NaN; }
+  if (t === 'steinhart-hart') { if (!(raw > 0)) return NaN; const l = Math.log(raw), inv = conv.a + conv.b * l + conv.c * l * l * l, T = 1 / inv; return Number.isFinite(T) && T > 0 ? T - 273.15 : NaN; }
+  if (t === 'beta') { const R = raw - (conv.rSeries || 0); if (!(R > 0)) return NaN; const inv = 1 / (conv.t0 + 273.15) + Math.log(R / conv.r0) / conv.beta, T = 1 / inv; return Number.isFinite(T) && T > 0 ? T - 273.15 : NaN; }
+  return NaN;
+}
+// ---- light ring buffer of an auxiliary channel: time (ms, shared device origin), raw (float), id, converted value ---------------
+function auxNewBuffer(cap) { return { cap, count: 0, head: 0, t: new Float64Array(cap), raw: new Float64Array(cap), id: new Float64Array(cap).fill(NaN), val: new Float64Array(cap) }; }
+function auxP(b, i) { return (b.head + i) % b.cap; }
+function auxGrow(b, cap) { const o = auxNewBuffer(Math.max(cap, b.cap)); for (let i = 0; i < b.count; i++) { const p = auxP(b, i); o.t[i] = b.t[p]; o.raw[i] = b.raw[p]; o.id[i] = b.id[p]; o.val[i] = b.val[p]; } o.count = b.count; return o; }
+function auxPush(ch, t, raw, id, val) {
+  let b = ch.buf;
+  if (b.count === b.cap) { if (ch.unlimited) b = ch.buf = auxGrow(b, b.cap + AUX_CAPACITY); else { b.head = (b.head + 1) % b.cap; b.count--; } }
+  const p = auxP(b, b.count); b.t[p] = t; b.raw[p] = raw; b.id[p] = Number.isFinite(id) ? id : NaN; b.val[p] = val; b.count++;
+}
+function auxLower(b, t) { let lo = 0, hi = b.count; while (lo < hi) { const mid = (lo + hi) >>> 1; if (b.t[auxP(b, mid)] < t) lo = mid + 1; else hi = mid; } return lo; }
+function auxLastId(ch) { const b = ch.buf; return b.count ? b.id[auxP(b, b.count - 1)] : NaN; }
+function auxConversion(ch) { return ch.userConversion || ch.conversion || { type: 'direct' }; }
+// Value of a channel at a load-cell sample time (ms): exact hit, or linear interpolation between the two neighbours; NaN outside the data
+// and across a gap longer than AUX_MAX_GAP_FACTOR x the channel period. NEVER extrapolated. k = first index with time >= t.
+function auxInterp(ch, t, k) {
+  const b = ch.buf, n = b.count; if (!n) return NaN;
+  if (k < n && b.t[auxP(b, k)] === t) { const v = b.val[auxP(b, k)]; return Number.isFinite(v) ? v : NaN; }
+  if (k <= 0 || k >= n) return NaN;
+  const pa = auxP(b, k - 1), pb = auxP(b, k), ta = b.t[pa], tb = b.t[pb];
+  if (tb - ta > AUX_MAX_GAP_FACTOR * 1000 / ch.rateHz) return NaN;
+  const va = b.val[pa], vb = b.val[pb]; if (!Number.isFinite(va) || !Number.isFinite(vb)) return NaN;
+  return va + (t - ta) / (tb - ta) * (vb - va);
+}
+function auxValueAt(ch, t) { return auxInterp(ch, t, auxLower(ch.buf, t)); }
+function auxColumn(ch, xsSec, n) {   // ascending x (seconds) -> array of values / null for the chart
+  const b = ch.buf, col = new Array(n); let k = 0, any = false;
+  for (let i = 0; i < n; i++) { const t = xsSec[i] * 1000; while (k < b.count && b.t[auxP(b, k)] < t) k++; const v = auxInterp(ch, t, k); if (Number.isFinite(v)) { col[i] = v; any = true; } else col[i] = null; }
+  return { col, any };
+}
+function auxStatsRange(ch, t0, t1) {   // mean / min / max of the valid converted values with t0 <= time <= t1
+  const b = ch.buf; let n = 0, s = 0, mn = Infinity, mx = -Infinity;
+  for (let i = auxLower(b, t0); i < b.count; i++) { const p = auxP(b, i); if (b.t[p] > t1) break; const v = b.val[p]; if (!Number.isFinite(v)) continue; n++; s += v; if (v < mn) mn = v; if (v > mx) mx = v; }
+  return n ? { mean: s / n, min: mn, max: mx, n } : null;
+}
+function auxRateKPerMin(ch, windowS) {   // least-squares slope of the converted value over the newest windowS seconds, per minute; null if < 3 valid points
+  const b = ch.buf; if (b.count < 3) return null;
+  const tN = b.t[auxP(b, b.count - 1)], t0 = tN - windowS * 1000, xs = [], ys = [];
+  for (let i = b.count - 1; i >= 0; i--) { const p = auxP(b, i); if (b.t[p] < t0) break; if (Number.isFinite(b.val[p])) { xs.push(b.t[p] - tN); ys.push(b.val[p]); } }
+  if (xs.length < 3) return null;
+  const n = xs.length, mx = xs.reduce((a, c) => a + c, 0) / n, my = ys.reduce((a, c) => a + c, 0) / n; let sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; }
+  return sxx > 0 ? sxy / sxx * 60000 : null;
+}
+function claimDeviceOrigin(deviceId, t) { if (!deviceOrigins.has(deviceId)) deviceOrigins.set(deviceId, t); return deviceOrigins.get(deviceId); }
+function deviceIdOf(x) { return x.deviceId || x.sseUrl || x.id; }
+function encodeHistoryBinaryV2(ids, ts, raws) {   // proposal v2 for float channels: 16-byte records (u32 id, u32 ms, f64 raw), version 2
+  const n = ids.length, buf = new ArrayBuffer(12 + 16 * n), dv = new DataView(buf);
+  dv.setUint32(0, HISTORY_MAGIC, true); dv.setUint16(4, 2, true); dv.setUint16(6, 0, true); dv.setUint32(8, n, true);
+  for (let k = 0; k < n; k++) { const o = 12 + 16 * k; dv.setUint32(o, ids[k], true); dv.setUint32(o + 4, ts[k], true); dv.setFloat64(o + 8, raws[k], true); }
+  return buf;
+}
+// ---- characterization maths (pure) ----------------------------------------------------------------------------------------
+function numList(a) { return Array.isArray(a) && a.every(Number.isFinite); }
+// Eccentricity: centre = reference. devMg = (raw_i - raw_centre) / slope (counts per mg at the test mass); fraction = max|devMg| / test mass.
+function eccentricityAnalysis(inp) {
+  const errors = [], { testMassMg, centreRaw, positions, slopeCountsPerMg } = inp;
+  if (!(testMassMg > 0)) errors.push('The test mass must be greater than 0.');
+  if (!Number.isFinite(centreRaw)) errors.push('The centre position is missing.');
+  if (!positions || !positions.length) errors.push('At least one off-centre position is needed.');
+  if (!Number.isFinite(slopeCountsPerMg) || slopeCountsPerMg === 0) errors.push('The slope of the calibration at the test mass is not available.');
+  if (errors.length) return { ok: false, errors };
+  const pos = positions.map(p => ({ name: p.name, raw: p.raw, devMg: (p.raw - centreRaw) / slopeCountsPerMg })), maxAbsDevMg = Math.max(...pos.map(p => Math.abs(p.devMg)));
+  return { ok: true, errors, testMassMg, centreRaw, positions: pos, maxAbsDevMg, fractionOfLoad: maxAbsDevMg / testMassMg };
+}
+function seriesMeanAround(series, t, half) {
+  let s = 0, n = 0; for (const p of series) if (Math.abs(p.tS - t) <= half) { s += p.raw; n++; }
+  if (n) return s / n;
+  let best = null; for (const p of series) if (!best || Math.abs(p.tS - t) < Math.abs(best.tS - t)) best = p;
+  return best ? best.raw : NaN;
+}
+// Creep: fraction(t) = (r(t) - r(settle)) / (r(settle) - r_empty) at the times of CREEP_TIMES_S that fit into the recording (t measured from the
+// start of the recording; r = mean of the series points within +-CREEP_AVG_HALF_S).
+function creepAnalysis(inp) {
+  const errors = [], series = inp.series || [], settleS = inp.settleS == null ? CREEP_SETTLE_DEFAULT_S : inp.settleS;
+  if (series.length < 3) errors.push('The creep recording has too few points.');
+  if (!Number.isFinite(inp.emptyRaw)) errors.push('No empty-platform observation is available as the reference (record the empty platform in the calibration first).');
+  if (errors.length) return { ok: false, errors };
+  const last = series[series.length - 1].tS, rs = seriesMeanAround(series, settleS, CREEP_AVG_HALF_S), d = rs - inp.emptyRaw;
+  if (!(Math.abs(d) > 0)) return { ok: false, errors: ['The loaded reading equals the empty reading; the creep fraction is undefined.'] };
+  const samples = CREEP_TIMES_S.filter(t => t > settleS && t <= last).map(t => ({ tS: t, fraction: (seriesMeanAround(series, t, CREEP_AVG_HALF_S) - rs) / d }));
+  if (!samples.length) return { ok: false, errors: [`The recording is too short: it must last longer than ${CREEP_TIMES_S[0]} s.`] };
+  return { ok: true, errors, settleS, samples, settleRaw: rs };
+}
+function creepFractionAt(creep, t) {   // linear in the stored curve; 0 at the settle time; constant beyond the last point (flagged)
+  const s = creep.samples, settle = creep.settleS == null ? CREEP_SETTLE_DEFAULT_S : creep.settleS;
+  if (!s || !s.length) return { value: 0, flagged: false };
+  if (t <= settle) return { value: 0, flagged: false };
+  if (t <= s[0].tS) return { value: s[0].fraction * (t - settle) / (s[0].tS - settle || 1), flagged: false };
+  for (let k = 0; k + 1 < s.length; k++) if (t <= s[k + 1].tS) return { value: s[k].fraction + (t - s[k].tS) / (s[k + 1].tS - s[k].tS) * (s[k + 1].fraction - s[k].fraction), flagged: false };
+  return { value: s[s.length - 1].fraction, flagged: true };
+}
+// Zero drift: weighted straight-line fit of the empty-platform readings (block means, weights 1 / se^2 with a floor) against time; rate +- standard
+// error in mg/h. series: [{tS, raw, n?, sd?}]. Standard error of the slope = sqrt(s2 / Sxx_w), s2 = sum w r^2 / (n - 2) (scaled by the residuals).
+function zeroDriftAnalysis(inp) {
+  const series = inp.series || [], errors = [];
+  if (series.length < 3) errors.push('The drift recording has too few points.');
+  if (!Number.isFinite(inp.slopeCountsPerMg) || inp.slopeCountsPerMg === 0) errors.push('The slope of the calibration is not available.');
+  if (errors.length) return { ok: false, errors };
+  const se = series.map(p => (Number.isFinite(p.sd) && p.n > 0 ? p.sd / Math.sqrt(p.n) : NaN)), fin = se.filter(v => v > 0).sort((a, b) => a - b);
+  const floor = fin.length ? 0.2 * fin[Math.floor(fin.length / 2)] : 0, w = series.map((p, i) => (fin.length ? 1 / Math.pow(Math.max(se[i] > 0 ? se[i] : floor, floor, 1e-12), 2) : 1));
+  const x = series.map(p => p.tS / 3600), y = series.map(p => p.raw), sw = w.reduce((a, b) => a + b, 0), mx = x.reduce((a, v, i) => a + w[i] * v, 0) / sw, my = y.reduce((a, v, i) => a + w[i] * v, 0) / sw;
+  let sxx = 0, sxy = 0; for (let i = 0; i < x.length; i++) { sxx += w[i] * (x[i] - mx) ** 2; sxy += w[i] * (x[i] - mx) * (y[i] - my); }
+  if (!(sxx > 0)) return { ok: false, errors: ['The recording has no time extent.'] };
+  const b = sxy / sxx, a = my - b * mx; let ssr = 0; for (let i = 0; i < x.length; i++) ssr += w[i] * (y[i] - a - b * x[i]) ** 2;
+  const s2 = ssr / (x.length - 2), seB = Math.sqrt(Math.max(0, s2) / sxx);
+  return { ok: true, errors, rateCountsPerH: b, rateMgPerH: b / inp.slopeCountsPerMg, seMgPerH: seB / Math.abs(inp.slopeCountsPerMg), durationS: series[series.length - 1].tS - series[0].tS, blocks: series.length };
+}
+// Temperature sensitivity: raw = a + a1 dT + b x + b2 x dT (x = mass / scale, dT = T - mean T) by least squares. Zero shift = a1 / (b / scale) in mg per K,
+// span change = b2 / b in ppm per K. The standard errors ignore the (small) uncertainty of b. Refused (with a reason) if the temperature range is
+// below TEMP_FIT_MIN_RANGE_K, or the observations are too few / temperature varies together with the mass.
+function fitTemperatureSensitivity(points) {
+  const errors = [], p = (points || []).filter(q => Number.isFinite(q.massMg) && Number.isFinite(q.raw) && Number.isFinite(q.tempC));
+  if (p.length < TEMP_FIT_MIN_POINTS) return { ok: false, errors: [`Needs at least ${TEMP_FIT_MIN_POINTS} observations that carry a temperature; there are ${p.length}.`] };
+  const tmin = Math.min(...p.map(q => q.tempC)), tmax = Math.max(...p.map(q => q.tempC)), range = tmax - tmin;
+  if (!(range >= TEMP_FIT_MIN_RANGE_K)) return { ok: false, errors: [`The temperature only varied by ${range.toFixed(2)} K during the observations; at least ${TEMP_FIT_MIN_RANGE_K} K is needed (warm-up, or two sessions at different temperatures).`], rangeK: range };
+  if (new Set(p.map(q => fitKey(q.massMg))).size < 2) return { ok: false, errors: ['At least two different masses are needed.'] };
+  const T0 = p.reduce((s, q) => s + q.tempC, 0) / p.length, scale = Math.max(...p.map(q => Math.abs(q.massMg))) || 1, n = p.length;
+  const X = p.map(q => { const dT = q.tempC - T0, x = q.massMg / scale; return [1, dT, x, x * dT]; });
+  const A = Array.from({ length: 4 }, () => new Array(4).fill(0)), bv = [0, 0, 0, 0];
+  for (let i = 0; i < n; i++) for (let r = 0; r < 4; r++) { bv[r] += X[i][r] * p[i].raw; for (let c = 0; c < 4; c++) A[r][c] += X[i][r] * X[i][c]; }
+  const coef = fitSolve(A, bv); if (!coef) return { ok: false, errors: ['The temperature varies together with the mass (or too little): the effects cannot be separated.'] };
+  const inv = []; for (let j = 0; j < 4; j++) { const e = [0, 0, 0, 0]; e[j] = 1; const col = fitSolve(A, e); if (!col) return { ok: false, errors: ['The temperature varies together with the mass: the effects cannot be separated.'] }; inv.push(col); }
+  let sse = 0; for (let i = 0; i < n; i++) { const r = p[i].raw - (coef[0] * X[i][0] + coef[1] * X[i][1] + coef[2] * X[i][2] + coef[3] * X[i][3]); sse += r * r; }
+  const dof = n - 4, s2 = dof > 0 ? sse / dof : 0, b = coef[2];
+  if (!Number.isFinite(b) || b === 0) return { ok: false, errors: ['The response to mass could not be determined.'] };
+  return { ok: true, errors, referenceC: T0, zeroMgPerK: coef[1] * scale / b, zeroSe: dof > 0 ? Math.sqrt(s2 * inv[1][1]) * scale / Math.abs(b) : null, spanPpmPerK: coef[3] / b * 1e6, spanSe: dof > 0 ? Math.sqrt(s2 * inv[3][3]) / Math.abs(b) * 1e6 : null, n, dof, rangeK: range };
+}
+// Which long recordings count: creep and zero-drift recordings DRIFT by design, so only gaps, range, vibration and a real STEP (a moved weight) can invalidate them.
+const CHAR_RELEVANT_CHECKS = { creep: ['gaps', 'range', 'vibration', 'step'], 'zero-drift': ['gaps', 'range', 'vibration', 'step'] };
+function charRelevantChecks(an, purpose) {
+  const ids = CHAR_RELEVANT_CHECKS[purpose]; if (!ids) return an.checks || [];
+  return (an.checks || []).filter(c => ids.includes(c.id) && (c.id !== 'step' || c.stepLike === true));
+}
+function charStatus(an, purpose) {
+  if (!CHAR_RELEVANT_CHECKS[purpose]) return an.status;
+  const st = worstVerdict(charRelevantChecks(an, purpose));
+  if (an.status === 'insufficient' && (st === 'ok' || st === 'n/a')) return 'insufficient';
+  return st === 'n/a' ? 'ok' : st;
+}
+function binSeries(times, raws, binS) {
+  const t0 = times[0], bins = new Map();
+  for (let i = 0; i < times.length; i++) {
+    const k = Math.floor((times[i] - t0) / 1000 / binS); let b = bins.get(k); if (!b) { b = { n: 0, s: 0, q: 0, ts: 0 }; bins.set(k, b); }
+    b.n++; b.s += raws[i]; b.q += raws[i] * raws[i]; b.ts += (times[i] - t0) / 1000;
+  }
+  return [...bins.keys()].sort((a, b) => a - b).map(k => { const b = bins.get(k), m = b.s / b.n; return { tS: b.ts / b.n, raw: m, n: b.n, sd: Math.sqrt(Math.max(0, b.q / b.n - m * m)) }; });
+}
+function charIncludedNames(ch) {   // names (as in the "not included" list) of the components a characterization block supplies
+  const s = new Set(); if (!ch || typeof ch !== 'object' || ch.status === 'none') return s;
+  if (ch.eccentricity && Number.isFinite(ch.eccentricity.fractionOfLoad)) s.add('off-centre loading');
+  if (ch.creep && Array.isArray(ch.creep.samples) && ch.creep.samples.length) s.add('creep');
+  if (ch.zeroDrift && Number.isFinite(ch.zeroDrift.rateMgPerH)) s.add('drift between calibration and use');
+  if (ch.temperature && (Number.isFinite(ch.temperature.zeroMgPerK) || Number.isFinite(ch.temperature.spanPpmPerK))) s.add('temperature');
+  return s;
+}
+function charNotIncluded(list, ch) { const inc = charIncludedNames(ch); return (list || []).filter(x => !inc.has(x)); }
+function joinAnd(a) { return a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]; }
+function useConditionsOf(sensor) { return { ...USE_COND_DEFAULTS, ...((sensor && sensor.settings && sensor.settings.useConditions) || {}) }; }
+function applyUseConditions(sensor, o) {
+  const errors = [], out = { ...USE_COND_DEFAULTS }; o = o || {};
+  const num = (k, hi, label) => { if (o[k] == null || o[k] === '') return; const v = Number(o[k]); if (!Number.isFinite(v) || v < 0 || v > hi) { errors.push(`${label} must be between 0 and ${hi}.`); return; } out[k] = v; };
+  num('readingDelayS', 86400, 'Reading delay'); num('sessionSinceTareS', 31536000, 'Time since tare'); num('temperatureDeltaK', 100, 'Temperature difference');
+  out.primaryTemperature = typeof o.primaryTemperature === 'string' && o.primaryTemperature ? o.primaryTemperature : null;
+  if (errors.length) return { errors };
+  sensor.settings.useConditions = out; return { errors: [] };
+}
+// ---- registry of auxiliary channels ---------------------------------------------------------------------------------------------
+function makeAux(def) {
+  const ch = { id: String(def.id), name: String(def.name || def.id), kind: def.kind, unit: def.unit, conversion: def.conversion || { type: 'direct' }, userConversion: null, attachedTo: def.attachedTo || [],
+    sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, deviceId: def.deviceId || def.sseUrl || String(def.id), rateHz: def.rateHz, paused: false, unlisted: false, unlimited: false,
+    buf: auxNewBuffer(AUX_CAPACITY), rejected: 0, dropped: 0, invalid: 0, lastWall: null, firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0,
+    history: { status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false } };
+  auxChannels.set(ch.id, ch); return ch;
+}
+function applyAuxEntry(e, id, result) {
+  const kind = e.kind === 'temperature' ? 'temperature' : e.kind === 'generic' ? 'generic' : null;
+  if (!kind) { result.errors.push(`Entry "${id}": unknown kind “${e.kind}”. Use loadcell, temperature or generic.`); return false; }
+  if (sensors.has(id)) { result.errors.push(`The id "${id}" is already a load cell.`); return false; }
+  const url = String(e.sseUrl ?? e.sse_url ?? '').trim();
+  if (url) { try { const u = new URL(url, typeof location !== 'undefined' ? location.href : 'http://localhost/'); if (!/^https?:$/.test(u.protocol)) throw new Error(); } catch (_) { result.errors.push(`Channel "${id}": invalid SSE URL, skipped.`); return false; } }
+  const conv = e.conversion == null ? { type: 'direct' } : e.conversion, ce = validateAuxConversion(conv);
+  if (ce.length) { result.errors.push(`Channel "${id}": ${ce.join(' ')}`); return false; }
+  const unit = typeof e.unit === 'string' ? e.unit : (kind === 'temperature' ? '°C' : '');
+  if (kind === 'temperature' && !/^(°C|C|degC)$/.test(unit)) { result.errors.push(`Channel "${id}": a temperature channel must deliver °C (differences are always in K).`); return false; }
+  if (e.attachedTo != null && !Array.isArray(e.attachedTo)) { result.errors.push(`Channel "${id}": "attachedTo" must be a list of load-cell ids.`); return false; }
+  const attachedTo = (e.attachedTo || []).map(String), rateHz = Number.isFinite(e.rateHz) && e.rateHz > 0 ? e.rateHz : 1, name = typeof e.name === 'string' && e.name.trim() ? e.name.trim() : id;
+  const hist = typeof e.historyUrl === 'string' && e.historyUrl.trim() ? e.historyUrl.trim() : null, dev = typeof e.deviceId === 'string' && e.deviceId.trim() ? e.deviceId.trim() : null;
+  const known = auxChannels.get(id);
+  if (known) {
+    const changed = JSON.stringify(known.conversion) !== JSON.stringify(conv);
+    Object.assign(known, { name, sseUrl: url || null, unit, attachedTo, rateHz, conversion: conv, unlisted: false }); if (hist) known.historyUrl = hist; if (dev) known.deviceId = dev;
+    if (changed) auxReconvert(known); result.auxUpdated.push(id);
+  } else { makeAux({ id, name, kind, sseUrl: url || null, historyUrl: hist, deviceId: dev, unit, conversion: conv, attachedTo, rateHz }); result.auxAdded.push(id); }
+  return true;
+}
+function auxReconvert(ch) { const b = ch.buf, c = auxConversion(ch); ch.invalid = 0; for (let i = 0; i < b.count; i++) { const p = auxP(b, i); b.val[p] = convertAux(c, b.raw[p]); if (!Number.isFinite(b.val[p])) ch.invalid++; } }
+function attachedAux(sensor, kind) { return [...auxChannels.values()].filter(c => c.attachedTo.includes(sensor.id) && (!kind || c.kind === kind)); }
+function primaryTempChannel(sensor) { const list = attachedAux(sensor, 'temperature'), want = useConditionsOf(sensor).primaryTemperature; return list.find(c => c.id === want) || list[0] || null; }
+function auxTemperaturesFor(sensor, t0, t1) {
+  const out = {}; for (const ch of attachedAux(sensor, 'temperature')) { const s = auxStatsRange(ch, t0, t1); if (s) out[ch.id] = { mean: s.mean, min: s.min, max: s.max, unit: ch.unit }; }
+  return Object.keys(out).length ? out : null;
+}
+function ingestAux(ch, raw, timeMs, id) {
+  if (ch.paused) { ch.dropped++; return false; }
+  ch.lastWall = performance.now();
+  const b = ch.buf; if (b.count && timeMs <= b.t[auxP(b, b.count - 1)]) { ch.rejected++; return false; }
+  if (Number.isFinite(id)) {
+    const last = auxLastId(ch);
+    if (Number.isFinite(last)) { if (id <= last) { ch.rejected++; return false; } if (id > last + 1 && !ch.skipNextGap) auxNoteGap(ch, last + 1, id - 1); }
+    ch.skipNextGap = false; if (ch.firstLiveId == null) { ch.firstLiveId = id; auxHistoryScheduleInitial(ch); }
+  }
+  const val = convertAux(auxConversion(ch), raw); if (!Number.isFinite(val)) ch.invalid++;
+  auxPush(ch, timeMs, raw, id, val); return true;
+}
+function handleAuxSample(ch, it) {
+  const raw = Number(it.raw), t = Number(it.t);
+  if (!Number.isFinite(raw) || !Number.isFinite(t)) { ch.rejected++; return; }
+  if (ch.paused) { ch.dropped++; return; }
+  const origin = claimDeviceOrigin(ch.deviceId, t);
+  ingestAux(ch, raw, t - origin, it.n == null ? undefined : Number(it.n));
+}
+function setAuxPaused(ch, paused, quiet = false) { ch.paused = paused; if (!paused) { ch.skipNextGap = true; ch.lastWall = performance.now(); } if (!quiet) { syncConnections(); renderAuxToggles(); updateStatusUI(); } }
+function auxStaleMs(ch, now) { if (ch.paused || ch.unlisted || ch.lastWall == null) return 0; const age = now - ch.lastWall; return age > Math.max(STREAM_TIMEOUT_MIN_MS, STREAM_TIMEOUT_PERIODS * 1000 / ch.rateHz) ? age : 0; }
+function auxLink(ch) {
+  if (ch.paused) return { key: 'paused', text: 'paused' };
+  if (ch.unlisted) return { key: 'unlisted', text: 'not in the list' };
+  if (!ch.sseUrl) return { key: 'idle', text: 'no SSE URL' };
+  const c = sseConnections.get(ch.sseUrl); if (!c) return { key: 'idle', text: 'not connected' };
+  if (c.status === 'live') { const age = auxStaleMs(ch, performance.now()); return age > 0 ? { key: 'timeout', text: `no data for ${(age / 1000).toFixed(0)} s` } : { key: 'live', text: 'streaming' }; }
+  return c.status === 'error' ? { key: 'error', text: 'connection failed' } : { key: 'connecting', text: 'connecting…' };
+}
+function auxClear(ch) { ch.buf = auxNewBuffer(ch.buf.cap); ch.gaps = []; ch.gapCount = 0; ch.skipNextGap = true; ch.firstLiveId = null; }
+// history merge / gaps of a channel (same rules as for load cells: merge by time, duplicates by id, nothing extrapolated)
+function mergeAuxHistory(ch, chunk) {
+  const b = ch.buf, n = chunk.t.length; if (!n) return { added: 0, duplicates: 0, dropped: 0, count: b.count };
+  let mn = Infinity; for (const v of chunk.t) if (v < mn) mn = v;
+  const origin = claimDeviceOrigin(ch.deviceId, mn), ex = { t: new Array(b.count), raw: new Array(b.count), id: new Array(b.count) };
+  for (let i = 0; i < b.count; i++) { const p = auxP(b, i); ex.t[i] = b.t[p]; ex.raw[i] = b.raw[p]; ex.id[i] = b.id[p]; }
+  const m = mergeSampleLists(ex, { t: chunk.t.map(v => v - origin), raw: chunk.raw, id: chunk.id });
+  if (!m.added) return { added: 0, duplicates: m.duplicates, dropped: 0, count: b.count };
+  let total = m.t.length, from = 0, dropped = 0; if (!ch.unlimited && total > b.cap) { dropped = total - b.cap; from = dropped; total = b.cap; }
+  const cap = ch.unlimited ? Math.max(b.cap, Math.ceil(total / AUX_CAPACITY) * AUX_CAPACITY) : b.cap, nb = auxNewBuffer(cap), conv = auxConversion(ch);
+  for (let i = 0; i < total; i++) { const k = from + i; nb.t[i] = m.t[k]; nb.raw[i] = m.raw[k]; nb.id[i] = m.id[k]; nb.val[i] = convertAux(conv, m.raw[k]); }
+  nb.count = total; ch.buf = nb;
+  return { added: m.added, duplicates: m.duplicates, dropped, count: total };
+}
+function auxNoteGap(ch, fromId, toId) {
+  ch.gapCount += toId - fromId + 1; const g = ch.gaps[ch.gaps.length - 1];
+  if (g && g.status === 'pending' && fromId <= g.toId + 1) g.toId = Math.max(g.toId, toId); else ch.gaps.push({ fromId, toId, status: 'pending' });
+  if (historyUrlFor(ch)) setTimeout(() => auxFillGaps(ch), 0); else ch.gaps[ch.gaps.length - 1].status = 'no history server';
+}
+async function auxFillGaps(ch) {
+  if (ch.history.fillingGaps || !historyUrlFor(ch)) return; ch.history.fillingGaps = true;
+  try {
+    for (const g of ch.gaps) {
+      if (g.status !== 'pending') continue; let got = 0;
+      try { for (let a = g.fromId; a <= g.toId; a += HISTORY_CHUNK) { const bb = Math.min(g.toId, a + HISTORY_CHUNK - 1), chunk = await historyFetchChunk(ch, a, bb); if (chunk.id.length) got += mergeAuxHistory(ch, chunk).added; } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
+      catch (e) { g.status = 'failed: ' + e.message; }
+    }
+  } finally { ch.history.fillingGaps = false; }
+}
+function auxHistoryScheduleInitial(ch) { const h = ch.history; if (h.autoStarted || !historyUrlFor(ch)) return; h.autoStarted = true; setTimeout(() => auxHistoryLoadOlder(ch), 0); }
+async function auxHistoryLoadOlder(ch) {
+  const base = historyUrlFor(ch), h = ch.history;
+  if (!base) { h.status = 'not configured'; return h; } if (h.running) return h;
+  h.running = true; h.error = null; h.status = 'loading';
+  try {
+    for (let guard = 0; guard < HISTORY_MAX_CHUNKS; guard++) {
+      let first = NaN; for (let i = 0; i < ch.buf.count; i++) { const v = ch.buf.id[auxP(ch.buf, i)]; if (Number.isFinite(v)) { first = v; break; } }
+      if (!Number.isFinite(first)) { h.status = 'waiting for the first sample id'; break; }
+      if (!ch.unlimited && ch.buf.count >= ch.buf.cap) { h.status = 'buffer full'; break; }
+      const to = first - 1, floor = h.minId == null ? 0 : h.minId; if (to < floor) { h.status = 'complete (server start reached)'; break; }
+      const room = ch.unlimited ? Infinity : ch.buf.cap - ch.buf.count, from = Math.max(floor, to - Math.min(HISTORY_CHUNK, room) + 1), chunk = await historyFetchChunk(ch, from, to);
+      if (!chunk.id.length) { h.minId = to + 1; h.status = 'complete (server has nothing older)'; break; }
+      const r = mergeAuxHistory(ch, chunk); h.loaded += r.added; let lo = Infinity; for (const v of chunk.id) if (Number.isFinite(v) && v < lo) lo = v; if (lo > from) h.minId = lo;
+      if (!r.added) { h.status = 'complete (no new samples)'; break; } h.status = 'loading';
+    }
+    if (h.status === 'loading') h.status = 'paused (chunk limit)';
+  } catch (e) { h.error = e.message; h.status = 'error'; }
+  h.running = false; return h;
+}
+// ---- check weighings (long-term drift, weeks): FORMAT ONLY, no component in the uncertainty yet (handout v14.1 section 8) ------------------------------
+// checkweighings.json: {schemaVersion:1, calibrationRevisionId, entries:[{recordedAt, weightId, referenceMassMg, readingMg, sigmaMg, neff, temperatureC|null, note}]}
+function validateCheckweighings(doc) {
+  const errors = [];
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return { errors: ['The top level must be a JSON object.'] };
+  if (doc.schemaVersion !== 1) errors.push('schemaVersion must be 1.');
+  if (typeof doc.calibrationRevisionId !== 'string' || !doc.calibrationRevisionId.trim()) errors.push('"calibrationRevisionId" must be a non-empty text.');
+  if (!Array.isArray(doc.entries)) { errors.push('"entries" must be a list.'); return { errors }; }
+  doc.entries.forEach((e, i) => {
+    const at = `entries[${i}]`, f = (v, lo) => Number.isFinite(v) && (lo == null || v >= lo);
+    if (!e || typeof e !== 'object') { errors.push(`${at} must be an object.`); return; }
+    if (typeof e.recordedAt !== 'string' || Number.isNaN(Date.parse(e.recordedAt))) errors.push(`${at}.recordedAt must be a date/time text.`);
+    if (e.weightId != null && typeof e.weightId !== 'string') errors.push(`${at}.weightId must be a text.`);
+    if (!f(e.referenceMassMg, 0) || !(e.referenceMassMg > 0)) errors.push(`${at}.referenceMassMg must be a number greater than 0.`);
+    if (!f(e.readingMg)) errors.push(`${at}.readingMg must be a number.`);
+    if (e.sigmaMg != null && !f(e.sigmaMg, 0)) errors.push(`${at}.sigmaMg must be a number ≥ 0 or null.`);
+    if (e.neff != null && !f(e.neff, 1)) errors.push(`${at}.neff must be a number ≥ 1 or null.`);
+    if (e.temperatureC != null && !f(e.temperatureC)) errors.push(`${at}.temperatureC must be a number or null.`);
+    if (e.note != null && typeof e.note !== 'string') errors.push(`${at}.note must be a text.`);
+  });
+  return { errors };
+}
+function checkweighingsDoc(calibrationRevisionId, entries) { return { schemaVersion: 1, calibrationRevisionId, entries: entries || [] }; }
+// ---- aux UI glue ---------------------------------------------------------------------------------------------------------------
+function auxShownChannels() { return activeSensor && state ? attachedAux(activeSensor).filter(c => !state.auxHidden.has(c.id)) : []; }
+function auxSigNow() { return auxShownChannels().map(c => c.id).join(','); }
+function emptyMainData() { const d = [[], [], [], [], []]; for (let k = 0; k < auxShownChannels().length; k++) d.push([]); return d; }
+function auxRateWindowS() { const v = Number($('tempRateWindow').value); return Number.isFinite(v) && v >= 5 ? Math.min(3600, v) : AUX_RATE_WINDOW_DEFAULT_S; }
+function auxApplySeriesVisibility() {
+  const u = state.mainPlot; if (!u) return; const any = state.auxColsAny || [];
+  if (state.auxAxisShown !== state.auxHasData) { state.auxAxisShown = state.auxHasData; if (state.auxHasData !== undefined && auxShownChannels().length) { try { u.setSize({ width: u.width, height: u.height }); } catch (_) {} } }   // the right-hand axis changes its width (0 while there is nothing to show)
+  for (let k = 0; k < any.length; k++) if (state.auxSeriesShown[k] !== any[k]) { state.auxSeriesShown[k] = any[k]; try { u.setSeries(5 + k, { show: any[k] }); } catch (_) {} }
+}
+function auxLatest(ch) { const b = ch.buf; for (let i = b.count - 1; i >= 0 && i >= b.count - 50; i--) { const p = auxP(b, i); if (Number.isFinite(b.val[p])) return { v: b.val[p], t: b.t[p] }; } return null; }
+function updateAuxReadout() {
+  const el = $('auxReadout'); if (!el || !activeSensor) return;
+  const list = attachedAux(activeSensor).filter(c => c.buf.count && auxLatest(c)); el.hidden = !list.length; if (!list.length) return;
+  const w = auxRateWindowS();
+  setHTML(el, list.map(c => { const l = auxLatest(c), r = c.kind === 'temperature' ? auxRateKPerMin(c, w) : null;
+    return `${esc(c.name)} <strong>${esc(fmtNumber(l.v, 2))} ${esc(c.unit)}</strong>${r == null ? '' : ` · ${r >= 0 ? '+' : '−'}${Math.abs(r).toFixed(2)} K/min <span class="small">(${w} s)</span>`}`; }).join(' · '));
+}
+function renderAuxToggles() {
+  const f = $('auxField'); if (!f || !activeSensor || !state) return; const list = attachedAux(activeSensor); f.hidden = !list.length;
+  setHTML($('auxToggles'), list.map(c => `<label class="check"><input type="checkbox" data-aux="${esc(c.id)}" ${state.auxHidden.has(c.id) ? '' : 'checked'}> ${esc(c.name)} <span class="small">(${esc(c.unit || '—')}) · ${esc(auxLink(c).text)}</span></label>`).join(''));
+}
+// Plain-words effect of the use conditions on the estimated uncertainty (Settings Menu, Sensor tab)
+function useConditionsNote(sensor) {
+  const uc = useConditionsOf(sensor), ch = sensor.state.calConfig && sensor.state.calConfig.characterization, inc = charIncludedNames(ch);
+  if (!inc.size) return 'The calibration of this sensor has no characterization (off-centre, creep, zero drift, temperature), so these numbers do not change any uncertainty yet. Measure them in the calibration wizard (Characterization / Extra checks).';
+  const mid = sensor.state.calPrepared && sensor.state.calPrepared.anchors ? Math.abs(sensor.state.calPrepared.anchors[sensor.state.calPrepared.anchors.length - 1].massMg) / 2 : 0, out = [];
+  if (ch.creep && inc.has('creep')) out.push(`creep after ${uc.readingDelayS} s: ±${(Math.abs(creepFractionAt(ch.creep, uc.readingDelayS).value) * mid).toPrecision(2)} mg at half load`);
+  if (ch.zeroDrift && inc.has('drift between calibration and use')) out.push(`zero drift ${uc.sessionSinceTareS} s after the tare: ±${(Math.abs(ch.zeroDrift.rateMgPerH) * uc.sessionSinceTareS / 3600).toPrecision(2)} mg`);
+  if (ch.temperature && inc.has('temperature')) out.push(`temperature ${uc.temperatureDeltaK} K away from the calibration temperature (only used without a temperature sensor): up to ±${Math.hypot((ch.temperature.zeroMgPerK || 0) * uc.temperatureDeltaK, (ch.temperature.spanPpmPerK || 0) * 1e-6 * mid * uc.temperatureDeltaK).toPrecision(2)} mg at half load`);
+  return 'These numbers decide how large the estimated uncertainty is: ' + (out.join('; ') || 'nothing measured applies') + '.';
+}
+function auxSetUserConversion(ch, conv) {
+  if (conv == null) { ch.userConversion = null; auxReconvert(ch); return []; }
+  const errs = validateAuxConversion(conv); if (errs.length) return errs; ch.userConversion = conv; auxReconvert(ch); return [];
+}
+// ---- characterization in the wizard (builder, long recordings, panes) ----------------------------------------------------------------
+function wizCharNew() { return { eccLoadId: null, eccPct: '', creepLoadId: null, creepMin: CREEP_MINUTES_DEFAULT, creepSettleS: CREEP_SETTLE_DEFAULT_S, creepPct: '', driftMin: DRIFT_MINUTES_DEFAULT, driftMgH: '', tempMode: 'auto', tempChannelId: null, tempZero10K: '', tempSpanPpm: '', tempRefC: '' }; }
+function wizChar() { return wiz.char || (wiz.char = wizCharNew()); }
+function wizCharFromConfig(cfg) {
+  const C = wizCharNew(), ch = cfg && cfg.characterization; if (!ch || typeof ch !== 'object') return C;
+  if (ch.eccentricity && ch.eccentricity.source === 'user-estimate' && Number.isFinite(ch.eccentricity.fractionOfLoad)) C.eccPct = ch.eccentricity.fractionOfLoad * 100;
+  if (ch.creep && ch.creep.source === 'user-estimate' && ch.creep.samples && ch.creep.samples.length) C.creepPct = ch.creep.samples[0].fraction * 100;
+  if (ch.zeroDrift && ch.zeroDrift.source === 'user-estimate') C.driftMgH = ch.zeroDrift.rateMgPerH;
+  const t = ch.temperature;
+  if (t) { if (t.source === 'user-estimate') { C.tempMode = 'typed'; C.tempZero10K = t.zeroMgPerK * 10; C.tempSpanPpm = t.spanPpmPerK; C.tempRefC = t.referenceC == null ? '' : t.referenceC; } else if (t.channelId) C.tempChannelId = t.channelId; }
+  return C;
+}
+function wizEmptyRaw(W) {
+  const v = []; for (const o of W.observations) { if (!isCalObs(o) || !o.include || !Number.isFinite(o.rawMean)) continue; const l = W.loads.find(x => x.loadId === o.loadId); if (!l) continue; let m; try { m = wizLoadMassMg(W, l); } catch (_) { continue; } if (m === 0) v.push(o.rawMean); }
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN;
+}
+// The `characterization` block of the calibration file. Tests are observations with a purpose; they never enter the fit. Measured values win over typed estimates.
+function buildCharacterization(W, fit) {
+  const C = W.char || wizCharNew(), notes = [], pid = W.profile.profileId, res = { status: 'none', profileId: pid, eccentricity: null, creep: null, zeroDrift: null, temperature: null, overriddenObservations: [], notes };
+  const obsOf = p => W.observations.filter(o => o.purpose === p && o.include && Number.isFinite(o.rawMean));
+  const massOf = id => { const l = W.loads.find(x => x.loadId === id); if (!l) return NaN; try { return wizLoadMassMg(W, l); } catch (_) { return NaN; } };
+  const track = list => { for (const o of list) if (o.override) res.overriddenObservations.push(o.observationId); }, mean = a => a.reduce((s, o) => s + o.rawMean, 0) / a.length;
+  const eo = obsOf('eccentricity'), ctr0 = eo.filter(o => o.position === 'centre');
+  if (ctr0.length) {
+    const loadId = ctr0[0].loadId, tm = massOf(loadId), same = eo.filter(o => o.loadId === loadId), names = [...new Set(same.map(o => o.position).filter(p => p !== 'centre'))];
+    const a = eccentricityAnalysis({ testMassMg: tm, centreRaw: mean(same.filter(o => o.position === 'centre')), positions: names.map(n => ({ name: n, raw: mean(same.filter(o => o.position === n)) })), slopeCountsPerMg: fit.slopeAt(tm) });
+    if (a.ok) { res.eccentricity = { testMassMg: a.testMassMg, centreRaw: a.centreRaw, positions: a.positions, maxAbsDevMg: a.maxAbsDevMg, fractionOfLoad: a.fractionOfLoad, source: 'measured', observationIds: same.map(o => o.observationId), calibrationProfileId: pid }; track(same); }
+    else notes.push('Off-centre loading: ' + a.errors.join(' '));
+  } else if (eo.length) notes.push('Off-centre loading: the centre position is missing.');
+  if (!res.eccentricity) { const p = numOrNull(C.eccPct); if (p != null && p >= 0) res.eccentricity = { testMassMg: null, centreRaw: null, positions: [], maxAbsDevMg: null, fractionOfLoad: p / 100, source: 'user-estimate', observationIds: [], calibrationProfileId: pid }; }
+  const co = obsOf('creep').filter(o => Array.isArray(o.series) && o.series.length);
+  if (co.length) {
+    const o = co[co.length - 1], a = creepAnalysis({ series: o.series, settleS: o.settleS == null ? CREEP_SETTLE_DEFAULT_S : o.settleS, emptyRaw: wizEmptyRaw(W) });
+    if (a.ok) { res.creep = { testMassMg: massOf(o.loadId), settleS: a.settleS, samples: a.samples, source: 'measured', observationIds: [o.observationId], calibrationProfileId: pid }; track([o]); } else notes.push('Creep: ' + a.errors.join(' '));
+  }
+  if (!res.creep) { const p = numOrNull(C.creepPct); if (p != null) res.creep = { testMassMg: null, settleS: CREEP_SETTLE_DEFAULT_S, samples: [{ tS: 60, fraction: p / 100 }], source: 'user-estimate', observationIds: [], calibrationProfileId: pid }; }
+  const dobs = obsOf('zero-drift').filter(o => Array.isArray(o.series) && o.series.length);
+  if (dobs.length) {
+    const o = dobs[dobs.length - 1], a = zeroDriftAnalysis({ series: o.series, slopeCountsPerMg: fit.slopeAt(0) });
+    if (a.ok) { res.zeroDrift = { rateMgPerH: a.rateMgPerH, seMgPerH: a.seMgPerH, durationS: a.durationS, source: 'measured', observationIds: [o.observationId], calibrationProfileId: pid }; track([o]); } else notes.push('Zero drift: ' + a.errors.join(' '));
+  }
+  if (!res.zeroDrift) { const p = numOrNull(C.driftMgH); if (p != null) res.zeroDrift = { rateMgPerH: p, seMgPerH: null, durationS: null, source: 'user-estimate', observationIds: [], calibrationProfileId: pid }; }
+  if (C.tempMode === 'typed') {
+    const z = numOrNull(C.tempZero10K), s = numOrNull(C.tempSpanPpm);
+    if (z != null || s != null) { const ref = numOrNull(C.tempRefC) != null ? numOrNull(C.tempRefC) : numOrNull(W.profile.temperatureC); res.temperature = { referenceC: ref, zeroMgPerK: (z || 0) / 10, zeroSe: null, spanPpmPerK: s || 0, spanSe: null, source: 'user-estimate', channelId: null, note: 'typed by the user (datasheet or own estimate)', calibrationProfileId: pid }; }
+  } else if (C.tempChannelId) {
+    const pts = []; for (const o of W.observations) { if (!isCalObs(o) || !o.include || !o.temperatures || !o.temperatures[C.tempChannelId]) continue; pts.push({ massMg: massOf(o.loadId), raw: o.rawMean, tempC: o.temperatures[C.tempChannelId].mean }); }
+    if (pts.length) { const t = fitTemperatureSensitivity(pts); if (t.ok) res.temperature = { referenceC: t.referenceC, zeroMgPerK: t.zeroMgPerK, zeroSe: t.zeroSe, spanPpmPerK: t.spanPpmPerK, spanSe: t.spanSe, source: 'measured', channelId: C.tempChannelId, note: `regression of ${t.n} observations over ${t.rangeK.toFixed(1)} K`, calibrationProfileId: pid }; else notes.push('Temperature: ' + t.errors.join(' ')); }
+  }
+  const present = ['eccentricity', 'creep', 'zeroDrift', 'temperature'].filter(k => res[k]), srcs = present.map(k => res[k].source);
+  res.status = !present.length ? 'none' : srcs.every(s => s === 'user-estimate') ? 'user-estimate' : (present.length === 4 && srcs.every(s => s === 'measured') ? 'measured' : 'partly measured');
+  return res;
+}
+function charSummaryText(ch) {
+  if (!ch || ch.status === 'none') return 'not characterized';
+  const p = []; if (ch.eccentricity) p.push(`off-centre ${(ch.eccentricity.fractionOfLoad * 100).toFixed(2)} % of the load (${ch.eccentricity.source})`);
+  if (ch.creep) p.push(`creep (${ch.creep.source})`); if (ch.zeroDrift) p.push(`zero drift ${fmtNumber(ch.zeroDrift.rateMgPerH, 2)} mg/h (${ch.zeroDrift.source})`);
+  if (ch.temperature) p.push(`temperature (${ch.temperature.source})`); return `${ch.status}: ${p.join('; ')}`;
+}
+// ---- long recordings (creep, zero drift): samples are collected while they arrive, independent of the ring buffer ----------------------------
+function charRecSample(t, raw, id) {
+  const r = state.charRec; if (r.t0 == null) r.t0 = t; r.times.push(t); r.raws.push(raw); r.ids.push(Number.isFinite(id) ? id : NaN); r.count = r.times.length;
+  if (t - r.t0 >= r.durationS * 1000 - PERIOD_MS / 2) charRecFinish();
+}
+function cancelCharRec(reason) {
+  if (!state.charRec) return; state.charRec = null; wiz.capture = null; wiz.message = `Recording cancelled: ${reason}`;
+  appendLogEntry({ type: 'note', entryId: `note-${Date.now()}`, createdAt: new Date().toISOString(), text: `Recording cancelled: ${reason}` });
+  if (wiz.open) wizRender();
+}
+function charRecFinish() {
+  const r = state.charRec; state.charRec = null; const n = r.times.length;
+  const an = analyzeSeries(r.raws, r.times, { nominalMs: PERIOD_MS, counters: r.ids.every(Number.isFinite) ? r.ids : null }), status = charStatus(an, r.purpose), comp = compactAnalysis(an); comp.status = status;
+  comp.note = (comp.note ? comp.note + '; ' : '') + 'for creep and zero-drift recordings only gaps, range, vibration and a step count (a slow change is what is measured)';
+  const st = rawStats(r.raws), flagged = charRelevantChecks(an, r.purpose).filter(c => c.verdict === 'suspect' || c.verdict === 'invalid').map(c => c.label.split(' / ')[0]);
+  const series = binSeries(r.times, r.raws, r.purpose === 'creep' ? Math.max(1, r.durationS / 400) : r.durationS / DRIFT_BLOCKS);
+  const o = { observationId: wizNextObsId(), loadId: r.loadId, recordedAt: new Date().toISOString(), placementRunId: wiz.runId, placementIndex: wiz.observations.length + 1, removedAndReplaced: true, loadingDirection: null,
+    rawMean: st.mean, rawStdDev: st.sd, rawMedian: st.median, rawMAD: st.mad, sampleCount: st.n, durationMs: r.times[n - 1] - r.times[0] + PERIOD_MS,
+    validity: { status, flagged, analysis: comp }, include: status !== 'invalid', exclusionReason: status === 'invalid' ? 'validity check: invalid' : undefined, source: 'capture',
+    purpose: r.purpose, position: null, series, settleS: r.settleS, temperatures: auxTemperaturesFor(activeSensor, r.times[0], r.times[n - 1]), recordedUnderRevision: state.revisionId };
+  wiz.observations.push(o); wiz.capture = null;
+  wiz.message = wizMode === 'simple' ? `Recorded: ${wizPlainVerdict(o.validity)}${o.include ? '' : ' (left out until you choose “include anyway”)'}.` : `Observation ${o.observationId} (${r.purpose}) recorded: ${n.toLocaleString()} samples, validity ${STATUS_TEXT[status] || status}${o.include ? '' : ' (excluded by default)'}.`;
+  if (wiz.open) wizRender();
+}
+function wizRecordLong(purpose) {
+  const why = wizBlock(); if (why) { wiz.message = why; wizRender(); return; }
+  const C = wizChar(); let loadId, durationS, settleS = null;
+  if (purpose === 'creep') { loadId = C.creepLoadId; durationS = clamp(Number(C.creepMin) || CREEP_MINUTES_DEFAULT, 1, CREEP_MINUTES_MAX) * 60; settleS = clamp(Number(C.creepSettleS) || CREEP_SETTLE_DEFAULT_S, 1, 120); }
+  else { const e = wiz.loads.find(l => l.auto && l.weightRef === 'ref-empty'); loadId = e && e.loadId; durationS = clamp(Number(C.driftMin) || DRIFT_MINUTES_DEFAULT, 1, DRIFT_MINUTES_MAX) * 60; }
+  if (!loadId) { wiz.message = purpose === 'creep' ? 'Choose the weight for the creep test.' : 'The empty platform is missing from the loads.'; wizRender(); return; }
+  if (durationS * RATE_HZ > CHAR_MAX_SAMPLES) { wiz.message = `The recording would exceed ${CHAR_MAX_SAMPLES.toLocaleString()} samples at ${RATE_HZ} Hz; choose a shorter time.`; wizRender(); return; }
+  state.charRec = { purpose, loadId, durationS, settleS, tag: 'calibration wizard', times: [], raws: [], ids: [], t0: null, count: 0 };
+  wiz.capture = { loadId, target: Math.round(durationS * RATE_HZ), purpose };
+  wiz.message = purpose === 'creep' ? `Recording the creep for ${(durationS / 60).toFixed(0)} min. Place the weight now and do not touch the platform.` : `Recording the empty platform for ${(durationS / 60).toFixed(0)} min. Nothing on the platform, do not touch it.`;
+  wizRender();
+}
+// ---- panes ---------------------------------------------------------------------------------------------------------------------------
+function wizTempChannels() { return attachedAux(sensors.get(wiz.sensorId) || activeSensor, 'temperature'); }
+function wizCharEnsureDefaults() {
+  const C = wizChar(), ms = wiz.loads.filter(l => l.components.length).map(l => ({ l, m: wizLoadMassSafe(l) })).filter(x => Number.isFinite(x.m) && x.m > 0);
+  if (ms.length) {
+    const cap = Math.max(...ms.map(x => x.m));
+    if (!C.eccLoadId || !wiz.loads.some(l => l.loadId === C.eccLoadId)) C.eccLoadId = ms.reduce((a, b) => Math.abs(b.m - cap / 3) < Math.abs(a.m - cap / 3) ? b : a).l.loadId;
+    if (!C.creepLoadId || !wiz.loads.some(l => l.loadId === C.creepLoadId)) C.creepLoadId = ms.reduce((a, b) => b.m > a.m ? b : a).l.loadId;
+  }
+  const ch = wizTempChannels(); if (!C.tempChannelId || !ch.some(c => c.id === C.tempChannelId)) C.tempChannelId = ch.length ? (primaryTempChannel(sensors.get(wiz.sensorId) || activeSensor) || ch[0]).id : null;
+}
+function wizCharResults() { const { fits } = wizFits(), fit = fits[wizActiveModel(fits)]; return fit && fit.ok ? buildCharacterization(wiz, fit) : null; }
+function wizCharObsTable(purpose, simple) {
+  const rows = wiz.observations.map((o, i) => {
+    if (o.purpose !== purpose) return ''; const l = wiz.loads.find(x => x.loadId === o.loadId);
+    const use = simple ? (o.include ? (o.override ? '<span class="warning">used anyway</span>' : 'used') : (o.validity && o.validity.status === 'invalid' ? `<button data-wa="inclAnyway" data-i="${i}" title="Use it although the check failed. This is recorded in the file.">include anyway</button>` : 'not used'))
+      : `<input type="checkbox" data-w="obsInclude" data-i="${i}" ${o.include ? 'checked' : ''} aria-label="Use">${o.override ? '<div class="small warning">included anyway</div>' : ''}`;
+    return `<tr class="${o.include ? '' : 'excl'}"><td>${esc(o.observationId)}</td><td>${esc(o.position || '')}</td><td>${esc(l ? l.name : '?')}</td><td>${fmtNumber(o.rawMean, 2)}</td><td>${o.sampleCount == null ? '—' : o.sampleCount.toLocaleString()}${o.durationMs ? ' · ' + fmtSpan(o.durationMs / 1000) : ''}</td><td>${simple ? esc(wizPlainVerdict(o.validity)) + (o.validity && o.validity.analysis ? wizValidityCell(o) : '') : wizValidityCell(o)}</td><td>${use}</td><td><button data-wa="delObs" data-i="${i}" aria-label="Delete">✕</button></td></tr>`;
+  }).join('');
+  return rows ? `<div class="tablewrap"><table class="wiz-table"><thead><tr><th>ID</th><th>Position</th><th>Load</th><th>Mean (counts)</th><th>n · time</th><th>Validity</th><th>Use</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="small">Nothing recorded yet.</div>';
+}
+function wizPaneChar(simple) {
+  wizCharEnsureDefaults();
+  const C = wizChar(), why = wizBlock(), busy = !!wiz.capture, res = wizCharResults(), u = wiz.profile.unit, us = unitById(u).symbol, dis = why || busy ? 'disabled' : '';
+  const loadOpts = sel => wiz.loads.filter(l => l.components.length).map(l => `<option value="${esc(l.loadId)}"${l.loadId === sel ? ' selected' : ''}>${esc(l.name)} · ${wizMassText(wizLoadMassSafe(l), u)}</option>`).join('');
+  const num = (f, v, extra = '') => `<input type="number" step="any" data-w="char" data-f="${f}" value="${esc(v == null ? '' : v)}" ${extra}>`;
+  const none = res ? '' : '<div class="small warning">Finish the calibration observations first: the slope of the calibration is needed to turn counts into mass.</div>';
+  const mgTxt = mg => `${fmtNumber(mgToUnit(mg, u), 4)} ${us}`;
+  const e = res && res.eccentricity, c = res && res.creep, z = res && res.zeroDrift, t = res && res.temperature;
+  const eccBtns = ECC_POSITIONS.map(p => `<button class="primary" data-wa="recordChar" data-purpose="eccentricity" data-pos="${p}" ${dis}>● ${p} (${wiz.observations.filter(o => o.purpose === 'eccentricity' && o.position === p).length})</button>`).join('');
+  const eccRes = e ? `<div class="status-note">${e.source === 'measured' ? `Largest change when the weight is off-centre: <strong>${mgTxt(e.maxAbsDevMg)}</strong> = <strong>${(e.fractionOfLoad * 100).toFixed(3)} %</strong> of the test weight (${esc(e.positions.map(p => `${p.name} ${p.devMg >= 0 ? '+' : ''}${fmtNumber(mgToUnit(p.devMg, u), 4)}`).join(', '))} ${esc(us)}).` : `Your estimate: <strong>${(e.fractionOfLoad * 100).toFixed(3)} %</strong> of the load.`} <span class="small">(${esc(e.source)})</span></div>` : '';
+  const creepRes = c ? `<div class="status-note">${c.source === 'measured' ? `Creep after ${esc(c.samples.map(s => `${s.tS} s: ${(s.fraction * 100).toFixed(3)} %`).join(', '))} of the load change (settle time ${c.settleS} s).` : `Your estimate: ${(c.samples[0].fraction * 100).toFixed(3)} % after 1 min.`} <span class="small">(${esc(c.source)})</span></div>` : '';
+  const driftRes = z ? `<div class="status-note">Zero drift: <strong>${fmtNumber(z.rateMgPerH, 2)} mg/h</strong>${z.seMgPerH != null ? ` ± ${fmtNumber(z.seMgPerH, 2)}` : ''}${z.durationS ? ` over ${fmtSpan(z.durationS)}` : ''}. <span class="small">(${esc(z.source)})</span></div>` : '';
+  const chans = wizTempChannels(), tf = fitTemperatureSensitivity(wizCalObs(wiz).filter(o => o.include && o.temperatures && C.tempChannelId && o.temperatures[C.tempChannelId]).map(o => ({ massMg: wizLoadMassSafe(wiz.loads.find(l => l.loadId === o.loadId) || { components: [] }), raw: o.rawMean, tempC: o.temperatures[C.tempChannelId].mean })));
+  const tempRes = t ? `<div class="status-note">Temperature: zero shift <strong>${fmtNumber(t.zeroMgPerK, 3)} mg/K</strong>${t.zeroSe != null ? ` ± ${fmtNumber(t.zeroSe, 3)}` : ''}, span <strong>${fmtNumber(t.spanPpmPerK, 1)} ppm/K</strong>${t.spanSe != null ? ` ± ${fmtNumber(t.spanSe, 1)}` : ''}${t.referenceC != null ? ` · reference ${fmtNumber(t.referenceC, 1)} °C` : ''} <span class="small">(${esc(t.source)}; ${esc(t.note)})</span></div>` : (C.tempMode === 'auto' ? `<div class="small">${chans.length ? esc(tf.ok ? '' : tf.errors[0]) : 'No temperature channel is attached to this sensor. Type your own estimate instead.'}</div>` : '');
+  const typed = `<div class="control-grid"><div class="field"><label>Zero shift (${esc(us)} per 10 K)</label>${num('tempZero10K', C.tempZero10K)}</div><div class="field"><label>Span change (ppm per K)</label>${num('tempSpanPpm', C.tempSpanPpm)}</div><div class="field"><label>Reference temperature (°C)</label>${num('tempRefC', C.tempRefC)}</div></div>`;
+  const notes = res && res.notes.length ? res.notes.map(n => `<div class="small warning">⚠ ${esc(n)}</div>`).join('') : '';
+  const head = (a, b) => `<h3 style="margin:14px 0 4px">${simple ? a : b}</h3>`;
+  const rec = '<progress id="wizRecBar" max="1" value="0" ' + (busy ? '' : 'hidden') + '></progress><div class="small" id="wizRecProgress">' + (why ? esc(why) : '') + '</div>';
+  const cancel = busy ? '<div class="button-row"><button data-wa="cancelRec">Cancel recording</button></div>' : '';
+  return `<div class="small">${simple ? 'Optional extra checks. Each one makes the estimated uncertainty more complete; skip any of them. Nothing here changes the calibration curve.' : 'Characterization tests are stored as observations with a purpose and never enter the calibration fit. They feed the off-centre, creep, zero-drift and temperature components of the uncertainty.'}</div>${none}${notes}
+  ${head('Extra check 1 of 3 · Off-centre loading', 'Eccentricity (off-centre loading)')}
+  <div class="small">${simple ? 'How much does the reading change if you put the weight off-centre? Use one weight of about a third of the maximum load. Put it in the centre first, then near each of the four edges. Take it off and put it back before every recording.' : 'One weight of about a third of capacity: centre, then four edge positions. Deviation = (counts − centre counts) / slope; fraction of load = largest |deviation| / test mass.'}</div>
+  <div class="field"><label>Test weight</label><select data-w="char" data-f="eccLoadId">${loadOpts(C.eccLoadId)}</select></div><div class="button-row">${eccBtns}</div>${wizCharObsTable('eccentricity', simple)}${eccRes}
+  ${simple ? '' : `<div class="field"><label>or your own estimate: largest change when off-centre (% of the load)</label>${num('eccPct', C.eccPct, 'min="0"')}</div>`}
+  ${head('Extra check 2 of 3 · Creep', 'Creep')}
+  <div class="small">${simple ? 'Does the reading keep creeping after a weight is placed? Place the weight and press Record at once; leave it for the chosen time.' : 'Place a weight, record for N minutes. fraction(t) = (r(t) − r(settle)) / (r(settle) − r_empty) at 30 s, 1 min, 2 min, 5 min … (those that fit). The empty-platform observation of the calibration is the reference.'}</div>
+  <div class="control-grid"><div class="field"><label>Weight</label><select data-w="char" data-f="creepLoadId">${loadOpts(C.creepLoadId)}</select></div><div class="field"><label>Recording time (min, up to ${CREEP_MINUTES_MAX})</label>${num('creepMin', C.creepMin, 'min="1"')}</div>${simple ? '' : `<div class="field"><label>Settle time (s)</label>${num('creepSettleS', C.creepSettleS, 'min="1"')}</div>`}</div>
+  <div class="button-row"><button class="primary" data-wa="recordLong" data-purpose="creep" ${dis}>● Record creep</button></div>${wizCharObsTable('creep', simple)}${creepRes}
+  ${simple ? '' : `<div class="field"><label>or your own estimate: creep after 1 min (% of the load)</label>${num('creepPct', C.creepPct)}</div>`}
+  ${head('Extra check 3 of 3 · Zero drift', 'Zero drift')}
+  <div class="small">${simple ? 'Does the empty scale drift? Clear the platform completely and record. A step (something touched it) makes the recording unusable.' : 'Empty platform for N minutes; weighted straight-line fit of the block means gives the rate ± its standard error in mg/h.'}</div>
+  <div class="control-grid"><div class="field"><label>Recording time (min, up to ${DRIFT_MINUTES_MAX})</label>${num('driftMin', C.driftMin, 'min="1"')}</div></div>
+  <div class="button-row"><button class="primary" data-wa="recordLong" data-purpose="zero-drift" ${dis}>● Record the empty platform</button></div>${wizCharObsTable('zero-drift', simple)}${driftRes}
+  ${simple ? '' : `<div class="field"><label>or your own estimate: zero drift (${esc(us)} per hour, mg/h)</label>${num('driftMgH', C.driftMgH)}</div>`}
+  ${cancel}${rec}
+  ${simple ? `<details style="margin-top:10px"><summary>Temperature (optional, not a step)</summary><div class="small" style="margin:6px 0">${chans.length ? 'A temperature sensor is attached: if the calibration observations were taken at temperatures at least ' + TEMP_FIT_MIN_RANGE_K + ' K apart, the sensitivity is measured automatically. Otherwise type your own estimate (data sheet):' : 'No temperature sensor is attached. If you know the sensitivity (data sheet), type it:'}</div>${typed}${tempRes}</details>`
+  : `${head('', 'Temperature sensitivity')}<div class="small">With a sensor: the calibration observations carry their mean temperature (automatically); at least ${TEMP_FIT_MIN_RANGE_K} K range is needed. Without: type your own estimate (source “user-estimate”). Temperature correction of the readings is not done; it only enters the uncertainty.</div><div class="control-grid"><div class="field"><label>Source</label><select data-w="char" data-f="tempMode"><option value="auto"${C.tempMode === 'auto' ? ' selected' : ''}>measured with a temperature channel</option><option value="typed"${C.tempMode === 'typed' ? ' selected' : ''}>typed by me (user estimate)</option></select></div><div class="field"><label>Temperature channel</label><select data-w="char" data-f="tempChannelId">${chans.map(ch => `<option value="${esc(ch.id)}"${ch.id === C.tempChannelId ? ' selected' : ''}>${esc(ch.name)}</option>`).join('') || '<option value="">none attached</option>'}</select></div></div>${typed}${tempRes}`}
+  <div class="readout" style="margin-top:10px">Characterization: <strong>${esc(charSummaryText(res))}</strong></div>`;
 }
 
 // uPlot is pinned to one exact version (reproducible builds; no surprise breaking changes). To

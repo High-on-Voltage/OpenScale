@@ -138,7 +138,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="mcol span2">
       <div class="metric-pair">
         <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div>
-          <div class="detail" id="pmLines"><span id="pmSigma" title="Spread σ of the single readings in the estimator window (the same number as the spread card). How much single readings scatter; not an uncertainty.">σ —</span> · <span id="pmMean" title="Uncertainty of the window AVERAGE if the readings were independent: σ divided by the effective number of independent samples n_eff (from the autocorrelation, so slow noise counts less than white noise). A longer window narrows it only while the noise is white. Repeatability of the average only: no calibration, no weights.">±avg —</span> · <span id="pmStab" title="Stability: how much the DISPLAYED value itself moved (max − min) during the last window length. Small = settled; large = still moving. This is not a repeatability.">moved —</span></div><div class="detail warning" id="rangeStatus" hidden></div></div>
+          <div class="detail" id="pmLines"><span id="pmSigma" title="Spread σ of the single readings in the estimator window (the same number as the spread card). How much single readings scatter; not an uncertainty.">σ —</span> · <span id="pmMean" title="Uncertainty of the window AVERAGE if the readings were independent: σ divided by the effective number of independent samples n_eff (from the autocorrelation, so slow noise counts less than white noise). A longer window narrows it only while the noise is white. Repeatability of the average only: no calibration, no weights.">±avg —</span> · <span id="pmStab" title="Stability: how much the DISPLAYED value itself moved (max − min) during the last window length. Small = settled; large = still moving. This is not a repeatability.">moved —</span></div><div class="detail" id="auxReadout" hidden></div><div class="detail warning" id="rangeStatus" hidden></div></div>
         <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
       </div>
       <section class="panel compact" aria-label="Display and estimator settings">
@@ -202,6 +202,8 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1" value="5"><div class="small">Slow response at low values · immediate at 100%</div></div>
         <div class="field full" style="margin:7px 0 6px"><label for="bandModeSelect" title="How the band around the centre line is drawn. After a level step the window holds old and new samples, so a plain centre ± SD band reaches about 21 % above the old level (not a bug).">Spread band</label><select id="bandModeSelect"><option value="symmetric">Symmetric ±σ (default)</option><option value="asymmetric">Asymmetric (mean of samples above / below)</option><option value="stepaware">Step-aware (restarts at a level step)</option></select><div class="small" id="bandModeNote">Not used for the EMA estimators.</div></div>
         <label class="check"><input type="checkbox" id="subPixelToggle"> Sub-pixel rendering (testing; uPlot pxAlign 0, off = pixel-aligned)</label>
+        <div class="field full" id="auxField" style="margin:7px 0 6px" hidden><label>Auxiliary channels (right-hand axis)</label><div id="auxToggles"></div></div>
+        <div class="field full" style="margin:4px 0 6px"><label for="tempRateWindow">Rate of change of a temperature: window (s)</label><input id="tempRateWindow" type="number" min="5" max="3600" step="1" value="60"><div class="small">K per minute over this window, shown next to the temperature value.</div></div>
         <label class="check"><input type="checkbox" id="downsampleToggle"> Downsample large windows (min/max envelope)</label>
         <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
         <div class="small">Downsampling activates only above roughly four plotted points per horizontal pixel. Disable it to plot every visible sample.</div>
@@ -360,6 +362,18 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssBreak">Breaks shorter than (s) stay one event</label><input type="number" id="ssBreak" step="any" min="0"></div>
           <div class="field"><label for="ssHold">Keep the warning visible for (s)</label><input type="number" id="ssHold" step="any" min="1"></div>
         </div>
+        <h3 style="margin:12px 0 4px">Use conditions</h3>
+        <div class="small" id="ssUseNote">—</div>
+        <div class="control-grid" style="margin-top:6px">
+          <div class="field"><label for="ssReadDelay">How long after placing a load you usually read the value (s)</label><input type="number" id="ssReadDelay" step="any" min="0"></div>
+          <div class="field"><label for="ssSessionS">How long after the last tare you usually weigh (s)</label><input type="number" id="ssSessionS" step="any" min="0"></div>
+          <div class="field"><label for="ssTempDelta">Usual temperature difference to the calibration (K, only used without a temperature sensor)</label><input type="number" id="ssTempDelta" step="any" min="0"></div>
+          <div class="field"><label for="ssPrimaryTemp">Temperature channel used for the uncertainty</label><select id="ssPrimaryTemp"></select></div>
+        </div>
+        <div id="ssAuxBox" hidden><h3 style="margin:12px 0 4px">Auxiliary channels</h3>
+          <div class="small">Correct the conversion of a channel (for example an ice-point offset). The firmware values stay the default; your correction is kept in sensor_settings.json.</div>
+          <div class="control-grid" style="margin-top:6px"><div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div><div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g. {"type":"polynomial","coefficients":[-12.3,0.0042]})</label><input type="text" id="ssAuxConv"></div></div>
+          <div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Use the firmware conversion</button></div><div class="small" id="ssAuxInfo"></div></div>
         <div class="field span2" style="margin-top:8px"><label>Sample history</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the server</button></div><div class="small" id="ssHistoryInfo">—</div></div>
         <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensor_settings.json</button><button id="ssDownloadBtn">Download sensor_settings.json</button><button id="ssLoadBtn">Load sensor_settings.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
       </div>
@@ -386,6 +400,6 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="modal-body" id="wizBody"></div>
   </div>
 </div>
-<script src="telemetry_workbench_v15.js"></script>
+<script src="telemetry_workbench_v16.js"></script>
 </body>
 </html>
