@@ -1,8 +1,8 @@
 # OpenScale — JSON File Formats and Examples
 
-**Version:** 3.4  
+**Version:** 0.4.2  
 **Purpose:** Configuration, WebUI-owned files, calibration files and JSON payload reference  
-**Companion documents:** `project-requirements_v3.4.md`, `api-protocol_v3.4.md`
+**Companion documents:** `project-requirements_v0.4.2.md`, `api-protocol_v0.4.2.md`
 
 ## 1. General rules
 
@@ -29,7 +29,7 @@
 | Calibration | `/data/calibration/calibration_<sensorId>_<profileId>.json` | WebUI-owned; ESP stores/serves opaque gzip bytes | Gzip JSON |
 | Generic static assets | `/<static-asset-path>` | WebUI-owned, served as gzip | Gzip bytes |
 
-The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentication and method details are in `api-protocol_v3.4.md`.
+The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentication and method details are in `api-protocol_v0.4.2.md`.
 
 ## 3. `settings.json` — system settings
 
@@ -41,7 +41,7 @@ The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentic
   "hostname": "openscale_a1b2c3",
   "redirectToHostname": true,
   "http_indexpath": "/default.html",
-  "storage": {
+  "buffer": {
     "ringbuffer_max_total_size_bytes": 262144,
     "queue_capacity": 64
   },
@@ -58,8 +58,8 @@ Fields:
 | `hostname` | Device hostname without `.local`; generated on first boot if empty using `openscale_` plus the final three base-MAC bytes in hex |
 | `redirectToHostname` | Redirect requests addressed by IP to the mDNS hostname when resolvable |
 | `http_indexpath` | Static asset served for `/`; default `/default.html` |
-| `storage.ringbuffer_max_total_size_bytes` | Aggregate memory budget for all per-sensor ring buffers |
-| `storage.queue_capacity` | Shared acquisition queue capacity |
+| `buffer.ringbuffer_max_total_size_bytes` | Aggregate memory budget for all per-sensor ring buffers |
+| `buffer.queue_capacity` | Shared acquisition queue capacity |
 | `https.enabled` | HTTPS request; reject true while TLS is unavailable/not operational. HTTP itself cannot be disabled |
 | `security.passwordSet` | GET-only indicator; true if an administrator password exists |
 
@@ -361,6 +361,6 @@ The uncompressed WebUI JSON may be roughly 30–250 KiB; compressed upload size 
 
 ## 10. JSON exchange payload notes
 
-History samples use `sensorId`, `n`, `t`, `raw` and optional `flags`. `raw` and all 64-bit fields are unsigned integer tokens on the wire. Warning event JSON adds `type:"sensor"`, `code`, `active` and a nested `sensor` object containing `sensorId`, `threshold` and `sample`; see `api-protocol_v3.4.md` for complete SSE payloads.
+History samples use `sensorId`, `n`, `t`, `raw` and optional `flags`. `raw` and all 64-bit fields are unsigned integer tokens on the wire. Warning event JSON adds `type:"sensor"`, `code`, `active` and a nested `sensor` object containing `sensorId`, `threshold` and `sample`; see `api-protocol_v0.4.2.md` for complete SSE payloads.
 
 A JSON `flags` value is u32; absent means zero. The same bit meanings apply as in binary history. Threshold flags are computed on demand; they are not retained in ring buffers. Historical bits for sensor disconnection/error/invalid measurement cannot be reconstructed unless future firmware stores additional metadata; device log/events provide those historical transitions.

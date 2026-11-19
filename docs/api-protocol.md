@@ -1,8 +1,8 @@
 # OpenScale — HTTP, SSE and Data Protocol
 
-**Version:** 3.4  
+**Version:** 0.4.2  
 **Purpose:** Authoritative firmware/WebUI communication contract  
-**Companion documents:** `project-requirements_v3.4.md`, `json-file-formats_v3.4.md`
+**Companion documents:** `project-requirements_v0.4.2.md`, `json-file-formats_v0.4.2.md`
 
 ## 1. Status terminology and conventions
 
@@ -76,7 +76,7 @@ Recommended startup sequence:
 
 `bootId` is generated randomly exactly once per boot and is provided to the WebUI only in `/api/status`. The WebUI compares it on every status poll and after every SSE connection/reconnection. A changed value starts a new session epoch; previous samples remain associated with the earlier epoch because monotonic timestamps restart after reboot. A backwards `n` or `t` is a defensive secondary signal, not a replacement for `bootId`.
 
-The SSE `id:` field embeds the boot ID for globally unique event identity, but the WebUI does not parse it to determine the boot session. `/api/status` is the authoritative JSON source of `bootId`; do not duplicate `bootId` as a JSON property in SSE payloads.
+The SSE `id:` field embeds the boot ID for globally unique event identity. `/api/status` is the authoritative JSON source of `bootId`; do not duplicate `bootId` as a JSON property in SSE payloads.
 
 ### 3.2 Authentication retry
 
@@ -198,7 +198,7 @@ When a live `n` jumps, the WebUI requests the missing `from_id`..`to_id` interva
 - Each application event has an SSE `id:` line: `<bootId>-<eventCounter>`, for example `a83f21c9-1042`.
 - `eventCounter` is one device-global unsigned 64-bit counter that starts at 1 for each boot and increments for every application event transmitted through SSE. A live event is assigned one ID before broadcast, so all currently connected clients receive the same ID. Each per-connection device-log snapshot frame is assigned its own new global ID. The per-sensor sample ID `n` is independent. SSE keep-alive comments, if used, are not application events and do not consume an event ID.
 - Emit one `sample` event per sample. Array batching is not used in this protocol revision. On a new SSE connection, send the retained current-boot device-log entries as `device_log` events (at most 128); this is a log snapshot only, not sample/history replay. The WebUI deduplicates log entries by `logEntryId`, since it may also have fetched them through `/api/device-log`.
-- Do not include `bootId` or `eventCounter` again in JSON data; the WebUI gets `bootId` through `/api/status` and does not parse the SSE `id:` line.
+- Do not include `bootId` or `eventCounter` again in JSON data; the WebUI gets `bootId` through `/api/status`.
 
 ### 5.2 Sample event
 

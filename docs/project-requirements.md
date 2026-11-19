@@ -1,8 +1,8 @@
 # OpenScale ESP32 — Project Requirements and Architecture
 
-**Version:** 3.4  
+**Version:** 0.4.2  
 **Purpose:** Firmware requirements and architecture baseline  
-**Companion documents:** `json-file-formats_v3.4.md`, `api-protocol_v3.4.md`
+**Companion documents:** `json-file-formats_v0.4.2.md`, `api-protocol_v0.4.2.md`
 
 ## 1. Status terminology
 
@@ -86,7 +86,7 @@ The WebUI performs conversion from raw values to physical values. The ESP stores
 
 ## 5. History buffers and memory
 
-Each sensor owns a bounded ring buffer sized by `ringbuffer_size_samples`. The aggregate allocation is constrained by `settings.json.storage.ringbuffer_max_total_size_bytes`, leaving sufficient internal RAM for stacks, tasks, networking and essential services. PSRAM is optional and may be used to enlarge buffers.
+Each sensor owns a bounded ring buffer sized by `ringbuffer_size_samples`. The aggregate allocation is constrained by `settings.json.buffer.ringbuffer_max_total_size_bytes`, leaving sufficient internal RAM for stacks, tasks, networking and essential services. PSRAM is optional and may be used to enlarge buffers.
 
 Buffer sizing is per sensor; `queue_capacity` separately configures the shared acquisition queue. The configured buffer capacities, current usage, oldest retained sample ID and latest sample ID are exposed through status.
 
@@ -103,7 +103,7 @@ Do not reserve enough memory for both buffers when executing `clear` mode.
 
 Per-sample flags are **not stored in ring-buffer entries**. This avoids increasing RAM usage per sample. Firmware overload/underload flags are calculated on demand from each raw value and the current sensor thresholds when producing history or live sample responses. Consequently, historical overload/underload flags reflect the currently configured thresholds, not necessarily the thresholds that were active when the sample was acquired.
 
-The 32-bit flag layout is defined in `api-protocol_v3.4.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
+The 32-bit flag layout is defined in `api-protocol_v0.4.2.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
 
 ### 5.3 Warning hysteresis
 
@@ -155,7 +155,7 @@ HTTP itself cannot be disabled. If HTTPS is enabled, configured and fully operat
 
 ## 8. HTTP, SSE and device observability
 
-The definitive method/path, payload, authentication, history and SSE contract is in `api-protocol_v3.4.md`. In summary:
+The definitive method/path, payload, authentication, history and SSE contract is in `api-protocol_v0.4.2.md`. In summary:
 
 - HTTP handles finite history, metadata, status, logs, configuration, file operations and restart.
 - One `/stream` SSE endpoint multiplexes `sample`, `warning`, `device`, `sensor_error` and `device_log` events.
@@ -229,7 +229,7 @@ The firmware build must gzip all required static WebUI assets in development and
 
 The initial starter scaffold described an HX711-only implementation with one acquisition task per enabled HX711, a shared FreeRTOS queue, per-sensor ring buffers, a total buffer budget, asynchronous multiplexed SSE, per-sensor history, Wi-Fi STA/fallback AP, JSON settings management, calibration upload, gzip static assets and serial recovery. It explicitly lacked a successful ESP-IDF build/hardware test in its original environment.
 
-That scaffold is not the v3.4 contract: its endpoint names, single combined device/status endpoint, old configuration routes, flat-only asset paths, HTTP-disable command and older file schemas are superseded by the current companion API/JSON documents. Do not describe a v3.4 requirement as implemented unless it has separately passed build and hardware validation.
+That scaffold is not the v0.4.2 contract: its endpoint names, single combined device/status endpoint, old configuration routes, flat-only asset paths, HTTP-disable command and older file schemas are superseded by the current companion API/JSON documents. Do not describe a v0.4.2 requirement as implemented unless it has separately passed build and hardware validation.
 
 ## 13. Deferred items and remaining open points
 
