@@ -1,75 +1,41 @@
 # OpenScale ESP32 — Project Requirements and Architecture
 
-**Document purpose:** Firmware-project handover and requirements baseline  
-**Version:** 0.2
+**Version:** 3.4  
+**Purpose:** Firmware requirements and architecture baseline  
+**Companion documents:** `json-file-formats_v3.4.md`, `api-protocol_v3.4.md`
 
-## 1. Product scope
+## 1. Status terminology
 
-OpenScale is an ESP32-based sensor node. It acquires measurements from multiple sensors, maintains per-sensor history, and exposes live data, historical data, device information, configuration and file management through HTTP and Server-Sent Events (SSE). The device also serves the separately developed WebUI.
+- **Explicit** — directly confirmed requirement or decision.
+- **Implicit** — accepted direction that was not separately confirmed in detail.
+- **ESP decision** — a concrete decision made in this revision to close a previously open point.
+- **Deferred** — intentionally postponed; not part of the current implementation contract.
+- **Open** — genuinely unresolved and requiring further agreement.
 
-The firmware owns sensor acquisition, data retention, device management, networking and the HTTP/SSE interface. The HTTP server should use asynchronous handling for long-lived SSE requests so they do not occupy the ordinary HTTP request-processing task. The WebUI is a separate component: its visualisation, interaction and presentation logic are outside the firmware specification. The firmware serves the built WebUI assets, initially including protected `default.html` and `default.js` assets.
+## 2. Product scope
 
-**Initial network focus:** Wi-Fi through ESP-IDF. Ethernet-capable variants are not excluded as a general concept, but Ethernet support is not part of the initial implementation focus.
+OpenScale is an ESP32-based multi-sensor node. Firmware acquires measurements, maintains bounded per-sensor history, exposes historical and live data, manages configuration and files, and serves the separately developed WebUI. The firmware provides HTTP APIs and one multiplexed Server-Sent Events (SSE) stream. The WebUI owns presentation, graphing, user interaction, unit conversion and user-facing load monitoring.
 
-## 2. Requirements and accepted direction
+The initial networking target is Wi-Fi. Ethernet-capable variants are not excluded architecturally, but are not part of the initial implementation focus.
 
-The status word records how clearly the item was accepted in the requirements:
+## 3. Platform, implementation and repository
 
-- **Explicit** — directly confirmed by the user.
-- **Implicit** — proposed in the requirements and not rejected, or covered by the user's general agreement.
-- **Open** — the requirements did not settle the detail.
+| Item | Requirement | Status |
+|---|---|---|
+| Language/framework | C++ with ESP-IDF-native components; no Arduino framework | Explicit |
+| ESP-IDF | Target the 6.1.x line; validate the selected patch release and target | Implicit |
+| Initial chip validation | ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and ESP32-C6 | Implicit |
+| Later targets | Consider other Wi-Fi-capable ESP32 variants after initial targets stabilise | Implicit |
+| PSRAM | Optional; use it to extend history capacity when available | Explicit |
+| Repository | One monorepo for firmware, WebUI, docs and tools | Explicit |
+| Licence | AGPL-3.0-or-later | Implicit |
+| Versioning | Semantic firmware versioning; initial proposed version `0.1.0` | Implicit |
 
-| Requirement / decision | Status |
-|---|---|
-| Firmware in C++ using ESP-IDF-native facilities; avoid Arduino and external libraries unless needed | Explicit |
-| Target ESP-IDF 6.1.x, using the latest suitable patch release on that branch at implementation time | Implicit |
-| Broad support for Wi-Fi-capable ESP32-family targets; validate the chosen chip and peripherals | Explicit |
-| Initial targets to test first: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and ESP32-C6 | Implicit |
-| ESP32-C2, C5 and C61 can follow after the initial targets are stable | Implicit |
-| ESP32-H2/H4 are not standalone targets for this Wi-Fi device; ESP32-P4 would need a Wi-Fi companion | Implicit |
-| PSRAM is optional and should be used to extend history capacity when available | Explicit |
-| One monorepo for firmware, WebUI, documentation and tools | Explicit |
-| AGPL-3.0-or-later is the intended project licence | Implicit |
-| Semantic firmware versioning; initial proposed version is `0.1.0` | Implicit |
+Use ESP-IDF CMake, native HTTP server/Wi-Fi/timer/FreeRTOS facilities, cJSON and FATFS with flash wear levelling. A root `Makefile` may wrap common build operations. A suitable monorepo layout separates `firmware/`, `webui/`, `docs/` and `tools/`. Validate GPIO availability and peripheral support on each target; ESP-IDF build support alone does not mean that a board configuration has been tested.
 
-### 2.1 Hardware compatibility
+## 4. Sensor acquisition architecture
 
-Network connectivity is the functional requirement, but the initial implementation is to concentrate on Wi-Fi and ESP-IDF. The intended broad target is the Wi-Fi-capable ESP32 family, subject to actual peripheral, GPIO, memory and framework support. The first validation set proposed in the requirements is the original ESP32, S2, S3, C3 and C6. More constrained or newer targets are to be added after the initial implementation stabilises.
-
-Do not interpret ESP-IDF chip support as proof that the application has been tested on that chip. GPIO availability, peripheral drivers, memory budgets, Wi-Fi behaviour and build compatibility must be checked per target.
-
-### 2.2 Repository organisation
-
-Keep one repository, with distinct component boundaries. A proposed layout is:
-
-```text
-OpenScale/
-├── firmware/
-│   ├── main/
-│   ├── components/
-│   └── CMakeLists.txt
-├── webui/
-│   ├── src/
-│   ├── public/
-│   └── package.json
-├── docs/
-│   ├── architecture/
-│   └── protocol/
-├── tools/
-├── CMakeLists.txt
-├── Makefile
-└── README.md
-```
-
-WebUI changes should be identifiable in commit titles. The WebUI keeps its own build process; the firmware consumes the resulting assets.
-
-## 3. Sensor acquisition and sample pipeline
-
-### 3.1 Generic sensor architecture
-
-The acquisition system is sensor-generic, not load-cell-specific. A sensor manager owns configuration, registration, lifecycle and status. Each enabled sensor has a driver implementation. HX711 is the initial driver; temperature, humidity, voltage, current and other driver types may be added as supported implementations become available.
-
-All drivers publish into a common sample pipeline:
+### 4.1 Pipeline
 
 ```text
 Sensor manager
@@ -77,226 +43,198 @@ Sensor manager
        └─ Shared bounded, thread-safe sample queue
             └─ Collector
                  └─ Per-sensor ring buffer
-                      ├─ HTTP history
-                      └─ Shared SSE stream
+                      ├─ GET /api/history
+                      └─ GET /stream (SSE)
 ```
 
-Drivers may use different acquisition mechanisms, including GPIO interrupts, polling or periodic measurements. The common interface should expose initialization, start/stop and status operations. The WebUI decides how a sensor is represented; the firmware provides typed identity, unit and measurement data, not graph or colour information.
+Drivers may use GPIO interrupts, polling or timed acquisition. The sensor manager owns configuration, registration and lifecycle. Each enabled sensor has a driver instance. HX711 is the initial driver; temperature, humidity, voltage, current and other sensor types may be added through the same generic model.
 
-### 3.2 Per-sensor identity and sample fields
+The acquisition queue is bounded and non-blocking for producers. When full, the new sample is dropped, the sensor's queue-drop counter increments, and the per-sensor sample counter still advances. Sequence gaps are therefore observable. Read failures and sensor disconnection are separately counted and logged.
 
-Each sensor has:
+### 4.2 Common sample model
 
-- A unique numerical sensor ID.
-- A type and driver-specific configuration.
-- Its own monotonically increasing sample ID.
-- Its own monotonic timestamp per sample.
-- An unsigned 64-bit raw measurement value.
-- Its own ring buffer and retention state.
-- Its own status, error counters and optional warning thresholds.
+Every sensor has a numeric ID, independent monotonically increasing sample ID, and a common monotonic timestamp. Common names are `sensorId`, `n`, `t`, `raw` and optional/computed `flags`.
 
-The common sample representation proposed in the requirements is:
+| Field | Type | Meaning |
+|---|---|---|
+| `sensorId` | unsigned integer | Numeric sensor ID |
+| `n` | unsigned 64-bit | Per-sensor sample sequence |
+| `t` | unsigned 64-bit | Microseconds since boot, from one ESP-wide monotonic clock |
+| `raw` | unsigned 64-bit | Zero-extended native value bit pattern; interpretation is defined by `rawFormat` |
+| `flags` | unsigned 32-bit | Quality/threshold flags; computed as specified in the protocol document |
 
-| Field | Meaning |
+`t` must never be wall-clock time. Wall-clock correction or time synchronisation must not alter sample timestamps. A future `unixtimestamp` status field may report current UTC time independently.
+
+`raw` is always unsigned on the wire. `rawFormat` describes how the WebUI decodes its bit pattern: `uint32`, `uint64`, `int24`, `int32`, `int64`, `float32` or `float64`. Signed values and floating-point values are zero-extended bit patterns, not numerically converted to unsigned. A lossless JSON parser is required for 64-bit JSON integer tokens because JavaScript `Number` cannot represent all uint64 values exactly.
+
+### 4.3 HX711 baseline
+
+The initial HX711 example uses sensor ID `0`, DOUT GPIO 16 and SCK GPIO 4. These are board-specific example pins, not universal defaults. `rate_hz` is 10 or 80. If `rate_gpio` is configured, the firmware drives it low for 10 Hz and high for 80 Hz; if null, the physical RATE pin must be strapped appropriately. `gain` accepts `A128`, `A64`, `B32` or `null` (driver/default selection).
+
+The HX711's native value is signed 24-bit; it is carried as the low 24-bit two's-complement pattern in the uint64 `raw` field (`rawFormat: "int24"`). No offset, scale conversion, filtering or calibration is applied by the HX711 driver unless a later firmware feature explicitly adds it.
+
+### 4.4 Sensor ownership and WebUI fields
+
+`sensors.json` is one document for all sensors. The ESP interprets driver/runtime keys; the WebUI owns and edits presentation/analysis keys. The ESP must preserve unknown keys when it rewrites or normalises the file.
+
+- ESP keys include `id`, `name`, `type`, `enabled`, `unit`, `rawFormat`, `rate_hz`, `ringbuffer_size_samples`, driver blocks and raw `warnings`.
+- WebUI-owned keys include `notes`, `kind`, `attachedTo`, `conversion`, `loadLimits` and the UI use of `calibrationFile` / `primaryTemperatureSensorId`.
+- `name` is stored by the ESP and may be edited by the WebUI.
+- `rate_hz` is required for every sensor.
+
+The WebUI performs conversion from raw values to physical values. The ESP stores `conversion` as opaque JSON and does not interpret it in this version. The WebUI owns the calibrated-mass `loadLimits` monitor; these are distinct from firmware raw-value warning thresholds.
+
+## 5. History buffers and memory
+
+Each sensor owns a bounded ring buffer sized by `ringbuffer_size_samples`. The aggregate allocation is constrained by `settings.json.storage.ringbuffer_max_total_size_bytes`, leaving sufficient internal RAM for stacks, tasks, networking and essential services. PSRAM is optional and may be used to enlarge buffers.
+
+Buffer sizing is per sensor; `queue_capacity` separately configures the shared acquisition queue. The configured buffer capacities, current usage, oldest retained sample ID and latest sample ID are exposed through status.
+
+### 5.1 Runtime resize
+
+Resizing does not require a full device restart. The `sensors.json` PUT accepts `?buffer=preserve|clear`; default is `preserve`.
+
+- `preserve`: allocate a replacement, copy the newest samples that fit, then switch and release the old buffer. On allocation failure, retain the old buffer.
+- `clear`: release the old buffer first, then allocate the requested capacity, maximising memory availability. The old history is lost. If allocation fails, report it and attempt to restore the previous capacity where possible.
+
+Do not reserve enough memory for both buffers when executing `clear` mode.
+
+### 5.2 Sample flags and threshold handling
+
+Per-sample flags are **not stored in ring-buffer entries**. This avoids increasing RAM usage per sample. Firmware overload/underload flags are calculated on demand from each raw value and the current sensor thresholds when producing history or live sample responses. Consequently, historical overload/underload flags reflect the currently configured thresholds, not necessarily the thresholds that were active when the sample was acquired.
+
+The 32-bit flag layout is defined in `api-protocol_v3.4.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
+
+### 5.3 Warning hysteresis
+
+Each sensor may configure overload and underload raw-value thresholds. Each enabled threshold has a non-negative `hysteresis` in the same native raw-value units:
+
+- Overload activates at `value >= threshold`; clears at `value <= threshold - hysteresis`.
+- Underload activates at `value <= threshold`; clears at `value >= threshold + hysteresis`.
+
+Warning events are emitted only on state transitions, including an `active:false` clear event. The WebUI may additionally implement its independent calibrated-weight `loadLimits` monitor. Firmware warnings are not safety-rated protection and do not replace hardware protection.
+
+## 6. Configuration files and persistence
+
+Structured JSON API resources have top-level integer `schemaVersion: 1`. Additive keys retain version 1; a non-additive/incompatible schema change requires a version increment. Sensor IDs are numeric everywhere. Settings and other configuration JSON are stored uncompressed. Static WebUI assets and calibration/WebUI data blobs are stored gzip-compressed.
+
+| Resource | Path | Owner / firmware behaviour |
+|---|---|---|
+| System settings | `/data/settings/settings.json` | ESP-owned; validate and apply |
+| Wi-Fi | `/data/settings/wifi.json` | ESP-owned; validate and apply; stable network IDs |
+| Sensors | `/data/settings/sensors.json` | ESP driver keys + preserved WebUI keys |
+| Units | `/data/settings/units.json` | WebUI-owned; ESP validates structure only |
+| WebUI defaults | `/data/settings/webui-settings.json` | WebUI-owned; ESP stores/serves without interpretation |
+| Calibration | `/data/calibration/calibration_<sensorId>_<profileId>.json` | WebUI-owned gzip blob; ESP stores/serves without decompression |
+
+`settings.json`, `wifi.json`, `sensors.json`, `units.json` and `webui-settings.json` use the same resource URL for GET, PUT and DELETE. DELETE resets a settings resource to its factory default; GET after reset returns the default with HTTP 200. PUT replaces the whole submitted document; the ESP compares it with active state and decides what must be reconfigured. There is no PATCH endpoint.
+
+Unknown keys must survive ESP-side reserialization. For password fields, omission on PUT means retain the existing secret; an explicit string sets/replaces it; null removes it. GET never returns secret material and instead reports `passwordSet`.
+
+Critical ESP-owned configuration is validated before replacement. A failed check does not replace the working file/configuration. WebUI-owned and calibration files are non-essential; calibration bytes are opaque and stored as gzip without firmware-side JSON validation in this version.
+
+## 7. Network behaviour and startup recovery
+
+### 7.1 Wi-Fi
+
+Support multiple saved station networks with stable numeric IDs and user-defined priority. Try highest priority first; preserve array order to break ties. New network entries without an ID receive one from the ESP; entries omitted from a complete PUT are deleted. Credentials are stored in recoverable form for reconnect but never returned by GET.
+
+ESP decision: attempt each candidate for 15 seconds, then proceed to the next; retry a full pass every 30 seconds when no station is connected. Start a WPA2 fallback AP when no station network connects. Its SSID is `<ap_ssid_prefix>-<last-two-MAC-bytes>`; the default prefix is `OpenScale`. The AP defaults to a generated device-specific password printed to the serial console. `keepApWhenConnected` defaults false: stop the fallback AP after STA successfully connects unless configured otherwise. AP+STA is supported where the chip/driver permits it; both interfaces share one radio/channel.
+
+### 7.2 Startup file failures
+
+If `settings.json` or `wifi.json` cannot be loaded or parsed, use the corresponding in-memory factory defaults for this boot. **Do not overwrite or repair the saved file automatically.** Add a `config_fallback` entry to the device network log, retrievable by `GET /api/device-log` and emitted through SSE as `device_log` after the stream is available.
+
+Security note: defaults may not contain an administrator password. In fallback mode, use the fallback AP with a generated WPA2 password and report the condition clearly in the log/serial output. Set an administrator password after recovery. The device must not silently rewrite the corrupt file.
+
+### 7.3 Hostname and HTTP/HTTPS
+
+If `hostname` is empty on first initialisation, generate `openscale_` plus the final three base-MAC bytes in hexadecimal, save it and advertise it via mDNS (`<hostname>.local`). `redirectToHostname` optionally redirects IP-address HTTP requests to the hostname while preserving path/query; avoid loops and redirect only when the hostname is resolvable. Users can disable this hostname redirect.
+
+HTTP itself cannot be disabled. If HTTPS is enabled, configured and fully operational, HTTP redirects to HTTPS while preserving path/query. Until HTTPS is functional, HTTP remains available. HTTPS/TLS and OTA are deferred; the firmware must reject an HTTPS-enabled configuration that it cannot actually serve.
+
+## 8. HTTP, SSE and device observability
+
+The definitive method/path, payload, authentication, history and SSE contract is in `api-protocol_v3.4.md`. In summary:
+
+- HTTP handles finite history, metadata, status, logs, configuration, file operations and restart.
+- One `/stream` SSE endpoint multiplexes `sample`, `warning`, `device`, `sensor_error` and `device_log` events.
+- History is requested separately per sensor; no SSE replay or `Last-Event-ID` support.
+- A random boot ID is generated once at boot and exposed only through `/api/status`. The SSE `id:` line has the form `<bootId>-<eventCounter>`; the 64-bit counter increments for every application event sent through SSE.
+- `GET /api/device` reports relatively static hardware/build metadata and protocol/file-format versions. `GET /api/status` reports changing runtime state and CSRF token.
+- `GET /api/device-log` returns bounded per-boot diagnostic/network log entries. Each new entry is also emitted as a `device_log` SSE event. A new SSE connection receives the retained current-boot device-log snapshot (not sample history), allowing startup fallback notices to be delivered even if they occurred before the WebUI connected; the WebUI deduplicates by `logEntryId`.
+
+### 8.1 Runtime application and restart policy
+
+Do not automatically restart after configuration writes. Responses classify changes as `applied`, `needs-sensor-reconfig`, `needs-restart` or `rejected`. `pendingChanges` in `/api/status` lists files saved but not yet fully active. The WebUI decides whether/when to call `POST /api/restart` and polls `/api/status` until `bootId` changes.
+
+Per-sensor `configRevision` increments when a change becomes active and affects sample interpretation/stream continuity (sensor type, `rawFormat`, driver measurement configuration, sample rate, warning-threshold configuration, or a buffer clear). It resets to its initial value for a new boot. The WebUI starts a new logical sample segment when it changes.
+
+### 8.2 Device metadata and runtime status
+
+Static metadata should report product/firmware version, build ID, Git commit, ESP-IDF version, chip model/revision/core count, flash type/capacity, filesystem/partition information, PSRAM presence/type/capacity, capabilities, protocol version, file-format versions and upload limit.
+
+Runtime status should report boot ID, uptime, CSRF token, pending changes, memory (free/minimum-ever heap, largest block, internal RAM and PSRAM), physical flash and filesystem capacity/used/free, Wi-Fi state/RSSI/IP/client count where available, open SSE connection count, optional wall-clock Unix time, and per-sensor state/effective rate/config revision/uptime/ring-buffer capacity/usage/oldest/latest IDs/queue drops/read errors.
+
+## 9. Security and file serving
+
+When an administrator password is set, authentication is resource-specific:
+
+- `settings.json`, `wifi.json`: GET, PUT and DELETE.
+- `sensors.json`, `units.json`, `webui-settings.json`: PUT and DELETE only.
+- Calibration files: PUT and DELETE; GET remains public.
+- Static assets: PUT and DELETE; GET remains public.
+- `/api/restart`: POST protected.
+- `/api/device`, `/api/status`, `/api/device-log`, `/api/history`, `/api/files`, `/stream` and static GET: public.
+
+Use HTTP Basic authentication. Do not send a `WWW-Authenticate: Basic` challenge; the WebUI handles a 401, prompts, and retries with `Authorization: Basic …`. Basic credentials are not encrypted on plain HTTP. Do not expose the device to untrusted networks until HTTPS is functional.
+
+Require a random per-boot CSRF token on every PUT, POST and DELETE, sent in `X-CSRF-Token`. The token is available as `csrfToken` in `/api/status`, which is public. A 403 causes the WebUI to refresh status once and retry. Same-origin deployment is the default; permissive CORS is not required and must not be enabled by default.
+
+The built-in `default.html` and `default.js` are reserved diagnostic/recovery assets and cannot be overwritten or deleted through the generic asset API. Static web assets are stored as gzip and served with `Content-Encoding: gzip` in all build types. Uploads carry `Content-Encoding: gzip`. Nested paths are allowed. JSON is allowed as a generic static asset unless it occupies a reserved path. Protect `default.*`, `/data`, `/api` and other registered/protected paths against generic asset writes and path traversal.
+
+Calibration files are also gzip blobs but live under the explicit `/data/calibration/` resource path. Generic static-file handling must never access `/data`.
+
+## 10. Storage, serial recovery and build requirements
+
+Use FATFS over ESP-IDF flash wear levelling for data storage. A 4 MB starter layout used a 2 MB factory-app partition and approximately 1.94 MB for FATFS; this is a board-specific example, not a requirement for every chip. Select partitions according to actual flash size and firmware image size. Do not automatically format a mounted storage partition merely because mounting failed: formatting may destroy settings and user files. Recovery/formatting must be an explicit serial/service action.
+
+
+
+Serial commands use verb-first names, including `wifi_set`, `wifi_clear`, `password_set`, `password_clear`, `hostname_set` and `debug_set`. The serial console remains available when networking/configuration fails and provides recovery for Wi-Fi and administrator credentials.
+
+The firmware build must gzip all required static WebUI assets in development and production builds; fail the build if required compression fails. Development/production may differ in minification/source maps. Fetch and pin uPlot 1.6.32 (commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012`) under `/lib/uPlot/`, preserve its directory structure initially, and include its MIT notice.
+
+## 11. Explicit ESP decisions closing prior open points
+
+| Topic | Decision |
 |---|---|
-| `sensorId` | Numerical sensor ID |
-| `n` | Per-sensor monotonically increasing sample ID (64-bit) |
-| `t` | Monotonic timestamp in microseconds since boot (64-bit) |
-| `raw` | Unsigned 64-bit raw measurement value |
-| sample flags | Quality/warning bit field; exact bit assignments remain open |
+| Calibration DELETE authentication | Protected when an admin password exists, same as PUT |
+| Wi-Fi network list PUT | Full list; IDs match existing networks; missing ID means new; omitted existing ID means delete; ESP assigns IDs to new entries |
+| Warning hysteresis keys | `warnings.overload.hysteresis` and `warnings.underload.hysteresis`, non-negative in the same native raw units |
+| Admin password key | Write-only `security.password`; GET returns `security.passwordSet` |
+| Beta `rSeries` | Subtract series resistance from measured total resistance before thermistor beta calculation |
+| Sample flags | Bit 0 overload, bit 1 underload, bit 2 disconnection, bit 3 sensor error, bit 4 invalid measurement; bits 5–31 reserved |
+| Device-log event | SSE name `device_log`; per-boot RAM ring, 128 entries, no flash persistence |
+| Device-log IDs | Independent per-boot `logEntryId`; `t` is monotonic microseconds since boot |
+| History headers | Adopt the `X-History-*` names in the API document and define their semantics there |
+| HTTP 401 challenge | Omit `WWW-Authenticate`; WebUI owns the credential prompt/retry |
+| Upload limit | Initial maximum single request body 512 KiB, exposed as `maxUploadBytes`; 413 for request limit, 507 for flash capacity |
+| Binary history | Version 1, 12-byte header, 28-byte records; no extra header bytes |
+| Boot ID | Only in `/api/status` JSON; random per boot and not persisted |
+| Global SSE event ID | `<bootId>-<eventCounter>` in SSE `id:`; counter increments for every application event |
+| WebUI settings factory default | `{"schemaVersion":1}`; `{}` without schemaVersion is not a valid persisted file |
 
-`raw` is an unsigned 64-bit sensor-specific value. For the HX711, the source reading is signed 24-bit; its encoding into the unsigned 64-bit transport field must be consistent, with the exact conversion rule still open. Another driver may publish a scaled integer such as millidegrees Celsius or millivolts. The sensor definition must describe its unit and raw representation. No universal physical conversion is imposed by the firmware.
+## 12. Implementation baseline and target distinction
 
-### 3.3 Timing and sequence behaviour
+The initial starter scaffold described an HX711-only implementation with one acquisition task per enabled HX711, a shared FreeRTOS queue, per-sensor ring buffers, a total buffer budget, asynchronous multiplexed SSE, per-sensor history, Wi-Fi STA/fallback AP, JSON settings management, calibration upload, gzip static assets and serial recovery. It explicitly lacked a successful ESP-IDF build/hardware test in its original environment.
 
-All sensor timestamps must remain monotonic microseconds since boot. They must never switch to wall-clock time, because time-of-day can change while acquisition is running. A future metadata field may correlate current ESP time-of-day with the current monotonic timestamp; that mapping is not part of the initial timing contract.
+That scaffold is not the v3.4 contract: its endpoint names, single combined device/status endpoint, old configuration routes, flat-only asset paths, HTTP-disable command and older file schemas are superseded by the current companion API/JSON documents. Do not describe a v3.4 requirement as implemented unless it has separately passed build and hardware validation.
 
-Each sensor's sample counter is independent. A dropped queue item must remain detectable as a gap in the sequence; the initial implementation scaffold already advances the sequence even when a queue insertion fails. Queue overflow and sensor-read errors must be counted and exposed in status.
+## 13. Deferred items and remaining open points
 
-### 3.4 HX711 baseline
-
-The initial implementation snapshot's initial example configures sensor ID `0` as an HX711 using DOUT GPIO 16 and SCK GPIO 4. `rate_hz` is 10 or 80. If `rate_gpio` is configured, the firmware drives it low for 10 Hz and high for 80 Hz; if unset, the module's physical RATE pin must be strapped accordingly. Gain values in the scaffold are `A128`, `A64` and `B32`.
-
-The HX711 driver returns signed 24-bit raw ADC values. Their representation in the unsigned 64-bit protocol field must be defined consistently. No offset, scale conversion, filtering or calibration is applied to those readings. The example's GPIO assignment is a starting-board assumption, not a universal ESP32 pin requirement.
-
-## 4. History buffers and memory
-
-Each sensor owns a bounded ring buffer. Buffer allocation is constrained by an aggregate memory budget and must leave sufficient internal RAM for tasks, stacks, networking and other essential operations. PSRAM is optional and preferred for large allocations where available. The goal is to make buffers as large as the hardware can reasonably support, not to exhaust all RAM.
-
-The user may change capacities at runtime. This should not require a full device restart. Two resize behaviours were proposed:
-
-- **`preserve`** — allocate a replacement, copy the newest samples that fit, switch to it, then release the old buffer. If allocation fails, retain the old buffer.
-- **`clear`** — release the old buffer first and then allocate the new capacity. This makes a larger allocation possible when both old and new buffers cannot coexist, but history is lost. If allocation fails, report the failure; attempting to recover the old capacity was proposed.
-
-The API must expose the selected resize mode. The exact request field name and failure response are open.
-
-The per-request history response size is separately bounded. It should not change unpredictably with free RAM on every request. The WebUI's proposed initial chunk is 5,000 samples; the firmware may support larger chunks on more capable hardware. The actual per-sensor retention capacity and maximum supported response chunk should be discoverable.
-
-## 5. Warning detection
-
-A generic warning subsystem evaluates configured raw-value thresholds for any sensor. Overload and underload are the initial warning types; warnings are not restricted to HX711/load cells. The subsystem maintains state and hysteresis so a condition does not repeatedly activate/deactivate near a threshold.
-
-When a warning is active:
-
-- Threshold-derived warning flags are evaluated/generated on-the-fly and are not stored in ring buffers, avoiding additional per-sample RAM use. Sensor quality/status flags are defined separately; exact persistence policy for non-threshold quality flags remains open.
-- The firmware emits a separate SSE `warning` event when the warning state changes, not on every sample.
-- Clearing a condition emits the corresponding inactive transition.
-
-Hysteresis was accepted for the firmware's basic detection. The WebUI may implement more sophisticated interpretation. Firmware warnings are measurement-threshold warnings only; they are not safety-rated overload protection and must not replace hardware protection.
-
-## 6. Networking, hostname and discovery
-
-### 6.1 Wi-Fi
-
-Store multiple Wi-Fi networks in user-defined priority order. Try available saved networks by priority and reconnect after connection loss. If no saved network can be reached, start a fallback access point. AP+STA operation was accepted as a capability: the ESP can connect to a router as a station while providing its own AP, but both interfaces share one radio/channel. AP+STA does not by itself provide internet routing or bridging to AP clients.
-
-The proposed default sequence is to try saved networks first, enable the fallback AP if none work, and optionally keep the AP active after a station connection. Retry intervals, connection timeouts and the default AP-retention policy remain to be specified.
-
-### 6.2 Hostname and mDNS
-
-On first initialisation, generate a hostname if `hostname` is empty, using the `openscale_` prefix and the last three bytes of the base MAC address in hexadecimal (example: `openscale_a1b2c3`). Save it in `settings.json`; users may change it later.
-
-Advertise the host with mDNS, normally as `openscale_a1b2c3.local`. mDNS resolution is not guaranteed on every client/network.
-
-When enabled, HTTP requests addressed to the device's IP should redirect to the hostname. Preserve the original path and query. Do not redirect requests already addressed to the hostname; do not redirect if the hostname cannot be resolved/advertised; avoid AP-mode redirects unless the hostname is known to work there. The hostname redirect setting is user-disableable, and a serial recovery command to disable that redirect was proposed. This is separate from HTTPS redirect behaviour.
-
-## 7. HTTP server, assets and storage
-
-The ESP serves the separately developed WebUI and supports configuration, history, status, calibration, asset management and explicit device actions.
-
-### 7.1 Static WebUI assets
-
-- Static assets are stored compressed as gzip on flash and served with `Content-Encoding: gzip`.
-- Gzip is mandatory for every build type, including development and production. A build must fail if a required asset was not compressed successfully.
-- Asset uploads send gzip-compressed bytes and identify them with `Content-Encoding: gzip`.
-- Support user-selected nested web paths, not only flat filenames. Paths may contain `/`; prevent path traversal and reserve protected namespaces.
-- `default.*` assets are protected from ordinary overwrite, deletion or rename.
-- JSON files are allowed as generic static assets, except for protected/reserved files and paths used by the data API.
-- `/data` is a protected data namespace and is not part of generic static-asset handling.
-- A single `http_indexpath` setting in `settings.json` selects the file served for `/`; default: `/default.html`. No separate index-management endpoint is needed.
-
-### 7.2 JSON and calibration storage
-
-System settings, Wi-Fi settings, sensor configuration, units, WebUI settings and calibration files are stored as ordinary, uncompressed JSON on flash. This supports validation and safe replacement. Static web assets alone are gzip-compressed.
-
-The proposed settings files are:
-
-- `settings.json` — system-wide settings, security, memory budget, hostname/redirect and HTTP index path.
-- `wifi.json` — multiple saved networks and AP configuration.
-- `sensors.json` — sensor definitions, driver settings, ring-buffer capacities and warning settings.
-- `webui-settings.json` — WebUI-owned configuration; the firmware stores/serves it but does not interpret it.
-- `/data/calibration/*.json` — any number of calibration files. The calibration document itself identifies the sensor it belongs to; the URL is not sensor-scoped.
-
-Essential configuration is validated before acceptance. A failed settings/sensor configuration check must not replace the working critical configuration. Calibration files are non-essential: save and serve them even when a check fails, and report the failed check to the WebUI. The exact calibration schema and active-calibration selection mechanism were not finalised.
-
-## 8. Runtime settings and restart policy
-
-The device should avoid unnecessary full restarts. Configuration changes are classified as:
-
-1. Applied immediately.
-2. Require an individual sensor reconfiguration.
-3. Require a full device restart.
-4. Could not be applied.
-
-The firmware must report the category and distinguish saved settings from settings currently active. A successful configuration update must not silently restart the device. The WebUI decides whether/when to offer and issue a restart. `POST /api/restart` was the proposed explicit restart action.
-
-A random boot/session ID is generated exactly once at each startup using the ESP-IDF random source. It is not persisted to flash and is exposed through device metadata (`GET /api/device`). A changed boot ID tells the WebUI that a new firmware session has begun. A device that loses power cannot announce its own shutdown; the WebUI can detect the new session on reconnection and use timestamps/gaps as additional evidence.
-
-## 9. Device metadata and status
-
-Separate relatively static device/build metadata from frequently changing runtime status.
-
-**Device metadata** should include, where available:
-
-- Product name and firmware semantic version.
-- Build ID, Git commit and ESP-IDF version.
-- Chip model, revision and core count.
-- Flash size/type and partition/filesystem information.
-- PSRAM presence, type and total size.
-- API/protocol versions and feature capabilities.
-- Network capabilities.
-
-**Runtime status** should include, where available:
-
-- Uptime and boot/session ID.
-- Free and minimum-ever free heap; largest free block.
-- Internal RAM availability.
-- PSRAM free space and largest free block.
-- Physical flash size plus filesystem/partition used and free space.
-- Per-sensor ring-buffer capacity, used entries and retention information.
-- Per-sensor uptime, queue allocation/usage, queue drops, sensor read errors and sensor status.
-- Wi-Fi state, RSSI and IP address.
-- Current time information if a wall-clock source is added later.
-
-A device network log is available through `GET /api/device-log` and is also published as an SSE event. If `settings.json` or `wifi.json` fails to load at startup, the firmware uses in-memory defaults without modifying the saved file and records this fallback in the device network log. Polling is used for ordinary device information. The discussed frequencies were 2–5 seconds for runtime, heap, ring-buffer, Wi-Fi and sensor status, and 10–60 seconds for flash statistics. Exact polling periods are WebUI policy, not protocol guarantees.
-
-## 10. Security and transport
-
-- Use HTTP Basic authentication when an administrator password has been configured. Protect all mutating operations and sensitive settings reads.
-- The administrator password should be stored as a salted PBKDF2-HMAC-SHA256 verifier, not plaintext. Wi-Fi credentials must remain recoverable for reconnection and therefore require protected storage/access; ordinary GET responses must not disclose them in plaintext.
-- Basic Auth over plain HTTP is not encrypted. Do not expose the device to untrusted networks or the public internet until HTTPS/TLS is implemented.
-- HTTPS/TLS and OTA firmware updates are deferred until a complete HTTPS implementation is available. HTTP cannot be disabled; when HTTPS is enabled and fully operational, the HTTP service redirects requests to HTTPS.
-- Use a per-boot CSRF token for every mutating HTTP request. The WebUI obtains it through an authenticated device/status request. Token field and request-header names remain open.
-- Do not enable permissive CORS by default. Loading a CDN script in the WebUI does not itself require the ESP API to enable cross-origin access.
-- Keep serial access for emergency Wi-Fi, administrator-password and HTTP configuration/recovery.
-
-## 11. Serial recovery interface
-
-Use the verb ordering requested by the user, e.g.:
-
-```text
-wifi_set
-wifi_clear
-password_set
-password_clear
-hostname_set
-debug_set
-```
-
-Serial control may configure HTTPS/redirect behaviour; HTTP itself remains available and cannot be disabled. Exact command syntax/arguments for every command were not finalised. The serial console should remain usable when network services are unavailable or essential settings cannot be parsed.
-
-## 12. Build and third-party WebUI assets
-
-- Use ESP-IDF's native components (including its HTTP server, Wi-Fi, cJSON and FATFS/wear-levelling facilities) and CMake build system, with a root `Makefile` as a convenience wrapper.
-- Provide development/production build options. Terser and a CSS minifier are optional; without them, use unminified sources.
-- Gzip compression is mandatory regardless of build target.
-- Fetch and pin uPlot to version `1.6.32`, commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012`; serve it under `/lib/uPlot/` and preserve its directory structure initially.
-- Include uPlot's MIT licence notice in the distribution.
-- Firmware versioning follows SemVer; initial proposed version: `0.1.0`.
-
-## 13. Implementation baseline versus target architecture
-
-The initial implementation snapshot reports the following as implemented: HX711 acquisition tasks, a bounded shared FreeRTOS queue, per-sensor ring buffers, a memory budget, a multiplexed SSE endpoint, per-sensor history queries, Wi-Fi STA with fallback AP, JSON validation/storage, calibration uploads, gzip static assets, HTTP Basic Auth and basic serial recovery.
-
-The initial implementation snapshot's implementation baseline has since been superseded in several respects:
-
-| Initial implementation snapshot | Current target direction |
-|---|---|
-| ESP-IDF 5.5.6 branch | Target ESP-IDF 6.1.x |
-| Only HX711 driver | Generic driver architecture, auxiliary sensors prepared |
-| `/api/device` combines runtime information | Separate device metadata and polled runtime status (`/api/device`, `/api/status`) |
-| History query limit 1–512, no cursor pagination | 5,000-sample WebUI default proposed; larger bounded chunks and range pagination planned |
-| SSE `samples` batch with `sensor_id`, `seq`, `timestamp_us` | Global per-event SSE ID/boot ID, `sensorId`, `n`, `t`, `raw`, plus device/warning events; exact event batching still open |
-| Configuration PUTs restart the device | No silent restart; WebUI chooses when to request restart |
-| `/api/calibration/...` and `/api/files/...` APIs | Calibration and static assets use direct GET/PUT resource paths |
-| Index path in `webui-settings.json`, `/api/files/index` | `http_indexpath` in `settings.json`; no index endpoint |
-| Flat static asset paths | Nested paths accepted, subject to reserved-path/path-traversal protection |
-| No mDNS or CSRF | mDNS hostname/redirect and per-boot CSRF token accepted |
-| No additional drivers/warning engine | Generic sensors and hysteresis warning engine are part of the target |
-
-The initial implementation snapshot states that no genuine ESP-IDF build or hardware test was performed. No later successful build/test evidence is recorded here. Therefore, do not describe ESP-IDF 6.1.x, the generic drivers, warning engine, new protocol or revised file APIs as implemented merely because they are accepted design requirements.
-
-## 14. Open items
-
-The following must be settled before treating the design as an implementation-ready specification:
-
-1. Exact JSON property names and complete schemas, especially warning hysteresis and calibration data.
-2. Exact config PUT URL prefix and whether config GET/PUT use identical resource paths.
-3. History query names, all-sensor versus per-sensor request semantics, response negotiation and pagination guarantees.
-4. Exact response headers/metadata used to report truncated history and maximum chunk size.
-5. Exact bit assignments and persistence policy for non-threshold sensor quality flags in history.
-6. Exact SSE event names/payload schemas and whether live samples are dispatched one by one or batched.
-7. CSRF token field name, request header name and exact source endpoint.
-8. HTTP error-status conventions and common JSON error-body schema.
-9. Exact serial command syntax, AP-retention defaults and Wi-Fi retry policy.
-10. Calibration-file schema and active-calibration selection, if firmware-side calibration application is introduced.
+- HTTPS/TLS, OTA firmware updates, NTP and ESP-side calibration application are deferred.
+- ETag/`If-Match` concurrency control is deferred; whole-file GET-modify-PUT is the current model.
+- Future opaque WebUI data files (e.g. `/data/user/checkweighings.json`) may be gzip-compressed; no generic `/data/user` API is enabled until a concrete resource is specified.
+- **Open:** exact hardware-specific GPIO/driver support and resource budget for each target chip.
+- **Open:** wall-clock source/synchronisation; `unixtimestamp` remains null when unavailable.
