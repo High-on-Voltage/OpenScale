@@ -1,222 +1,120 @@
-# OpenScale ESP32 — HTTP, SSE and Data Protocol
+# OpenScale: HTTP, SSE and Data Protocol (v0.3, merged WebUI + ESP proposal)
 
-**Document purpose:** Firmware/WebUI communication contract baseline  
-**Version:** 0.2
+**Purpose:** merge of `api-protocol_v0_2.md` (ESP side) with what the WebUI implements and needs.
+**For:** ESP AI worker (check, re-discuss, incorporate into the working documents).
+**Companion:** `json-file-formats_v0_3.md` (file schemas, `rawFormat`, conversions).
 
-## 1. Protocol status and conventions
+Status tags: **[Agreed]** settled between user and WebUI side. **[Proposal]** WebUI requirement, ESP to confirm. **[ESP]** ESP decides. **[Open]** unresolved.
 
-The communication contract is maintained as an implementation baseline. Items marked **Open** must not be treated as a frozen API contract.
+---
 
-Acceptance-status words:
+## 1. Conventions
 
-- **Explicit** — directly confirmed by the user.
-- **Implicit** — proposed in the requirements and not rejected, or included in a general agreement.
-- **Open** — exact route, parameter, field or behaviour was not settled.
+- **[Agreed]** IDs: sensors are numeric (`sensorId`). Field names are `sensorId`, `n`, `t`, `raw`.
+- **[Agreed]** `t` = unsigned 64-bit **microseconds since boot** (one clock for all sensors and events). The WebUI divides by 1000 internally; no per-device or per-sensor time origin is needed.
+- **[Agreed]** `raw` = unsigned 64-bit on the wire, always. Its meaning comes from `rawFormat` in `sensors.json` (see file-format doc §5.2). The WebUI converts. The history binary layout does not depend on the sensor type.
+- **[Agreed]** Config files: GET, PUT and DELETE on the same URL `/data/settings/<name>.json`. No `/api/config/` prefix.
+- **[Agreed]** `DELETE` on a settings file resets it to its factory default; a following GET returns the default (200).
+- **[Agreed]** No `PATCH`. Whole-file PUT; the ESP works out the effect itself.
+- **[Agreed]** Same origin: the WebUI is served by the ESP. No CORS needed.
+- **[Agreed]** Static WebUI assets are gzip (ESP v0.2). The WebUI's uPlot library is served by the ESP as an asset (`/vendor/uPlot.iife.min.js`, `/vendor/uPlot.min.css`, version 1.6.32); no CDN dependency in production.
 
-General conventions:
+## 2. Endpoints
 
-- HTTP is used for finite requests, configuration, history, status and actions.
-- One SSE endpoint carries live sensor samples and important state-change events.
-- JSON request/response bodies use `application/json`.
-- Binary history uses `application/octet-stream`.
-- SSE uses `text/event-stream`.
-- All sample timestamps are unsigned 64-bit monotonic microseconds since boot, not UTC/wall-clock time. The `raw` history/sample field is unsigned 64-bit.
-- Static WebUI asset content is gzip-compressed and served with `Content-Encoding: gzip` in every build type.
-
-## 2. Endpoint summary
-
-### 2.1 Device, status, history and stream
-
-| Method | Path | Purpose | Status |
+| Method | Path | Purpose | Protected (if password set) |
 |---|---|---|---|
-| `GET` | `/` | Serve the selected index asset from `settings.json.http_indexpath` (default `/default.html`) | Explicit |
-| `GET` | `/api/device` | Relatively static product/build/chip/capability metadata, including the random boot ID | Implicit |
-| `GET` | `/api/status` | Frequently changing runtime, memory, Wi-Fi, sensor and buffer status; also the intended initial source for the per-boot CSRF token | Implicit |
-| `GET` | `/api/device-log` | Retrieve device network-log entries, including startup configuration fallback notices | Explicit |
-| `GET` | `/api/history` | Retrieve historical samples independently of the live SSE stream | Explicit for separate endpoint; query contract Open |
-| `GET` | `/stream` | Single multiplexed live SSE stream for all enabled sensors and device events | Explicit |
-| `POST` | `/api/restart` | Explicitly request a device restart | Implicit |
+| GET | `/` | Index asset from `settings.json.http_indexpath` | no |
+| GET | `/api/device` | Static metadata, capabilities, protocol versions | no |
+| GET | `/api/status` | Runtime status, `bootId`, CSRF token | no |
+| GET | `/api/device-log` | General-purpose device log | no |
+| GET | `/api/history` | History range of **one** sensor | no |
+| GET | `/stream` | Live SSE stream | no |
+| POST | `/api/restart` | Restart request | yes |
+| GET/PUT/DELETE | `/data/settings/settings.json`, `wifi.json` | System / Wi-Fi settings | GET, PUT, DELETE |
+| GET/PUT/DELETE | `/data/settings/sensors.json`, `units.json`, `webui-settings.json` | Sensors, units, WebUI defaults | PUT, DELETE |
+| GET/PUT/DELETE | `/data/calibration/<name>.json` | Calibration files (gzip) | PUT (DELETE: open point 1) |
+| GET/PUT/DELETE | `/<web-path>` | Static assets | PUT, DELETE |
+| GET | `/api/files` | Index of assets, settings, calibration files, API paths | no |
 
-`/api/device` and `/api/status` were proposed as separate resources following the initial combined device/runtime endpoint design under `/api/device`. The later separation is the intended direction: metadata in `/api/device`, live status in `/api/status`.
+Removed from v0.2: `/api/config/*`.
 
-### 2.2 Configuration resources
+## 3. Start-up sequence of the WebUI [Agreed]
 
-The file namespace is `/data/settings/`. The data API exposes these direct GET paths, and the requirements specify that configuration PUT paths should end in `.json` and that the complete filename `webui-settings.json` must be used.
+1. `GET /api/status` (gets `bootId`, `csrfToken`) and `GET /api/device`.
+2. `GET` `sensors.json`, `units.json`, `webui-settings.json` (embedded defaults if unavailable); `GET /api/files` for calibration files.
+3. Open `/stream`, buffer events.
+4. For each enabled sensor, request history backwards in chunks (initially 5,000 samples), merge with buffered SSE samples (deduplicate by `sensorId` + `n`).
+5. Poll `/api/status` every 2 to 5 s (flash/filesystem figures every 10 to 60 s).
 
-| Method | Path | Purpose | Status |
-|---|---|---|---|
-| `GET` | `/data/settings/settings.json` | Read system settings | Implicit |
-| `GET` | `/data/settings/wifi.json` | Read Wi-Fi settings (additional configuration resource) | Implicit |
-| `GET` | `/data/settings/sensors.json` | Read sensor configuration | Implicit |
-| `GET` | `/data/settings/units.json` | Read unit definitions | Explicit |
-| `GET` | `/data/settings/webui-settings.json` | Read WebUI-owned settings | Explicit |
-| `PUT` | `/api/config/settings.json` | Validate and replace system settings | Open route prefix; `.json` suffix Explicit |
-| `PUT` | `/api/config/wifi.json` | Validate and replace Wi-Fi settings | Open route prefix; file separation Implicit |
-| `PUT` | `/api/config/sensors.json` | Validate and replace sensor configuration | Open route prefix; `.json` suffix Explicit |
-| `PUT` | `/api/config/units.json` | Validate and replace unit definitions | Open route prefix; `.json` suffix Explicit |
-| `PUT` | `/api/config/webui-settings.json` | Replace WebUI-owned settings | Open route prefix; full filename Explicit |
+**Reboot detection:** the WebUI compares `bootId` of every status poll and every SSE (re)connect with the stored one. A different `bootId` starts a new epoch: old samples are kept as an earlier session, timestamps restart. As a backstop, an `n` or `t` that goes backwards also counts as a new boot. The SSE `id:` line is **not** parsed by the WebUI; `/api/status` is the only source of `bootId` (no duplication elsewhere).
 
-The `/api/config/` PUT prefix is provisional. The exact config PUT route prefix and whether config GET and PUT use identical URLs remain open. Password protection applies to `settings.json` and `wifi.json` for both GET and PUT; to `sensors.json` and `units.json` for PUT only; and to calibration JSON for PUT only.
+## 4. History API
 
-Configuration writes must not automatically restart the ESP. Their response should identify whether the change was applied immediately, requires sensor reconfiguration, requires a full restart, or could not be applied. The WebUI decides whether and when to call `POST /api/restart`.
-
-### 2.3 Calibration resources
-
-| Method | Path | Purpose | Status |
-|---|---|---|---|
-| `GET` | `/data/calibration/<name>.json` | Read a calibration document | Explicit |
-| `PUT` | `/data/calibration/<name>.json` | Create or replace the same calibration resource | Explicit |
-| `DELETE` | `/data/calibration/<name>.json` | Delete a calibration document | Implicit |
-
-There may be any number of calibration JSON files. The file itself identifies the sensor it belongs to; the URL is not `/api/sensor/<id>/...`. Do not require one calibration file per sensor. Calibration files are non-essential: save and serve submitted content even if validation fails, and report the failed check to the WebUI. A calibration-list endpoint and the exact calibration JSON schema were not finalised.
-
-### 2.4 Static assets and file index
-
-| Method | Path | Purpose | Status |
-|---|---|---|---|
-| `GET` | `/<web-path>` | Serve a static asset | Explicit |
-| `PUT` | `/<web-path>` | Upload or replace an asset at the same path | Explicit |
-| `DELETE` | `/<web-path>` | Delete an uploaded asset | Explicit |
-| `GET` | `/api/files` | List static assets, all settings files, calibration files and API paths as JSON | Explicit |
-
-Paths may contain `/` so users can create their own web directory structure. Physical directories may be used, or the firmware may map logical paths; the URL structure is what matters. Prevent path traversal and reject reserved/protected paths. `default.*` files are immutable through the ordinary file API. `/data` is protected and must never be accepted by generic asset handling.
-
-Static asset GET paths are direct root paths (`/<static-asset-path>`). PUT and DELETE are permitted on the same resource path except for protected files/paths. If an administrator password is configured, PUT and DELETE require password authentication; GET is not password-protected by this rule. Static asset uploads contain gzip bytes and use `Content-Encoding: gzip`. The server stores those compressed bytes and serves them with `Content-Encoding: gzip`. Gzip is mandatory in development and production builds. JSON files are permitted as generic static assets, except where their paths are reserved/protected for data/configuration resources.
-
-The former `POST /api/files/index` endpoint is not part of the accepted design: the selected index is `http_indexpath` in `settings.json`. The `/api/files` endpoint is required as an index of static assets, all settings files, calibration files and API paths. The `/api/files/rename` endpoint is not part of this API; files are addressed directly by their resource paths.
-
-## 3. History API
-
-### 3.1 Purpose and usage
-
-History is separate from live SSE. The WebUI usually retrieves the ring-buffer snapshot at initialisation and may request additional ranges when the user navigates history. A sample ID is the cursor; timestamps are included for plotting and ordering.
-
-`GET /api/history` is the history endpoint. The WebUI-side description initially used a per-sensor `historyUrl` with `sensor`, `from_id` and `to_id`; the initial implementation scaffold used `sensor_id` and `limit`; alternative candidate names include `sensorId`, `fromId`, `toId`, `limit`, `fromTimestamp` and `toTimestamp`. The final query-key spellings were **not** settled.
-
-Candidate request shape (query names are provisional):
+### 4.1 Request [Proposal, ESP to confirm]
 
 ```http
-GET /api/history?sensor_id=0&from_id=1000&to_id=6000
+GET /api/history?sensor_id=0&from_id=1000&to_id=5999&limit=5000&format=bin
 ```
 
-The chat also proposed a `limit` parameter and optional timestamp bounds. It did not settle whether one request returns one sensor or multiple sensors. The JSON example is per-sensor; the user raised the possibility of an aggregate response for multiple sensors but did not close that decision.
-
-### 3.2 JSON response
-
-```json
-{
-  "sensorId": 0,
-  "samples": [
-    {
-      "n": 1001,
-      "t": 123456789012,
-      "raw": 123456
-    },
-    {
-      "n": 1002,
-      "t": 123469289012,
-      "raw": 123457
-    }
-  ],
-  "latestId": 1200
-}
-```
-
-| Field | Meaning |
+| Parameter | Meaning |
 |---|---|
-| `sensorId` | Numerical sensor ID |
-| `samples[].n` | Per-sensor sample ID, unsigned 64-bit in the common design |
-| `samples[].t` | Monotonic timestamp, microseconds since boot |
-| `samples[].raw` | Unsigned 64-bit raw sensor value |
-| `latestId` | Latest sample ID currently known for that sensor; useful for pagination/truncation detection |
+| `sensor_id` | Numeric sensor ID. **One sensor per request.** |
+| `from_id`, `to_id` | Inclusive per-sensor sample-ID range; response ascending by `n` |
+| `limit` | Optional maximum number of samples |
+| `format` | `json` (default) or `bin` (`application/octet-stream`) |
 
-`latestId` is not required in SSE. Warning/quality state is intended to be preserved in history too, but the precise JSON representation (`warnings` array, flag field or both) remains open.
+The WebUI prefers binary. It accepts **fewer** samples than requested and never assumes completeness without the range information below. Query keys are snake_case (replaces the WebUI's earlier `sensor`; the per-sensor `historyUrl` is dropped).
 
-### 3.3 Binary response
+### 4.2 Range information [Proposal]
 
-The proposed binary format is little-endian. `HIST` is a four-byte ASCII magic signature (`48 49 53 54`) used to identify the payload. `sample count` is the number of records in this response, not a sensor ID or a cumulative sample ID.
-
-| Header field | Size | Meaning |
-|---|---:|---|
-| Magic `HIST` | 4 bytes | Format identifier |
-| Version | 2 bytes | Unsigned format version; value `1` |
-| Header flags | 2 bytes | Unsigned; future format options, bit assignments open |
-| Sample count | 4 bytes | Unsigned count of following records |
-
-| Record field | Size | Meaning |
-|---|---:|---|
-| `n` | 8 bytes | Unsigned per-sensor sample ID |
-| `t` | 8 bytes | Unsigned monotonic timestamp in microseconds since boot |
-| `raw` | 8 bytes | Unsigned raw value |
-| Sample flags | 4 bytes | Sensor quality/status flags; bit assignments open |
-
-The record size is 28 bytes. The header fields total 12 bytes. The actual payload length is:
-
-```text
-12 + (sampleCount × 28)
-```
-
-For 5,000 records this is 140,012 bytes (about 136.7 KiB). No additional header bytes are present.
-
-The format version is `1`. Header flags are reserved for future use and are distinct from per-sample flags.
-
-### 3.4 Chunk and truncation behaviour
-
-- The WebUI's proposed initial chunk size is 5,000 samples.
-- The ESP should support larger chunks where hardware and configured limits permit.
-- Each sensor's ring-buffer capacity is configurable and should be discoverable through metadata/status.
-- The HTTP history response has a separate bounded maximum response size. Do not vary the limit unpredictably with current free RAM for each request.
-- The WebUI must accept fewer samples than requested.
-- If the requested range cannot be fully returned, the response must clearly identify the actual returned range and indicate truncation. A missing ID range must not silently look like a complete response.
-
-The following response headers were suggested, but their names were explicitly described as not yet final:
+Both formats must tell the WebUI the actual range. Headers (names not final) and, for JSON, the same values in the body:
 
 ```http
 X-History-Returned: 5000
-X-History-Latest-Id: 12000
 X-History-First-Id: 7001
+X-History-Latest-Id: 12000
+X-History-Oldest-Id: 1500
 X-History-Truncated: false
 X-History-Max-Chunk: 5000
 ```
 
-Equivalent information may be included in the JSON body/metadata. The exact header names, semantics and whether JSON must duplicate them remain open.
+`X-History-Oldest-Id` (oldest sample ID still retained in the ring buffer) is **new**: the WebUI uses it to know when it has reached the beginning, instead of probing with empty chunks.
 
-## 4. SSE live stream
+### 4.3 JSON response
 
-### 4.1 Endpoint and connection behaviour
-
-`GET /stream` is the one SSE endpoint for all sensors. It carries live samples and important state-change events. Ordinary runtime status is polled over HTTP; a second dedicated status SSE endpoint is not wanted for the initial design.
-
-The stream does not replay historical data and does not implement server-side `Last-Event-ID` replay. A new connection starts at the current live edge. The WebUI handles reconnection gaps and retrieves missing history separately.
-
-### 4.2 Initialization and history overlap
-
-Recommended client sequence:
-
-1. Open `/stream` first and temporarily buffer incoming events.
-2. Request history for the required sensor(s).
-3. Initialise the graph/history from the HTTP response.
-4. Merge buffered SSE samples, deduplicating by `sensorId` plus per-sensor `n`.
-5. Continue processing live SSE samples.
-
-This avoids a gap between the history snapshot and starting the stream. The WebUI can use `latestId` from history as a per-sensor boundary.
-
-### 4.3 Global event ID and boot identity
-
-Keep two independent identifiers:
-
-| Identifier | Scope | Purpose |
-|---|---|---|
-| Sample ID `n` | Per sensor | Identifies/orders samples from that sensor |
-| SSE `id:` | Entire device stream | Identifies/orders every SSE event, including non-sample events |
-
-Generate a random boot/session ID once per device startup. Do not write a boot counter to flash. The SSE event ID is:
-
-```text
-<bootId>-<eventCounter>
+```json
+{
+  "sensorId": 0,
+  "samples": [ { "n": 1001, "t": 123456789012, "raw": 123456, "flags": 0 } ],
+  "firstId": 1001,
+  "latestId": 1200,
+  "oldestId": 801,
+  "truncated": false
+}
 ```
 
-Example:
+`flags` is optional (absent = 0).
+
+### 4.4 Binary response (ESP v0.2 layout, version 1, unchanged)
+
+Little endian. Header 12 bytes: magic `HIST`, u16 version `1`, u16 header flags (reserved), u32 sample count. Records of 28 bytes: u64 `n`, u64 `t`, u64 `raw`, u32 sample flags. The WebUI drops its own earlier layouts (12-byte and 16-byte records); this layout is the only one.
+
+### 4.5 Sample flags [Agreed]
+
+- Per-sample flags are **not stored** in the ring buffer (RAM). The only flags are **computed on the fly** while generating a response: overload and underload from the raw thresholds. Other bits (disconnection, sensor error, invalid measurement) are reserved and may be 0.
+- **[ESP]** Define the bit assignments (WebUI proposal: bit 0 overload, bit 1 underload, other bits reserved).
+- Past events beyond that are available through `/api/device-log` (§6).
+
+### 4.6 Gap filling
+
+When live `n` jumps (dropped frames, reconnect) the WebUI requests the missing `from_id`..`to_id` range. IDs the device no longer has simply stay a gap; the response must say so via the range information.
+
+## 5. SSE `/stream`
+
+- **[Agreed]** One endpoint for all sensors. No replay, no `Last-Event-ID` handling; a new connection starts at the live edge. The browser reconnects itself; the WebUI fills gaps via history.
+- **[Agreed]** `id:` line `<bootId>-<eventCounter>` as in v0.2 (informational for the WebUI).
+- **[Agreed]** Events: `sample`, `warning`, `device`, `sensor_error`, plus a device-log event (name **[ESP]**).
+- **[Agreed]** **One `sample` event per sample**; the WebUI also accepts a JSON array of samples in one event (handles both). Open questions on the ESP side are not a WebUI problem.
 
 ```text
 id: a83f21c9-1042
@@ -224,121 +122,140 @@ event: sample
 data: {"sensorId":0,"n":501,"t":123456789,"raw":12345}
 ```
 
-The Global Event ID is a monotonically increasing 64-bit counter within the boot session. It advances for every SSE event sent on `/stream`, regardless of event type. A new random `bootId` distinguishes a later boot even though the event counter starts again.
-
-### 4.4 Sample event
-
-Proposed event name and payload:
-
-```text
-event: sample
-data: {"sensorId":0,"n":501,"t":123456789,"raw":12345}
-```
-
-Use `sensorId`, not the WebUI's earlier `id` field. `t` is microseconds since boot, not milliseconds. `n` is the per-sensor sample ID. The separate SSE `id:` line is device-global.
-
-The initial implementation scaffold used a batched `event: samples` with `sensor_id`, `seq` and `timestamp_us`. Later discussion moved toward the compact `sample` payload and global boot-scoped event ID. Whether dispatch is one `sample` event per sample or batched events remains open; the WebUI and firmware must agree before implementation is frozen.
-
-### 4.5 Other event types
-
-Important state changes share the same stream:
-
-| Event | Purpose | Status |
-|---|---|---|
-| `warning` | Overload/underload threshold activation or clear transition | Implicit |
-| `device` | Important device state changes, including restart-related/session information where detectable | Explicit |
-| `sensor_error` | Sensor error/connection state changes | Implicit |
-| Device network-log event | New device network-log entry, including startup fallback to defaults; exact SSE event name Open | Explicit for event delivery; event name Open |
-
-Warning event example:
+- **[Agreed]** SSE samples carry **no flags**. Overload/underload reach the WebUI through `warning` events:
 
 ```text
 event: warning
 data: {"sensorId":0,"type":"overload","active":true,"threshold":8388607,"raw":9000000,"n":501,"t":123456789}
 ```
 
-Emit a warning event when the warning state changes, not on each sample. Threshold-derived warning flags are generated on-the-fly and are not stored in ring buffers. Sensor quality/status flags include at least disconnection, sensor error, overload, underload, invalid measurement and future quality indicators; exact bit assignments and persistence policy remain open.
+Sent on state change only (also `active:false` on clear). The WebUI shows these in addition to its own weight-based monitor. `device` and `sensor_error` payloads: **[ESP]** to define (the WebUI needs at least `sensorId`, `state`/`message`, `t`).
 
-A device-network-log SSE event carries a network-log entry; the exact event name and JSON property schema remain open. The event is emitted for startup fallback when `settings.json` or `wifi.json` cannot be loaded: in-memory defaults are used, the saved file is left unchanged, and the event is also retrievable through `GET /api/device-log`. Device and sensor-error event payload schemas were not fully defined. Routine device statistics remain available through `/api/status` polling.
+## 6. `/api/device`, `/api/status`, `/api/device-log`
 
-## 5. Device metadata and status APIs
+### 6.1 `/api/device` (static)
 
-### 5.1 `GET /api/device`
+As v0.2 (product, firmware, build, git commit, IDF, chip, revision, cores, flash, PSRAM, network capabilities, `capabilities`). **[Proposal]** add `protocolVersion` and `fileFormatVersions` (e.g. `{"sensors":1,"units":1}`). `bootId` is **not** here.
 
-Returns relatively static metadata:
+### 6.2 `/api/status` (dynamic)
 
-- Product and firmware semantic version.
-- Firmware build identifier and Git commit.
-- ESP-IDF version.
-- Chip model, revision and core count.
-- Flash size/type and partition/filesystem information.
-- PSRAM presence, size/type and supported memory information.
-- Supported capabilities and protocol versions.
-- Network capabilities.
+As v0.2, with these WebUI needs:
 
-The example metadata fields shown in the JSON document are candidates, not a fixed schema. Include as much reliable hardware information as the chip/IDF exposes.
+```json
+{
+  "bootId": "a83f21c9",
+  "uptimeUs": 123456789012,
+  "csrfToken": "…",
+  "pendingChanges": ["sensors.json"],
+  "memory": { "heapFree": 120000, "heapMinFree": 80000, "heapLargestBlock": 64000, "psramTotal": 8388608, "psramFree": 7000000, "psramLargestBlock": 4000000 },
+  "flash": { "physicalTotal": 4194304, "filesystemTotal": 1900000, "filesystemUsed": 400000, "filesystemFree": 1500000 },
+  "wifi": { "connected": true, "rssi": -55, "ip": "192.168.1.50" },
+  "sensors": [
+    { "sensorId": 0, "state": "ok", "rate_hz": 80, "configRevision": 3,
+      "ringBufferCapacity": 1600, "ringBufferUsed": 1200, "oldestId": 801, "latestId": 2000,
+      "queueDrops": 0, "readErrors": 0 }
+  ]
+}
+```
 
-### 5.2 `GET /api/status`
+- **[Agreed]** `bootId` is only here; the WebUI polls status regularly anyway.
+- **[Proposal]** `csrfToken` (field name), `pendingChanges` (files saved but not yet active), per sensor the **effective** `rate_hz`, a `configRevision` counter that increments when anything changes the meaning of the samples (rate, type, `rawFormat`, buffer cleared), plus `oldestId`/`latestId`. The WebUI starts a new buffer when `configRevision` changes.
+- **[Agreed]** `flash.filesystemFree` (remaining capacity) is needed so the WebUI can show free space; **[ESP]** may add a maximum file size if known in advance.
 
-Returns dynamic state:
+### 6.3 `/api/device-log` [Agreed layout, ESP to specify content]
 
-- Uptime. The random `bootId` is supplied in `/api/device` metadata.
-- Free/minimum-ever heap, largest free block and internal RAM availability.
-- PSRAM total/free/largest block.
-- Physical flash size separately from filesystem/partition total, used and free space.
-- Ring-buffer capacity/usage/retention for each sensor.
-- Queue usage/allocation, queue drops, read errors and sensor states.
-- Wi-Fi connection state, RSSI and IP address.
-- The per-boot CSRF token for use in subsequent mutating requests (intended; exact field name open).
+General purpose log. Each entry:
 
-Suggested polling rates from the requirements: 2–5 seconds for uptime/memory/buffers/Wi-Fi/sensor status; 10–60 seconds for flash/filesystem statistics. The WebUI may tune these rates.
+```json
+{
+  "logEntryId": 17,
+  "t": 123456789012,
+  "type": "sensor_error",
+  "message": "HX711 sensor 0: read timeout",
+  "details": { "sensorId": 0, "fromN": 1200, "toN": 1260 }
+}
+```
 
-## 6. Authentication, CSRF and CORS
+- `logEntryId`: increasing ID; `t`: µs since boot (**[ESP]** may add wall-clock/boot reference); `type`: string; `message`: human-readable; `details`: object whose content depends on `type`.
+- For sample-related types `details` should carry `sensorId` and a sample range (`fromN`, `toN`) so the WebUI can mark affected samples later.
+- **Todo for the ESP worker:** define the log types, the `details` per type, retention and the SSE event name for new entries. Startup fallback notices (v0.2) stay.
 
-### 6.1 HTTP Basic authentication
+## 7. Configuration writes
 
-When an administrator password has been set, apply these resource-specific rules:
+### 7.1 Response of a PUT/DELETE to a config file [Proposal]
 
-- `settings.json` and `wifi.json`: protect both GET and PUT.
-- `sensors.json` and `units.json`: protect PUT only; GET remains available without password authentication.
-- Calibration JSON files: protect PUT only; GET and DELETE remain available without password authentication.
-- Static assets: protect PUT and DELETE; GET remains available without password authentication.
-- Protect other mutating operations, including static-asset PUT/DELETE and restart, unless a resource-specific rule above states otherwise.
-- Do not return Wi-Fi passwords in ordinary GET responses.
+```json
+{ "status": "applied", "saved": true, "errors": [], "warnings": [] }
+```
 
-Before an administrator password exists, the original design only required authentication once one has been configured. This makes initial provisioning/recovery important; set an administrator password before using the device on an untrusted network.
+`status`: `applied` | `needs-sensor-reconfig` | `needs-restart` | `rejected`. The ESP classifies per changed key: WebUI-owned keys, `name`, `notes`, `calibrationFile`, `conversion`, `loadLimits` etc. are `applied` without touching sensors. `rate_hz`, `type`, `rawFormat`, driver blocks and `ringbuffer_size_samples` need sensor reconfiguration. No automatic restart. The WebUI decides whether to call `POST /api/restart` and then polls `/api/status` until `bootId` changes.
 
-Basic Auth credentials are Base64-encoded, not encrypted. Plain HTTP therefore does not protect credentials against network observation. HTTPS/TLS is deferred; use only on a trusted network until TLS is implemented.
+Ring-buffer resize mode: query parameter on the `sensors.json` PUT, `?buffer=preserve|clear` (default `preserve`).
 
-### 6.2 CSRF
+### 7.2 HTTP status codes and error bodies [Proposal]
 
-Use a random per-boot CSRF token. Require it on every mutating HTTP request. The WebUI obtains it through an authenticated device/status request, which it needs to make at startup anyway. The exact JSON field name and HTTP request-header name were not chosen in the requirements and remain open.
+| Code | Use |
+|---|---|
+| 200 | Success (also "saved, restart needed"; see `status`) |
+| 400 | Malformed JSON or validation failure (`rejected`) |
+| 401 | Password needed or wrong |
+| 403 | Missing/wrong CSRF token |
+| 404 | Unknown path |
+| 413 | Body larger than the ESP's limit (**[ESP]** decides limits) |
+| 507 | Not enough flash space to store the file |
 
-### 6.3 CORS
+**[Agreed]** The ESP may put a detailed message into the body of any HTTP error. The WebUI displays it (JSON `{"error":{"code","message","details"}}` preferred; plain text also shown). Calibration PUTs are stored whenever flash allows; failures are only flash errors for now.
 
-Do not enable permissive cross-origin access by default. A future configurable policy may be considered if required. Loading a JavaScript dependency from a CDN does not by itself require the ESP32 API to permit cross-origin requests; the browser loads that script from the CDN origin.
+## 8. Authentication and CSRF
 
-## 7. Hostname and HTTP/HTTPS behaviour
+### 8.1 Password
 
-A hostname is generated once if not configured, using `openscale_` and the final three bytes of the base MAC in hexadecimal, e.g. `openscale_a1b2c3`. Save it in `settings.json`, expose it through mDNS, and allow the user to change it.
+- **[Agreed]** The WebUI first sends requests **without** credentials. Only if the server answers **401** does it ask the user, then retries once with `Authorization: Basic …`. If no password is set it never asks. This applies to protected **GET** requests too (`settings.json`, `wifi.json`).
+- **[Proposal]** The 401 response should **not** carry `WWW-Authenticate: Basic …` (or use a scheme the browser does not prompt for), otherwise the browser shows its own password dialog for `fetch` requests, which the WebUI cannot control or forget. ESP to confirm that this is acceptable.
+- Read-only access (GET of unprotected resources, SSE, history) never needs a password. Plain HTTP exposes Basic credentials; use on trusted networks until TLS exists.
 
-With `redirectToHostname` enabled, redirect IP-address requests to the hostname. Preserve path and query. Do not redirect when the request already uses the hostname, when mDNS/hostname availability is not established, or in AP mode unless that name is known to resolve there. The toggle can be disabled, including through serial recovery.
+### 8.2 CSRF [Proposal]
 
-## 8. Configuration update and restart workflow
+- Token: field `csrfToken` in `/api/status` (random per boot).
+- The WebUI sends it in the request header **`X-CSRF-Token`** on **every** `PUT`, `POST`, `DELETE`.
+- On `403` the WebUI re-reads `/api/status` once and retries (token changes after a reboot).
 
-A configuration write must validate the proposed JSON before replacing critical settings. Its response should report one of:
+## 9. Static assets
 
-- Applied immediately.
-- Saved but requires sensor reconfiguration.
-- Saved but requires full device restart.
-- Not applied / rejected.
+As v0.2: gzip upload with `Content-Encoding: gzip`, served as stored; PUT/DELETE protected; `default.*` immutable; `/data` not reachable through the generic asset API.
 
-The firmware must not restart itself automatically after a settings write. The WebUI decides whether to request a restart using `POST /api/restart`. The device should report active versus saved/pending settings so the WebUI can present the state accurately.
+The WebUI consists of one HTML file, one JavaScript file and the uPlot files under `/vendor/`. The user selects the page via `http_indexpath`.
 
-History buffer capacity changes should be handled at runtime without a full device restart. Threshold-derived warning flags are generated on-the-fly and must not be stored in the ring buffers if doing so would increase per-sample RAM usage. The API should accept `preserve` or `clear` semantics, but the exact JSON request property is open.
+## 10. Calibration files over HTTP
 
-## 9. Error handling and unresolved contract points
+- Upload: `PUT /data/calibration/calibration_<sensorId>_<profileId>.json`, body gzip, headers `Content-Type: application/json`, `Content-Encoding: gzip`, plus `X-CSRF-Token` (and `Authorization` if required).
+- The ESP stores the bytes unchanged and serves them with `Content-Encoding: gzip`.
+- `GET /api/files` must list each file with its **stored (compressed) size** so the WebUI can show sizes and free space. **[Proposal]** entry shape: `{ "path", "kind": "asset|settings|calibration|api", "size", "modified" }` (`modified` optional).
+- The sensor assignment comes from the filename (see file-format doc §8).
 
-A common HTTP status-code policy, error JSON schema, config PUT route prefix, all history query names, history all-sensors/per-sensor semantics, response negotiation for JSON versus binary, CSRF header/field names, or exact event batching. These must be agreed between firmware and WebUI before the protocol is frozen.
+## 11. Notes for the ESP worker
 
-The initial implementation snapshot's initial endpoint list is not the final API: it includes routes later removed or changed (`/api/files/index`, `/api/files/rename`, `/api/calibration/...`, and automatic restart after config PUT). Use the later direct calibration/static paths and `http_indexpath` setting recorded above.
+1. Define the device-log entry types and the log SSE event name (§6.3).
+2. Define sample-flag bits (§4.5) and `device` / `sensor_error` payloads (§5).
+3. Decide max file sizes and report 507/413 with a clear body (§7.2).
+4. Do not auto-restart; report `pendingChanges` (§6.2).
+5. No `PATCH`: compare the new whole file with the active configuration yourself (e.g. GPIOs).
+6. `wifi.json`: atomic replacement via `.tmp`; stable network IDs (file-format doc §4).
+7. Check whether the 401 can omit `WWW-Authenticate` (§8.1).
+
+## 12. Maybe-TBD / future reminders
+
+- **ETag / `If-Match`** on config files to prevent two browsers overwriting each other. Omitted for now (unlikely, complicates code).
+- ESP-side validation of calibration files (needs decompression).
+- Further compressed WebUI data files (e.g. `checkweighings.json`).
+- ESP using calibration files, e.g. weight-based warnings on the device.
+- Aggregate (multi-sensor) history responses.
+- HTTPS/TLS.
+
+## 13. Open points
+
+1. Calibration `DELETE` protection (v0.2 says unprotected; WebUI assumes protected).
+2. History query/response names in §4 (proposal) and `format` negotiation.
+3. `device` and `sensor_error` event payloads; device-log content.
+4. Sample-flag bit assignments.
+5. Whether `/api/status` can carry `configRevision`, `pendingChanges`, `oldestId` per sensor.

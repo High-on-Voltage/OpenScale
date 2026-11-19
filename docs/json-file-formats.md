@@ -1,392 +1,281 @@
-# OpenScale ESP32 — JSON File Formats and Examples
+# OpenScale: JSON File Formats (v0.3, merged WebUI + ESP proposal)
 
-**Document purpose:** Configuration-file and JSON exchange-format reference  
-**Version:** 0.2
+**Purpose:** merge of `json-file-formats_v0_2.md` (ESP side) with the formats the WebUI already implements.
+**For:** ESP AI worker (check, re-discuss, incorporate into the working documents).
+**Companion:** `api-protocol_v0_3.md` (routes, headers, SSE, history, auth).
+
+Status tags: **[Agreed]** settled between user and WebUI side. **[Proposal]** WebUI requirement, ESP to confirm. **[ESP]** decided by the ESP side. **[Open]** unresolved.
+
+---
 
 ## 1. General rules
 
-- Configuration and calibration files are JSON and are stored uncompressed on flash.
-- Static WebUI assets are a separate class: they are stored and served as gzip, not as ordinary JSON configuration files.
-- Settings are separated by responsibility. `wifi.json` was introduced to separate network configuration from system settings.
-- `/data` is a protected namespace. Generic static-file handling must not write into `/data`.
-- Critical configuration is validated before replacement. A failed check must not replace the working critical configuration. Use temporary-file replacement/transactional update where supported.
-- Calibration files are non-essential: save and serve them even if validation reports a problem, and report that problem to the WebUI.
-- Exact final schemas were not completed in the requirements. Examples below use fields and naming already proposed there; they are working examples, not a frozen JSON Schema.
+- **[Agreed]** Every JSON file carries `"schemaVersion": 1` (integer) as a top-level key. Additive changes keep version 1.
+- **[Agreed]** Sensor IDs are **numeric** everywhere (JSON number, e.g. `0`). The WebUI converts them to strings internally.
+- **[Agreed]** Unknown keys must be **preserved** by the ESP when it re-saves a file (the WebUI adds keys the firmware does not know).
+- **[Agreed]** Settings files are stored uncompressed (ESP v0.2 rule). **Calibration files (and future similar WebUI data files) are sent, stored and served gzip-compressed** (see §9).
+- **[Agreed]** `PUT` replaces the whole file. There is **no `PATCH`**. The ESP compares the new content with the active one itself (e.g. changed GPIOs) and decides what needs reconfiguration. The WebUI does GET, modify, PUT of the complete document.
+- **[Agreed]** `DELETE /data/settings/<name>.json` **resets that file to its factory default**. A following `GET` returns the default content (HTTP 200, not 404).
+- **[Agreed]** Critical files are validated before replacement; a failed check must not replace the working configuration (ESP v0.2). Calibration/WebUI files are non-essential.
+- **[Agreed]** Config URLs: GET, PUT and DELETE use the **same** URL `/data/settings/<name>.json` (the `/api/config/` prefix is dropped).
+- **[Agreed]** Free flash space is decided and reported by the ESP; if something cannot be stored the ESP returns **HTTP 507** with an explanatory body. The WebUI shows that body to the user. The ESP decides all maximum file sizes.
 
-### Acceptance-status words
+## 2. Files and ownership
 
-- **Explicit** — directly confirmed by the user.
-- **Implicit** — proposed in the requirements and not rejected, or included in a general agreement.
-- **Open** — exact structure or field name was not settled.
-
-## 2. Files and paths
-
-| File / path | Purpose | Firmware handling | Status |
+| File | Owner of the schema | ESP interprets? | Password (when set) |
 |---|---|---|---|
-| `/data/settings/settings.json` | System-wide settings, security, memory limits, hostname, HTTP index path | Parse and validate; critical | Explicit |
-| `/data/settings/wifi.json` | Saved Wi-Fi networks, priorities and AP settings | Parse and validate; protect credentials | Implicit |
-| `/data/settings/sensors.json` | Numeric sensor IDs, types, GPIO/driver settings, buffers and warning thresholds | Parse and validate; check driver/GPIO and total memory budget | Explicit |
-| `/data/settings/units.json` | Unit definitions/metadata used by the system and WebUI | Store and serve as JSON; validate on write | Explicit |
-| `/data/settings/webui-settings.json` | WebUI-owned settings | Store/serve; firmware does not interpret it | Explicit |
-| `/data/calibration/<name>.json` | Calibration documents; multiple files allowed | Store/serve even when a check fails; report validation result | Explicit |
-| `/<web-path>` (stored as gzip on flash) | Static HTML, JavaScript, CSS and other web assets | Store compressed and serve with `Content-Encoding: gzip` | Explicit |
+| `/data/settings/settings.json` | ESP | yes | GET, PUT, DELETE |
+| `/data/settings/wifi.json` | ESP | yes | GET, PUT, DELETE |
+| `/data/settings/sensors.json` | ESP (driver part) + WebUI (marked keys) | partly (see §5) | PUT, DELETE |
+| `/data/settings/units.json` | WebUI | structure only | PUT, DELETE |
+| `/data/settings/webui-settings.json` | WebUI | no, stores and serves | PUT, DELETE |
+| `/data/calibration/<name>.json` | WebUI | no, stores and serves (gzip) | PUT |
 
-The user requested full `.json` filenames for configuration PUT paths and specifically the name `webui-settings.json`. The exact config PUT URL prefix was not settled; see the protocol document.
+`sensor_settings.json` / `webui-sensor-settings.json` do **not** exist any more; their content is merged into `sensors.json` or dropped (§5, §8).
 
-## 3. `settings.json`
+## 3. `settings.json` [ESP]
 
-### 3.1 Responsibility
-
-System-wide settings belong here, including security, memory limits, hostname, HTTP/HTTPS redirect behaviour and the selected index asset. HTTP itself cannot be disabled. Wi-Fi network credentials are separated into `wifi.json`.
-
-The user explicitly selected a single `http_indexpath` entry in `settings.json` rather than a separate index API. Its default is `/default.html`.
-
-The hostname is generated on first initialisation if empty, using `openscale_` plus the last three bytes of the base MAC address in hexadecimal. It is saved and can later be changed. `redirectToHostname` controls the HTTP redirect to the mDNS hostname.
-
-### 3.2 Illustrative JSON
+As in v0.2, plus `schemaVersion`. The WebUI only reads and edits what the ESP defines.
 
 ```json
 {
+  "schemaVersion": 1,
   "hostname": "openscale_a1b2c3",
   "redirectToHostname": true,
   "http_indexpath": "/default.html",
-  "storage": {
-    "ringbuffer_max_total_size_bytes": 262144
-  },
-  "https": {
-    "enabled": false
-  }
+  "storage": { "ringbuffer_max_total_size_bytes": 262144 },
+  "https": { "enabled": false },
+  "security": { "passwordSet": true }
 }
 ```
 
-Field notes:
+**Secrets (applies to `settings.json` and `wifi.json`) [Agreed]:**
 
-| Field | Meaning | Status |
-|---|---|---|
-| `hostname` | Saved device hostname without `.local` | Implicit |
-| `redirectToHostname` | Redirect IP-address HTTP requests to the hostname when possible | Implicit |
-| `http_indexpath` | Asset served for a request to `/`; default `/default.html` | Explicit |
-| `storage.ringbuffer_max_total_size_bytes` | Aggregate ring-buffer memory budget | Implicit; field name specified for the configuration |
-| `queue_capacity` | Bounded acquisition-queue capacity | Implicit; exact placement in the settings schema is open |
-| `https.enabled` | Reserved HTTPS switch; HTTPS remains deferred and must not be treated as implemented | Implicit |
+- **GET:** the ESP strips every password and adds `"passwordSet": true` (a password exists but is not returned) or `"passwordSet": false` (none).
+- **PUT:** `password` omitted = keep the existing one. `"password": "new-secret"` = set or replace. `"password": null` = remove.
+- The administrator password follows the same pattern (exact object path is the ESP's choice, e.g. `security.password` / `security.passwordSet`). It is stored as PBKDF2 verifier, never returned.
+- The ESP merges the PUT with the stored file on its side.
 
-The exact HTTPS configuration field structure and the complete security/password field structure were not finalised. If HTTPS is enabled and fully functional, HTTP redirects to HTTPS; otherwise HTTP remains available. The administrator password should not be stored as plaintext; the administrator password is stored as a salted PBKDF2-HMAC-SHA256 verifier. HTTP Basic credentials remain exposed on an unencrypted HTTP connection until HTTPS is implemented.
-
-If `settings.json` cannot be loaded at startup, in-memory defaults are used without overwriting the saved file, and a device network-log entry is generated. The per-boot CSRF token is ephemeral runtime state, not a persistent setting; it must not be saved in this file.
-
-## 4. `wifi.json`
-
-### 4.1 Responsibility
-
-This file contains multiple saved station networks, their user-defined order/priority and access-point settings. The ESP tries networks by priority and availability. If no saved network can be reached, it enables its fallback AP. AP+STA operation was accepted as a supported capability; both interfaces share one Wi-Fi radio and channel.
-
-Wi-Fi passwords must be stored in a form the ESP can recover for reconnection. Ordinary configuration GET responses must not disclose them in plaintext. `wifi.json` GET and PUT require administrator password protection when a password is configured.
-
-### 4.2 Illustrative JSON
+## 4. `wifi.json` [ESP]
 
 ```json
 {
+  "schemaVersion": 1,
   "networks": [
-    {
-      "ssid": "Home",
-      "password": "replace-with-secret",
-      "priority": 100
-    },
-    {
-      "ssid": "Workshop",
-      "password": "replace-with-secret",
-      "priority": 80
-    },
-    {
-      "ssid": "Mobile hotspot",
-      "password": "replace-with-secret",
-      "priority": 20
-    }
+    { "id": 1, "ssid": "Home", "passwordSet": true, "priority": 100 },
+    { "id": 2, "ssid": "Workshop", "passwordSet": true, "priority": 80 }
   ]
 }
 ```
 
-`priority` is an ordering value; higher numbers in the example are tried first. The exact tie-breaking policy, AP configuration object, retry intervals, connection timeouts and whether the AP remains active after a successful station connection remain open. If `wifi.json` cannot be loaded at startup, in-memory defaults are used without overwriting the saved file, and a device network-log entry is generated.
+- **[Agreed]** Every network gets a **stable `id`** (in addition to the SSID).
+- **[Agreed]** GET never returns `password`; PUT semantics as in §3.
+- **[Proposal]** The WebUI sends the complete list. Entries are matched by `id`; an entry without `id` is new; an `id` missing from the list means deleted. ESP to confirm or define.
+- **[ESP-only note]** Use atomic replacement for the file (write `wifi.json.tmp`, replace after the flash write finished).
+- **[Open]** AP object, retry intervals, timeouts, tie-breaking (unchanged from v0.2).
 
-## 5. `sensors.json`
+## 5. `sensors.json` (merged)
 
-### 5.1 Responsibility
-
-This file defines sensor instances. IDs are numerical and unique. The schema is generic: HX711 is the initial driver, but other supported sensor types use the same common sensor model and data pipeline.
-
-Every sensor has its own driver instance, sample counter, ring buffer, status and optional warning thresholds. The sensor definition should describe the meaning and unit of `raw`; the WebUI is responsible for presentation.
-
-### 5.2 Illustrative JSON
+One document for all sensors (load cells and auxiliary channels such as temperature). Keys are either **ESP** (interpreted by the firmware) or **WebUI** (stored, preserved, not interpreted; the ESP may use them in future).
 
 ```json
 {
+  "schemaVersion": 1,
   "sensors": [
     {
       "id": 0,
       "name": "Scale 1",
+      "notes": "bench 2",
+      "kind": "loadcell",
       "type": "hx711",
       "enabled": true,
       "unit": "ADC count",
-      "rawFormat": "uint64",
+      "rawFormat": "int24",
       "rate_hz": 80,
       "ringbuffer_size_samples": 1600,
-      "hx711": {
-        "dout_gpio": 16,
-        "sck_gpio": 4,
-        "rate_gpio": null,
-        "gain": null
-      },
+      "hx711": { "dout_gpio": 16, "sck_gpio": 4, "rate_gpio": null, "gain": null },
       "warnings": {
-        "overload": {
-          "enabled": true,
-          "threshold": 8388607
-        },
-        "underload": {
-          "enabled": true,
-          "threshold": -8388608
-        }
+        "overload":  { "enabled": true, "threshold": 8388607 },
+        "underload": { "enabled": true, "threshold": -8388608 }
+      },
+      "calibrationFile": "calibration_0_my-profile.json",
+      "primaryTemperatureSensorId": 1,
+      "loadLimits": {
+        "maxLoad": { "value": 200, "unit": "g" },
+        "minLoad": null,
+        "averageS": 0.1,
+        "yellowPercent": 10, "orangePercent": 20, "redPercent": 40,
+        "breakS": 0.5, "holdS": 8
       }
     },
     {
       "id": 1,
-      "name": "Temperature",
+      "name": "Load cell body",
+      "kind": "temperature",
       "type": "temperature",
-      "enabled": false,
+      "enabled": true,
       "unit": "m°C",
-      "rawFormat": "uint64",
-      "ringbuffer_size_samples": 1000
+      "rawFormat": "int32",
+      "rate_hz": 1,
+      "ringbuffer_size_samples": 1000,
+      "attachedTo": [0],
+      "conversion": { "type": "direct", "rawScale": 0.001, "unit": "°C" }
     }
   ]
 }
 ```
 
-This is a composite example, not a complete driver schema. `unit`, `rawFormat`, generic `warnings` and the `temperature` driver are illustrative extensions discussed in the requirements; the actual temperature driver's configuration is not specified.
+### 5.1 Fields
 
-### 5.3 HX711 fields
+| Key | Owner | Meaning |
+|---|---|---|
+| `id` | ESP | Unique numeric sensor ID |
+| `name` | ESP | Display name (the WebUI edits it here) |
+| `notes` | WebUI | Free text |
+| `kind` | WebUI | `loadcell` (default), `temperature` or `generic`. Tells the WebUI how to use the channel |
+| `type` | ESP | Driver (`hx711`, `temperature`, …) |
+| `enabled` | ESP | Sensor active |
+| `unit` | ESP | Meaning/unit of **raw** (e.g. `ADC count`, `m°C`, `mΩ`) |
+| `rawFormat` | ESP | How to read the transported uint64 `raw` (§5.2) |
+| `rate_hz` | ESP | Nominal sampling rate. Required for **every** sensor (HX711: 10 or 80) |
+| `ringbuffer_size_samples` | ESP | Retained samples |
+| `hx711{…}` / other driver blocks | ESP | Unchanged from v0.2 |
+| `warnings` | ESP | Raw-value over/underload, **two thresholds in total**, with hysteresis (property names for hysteresis: ESP decides) |
+| `attachedTo` | WebUI | Load-cell sensor IDs an auxiliary channel belongs to (list of numbers) |
+| `conversion` | WebUI | Conversion of `raw` to a physical value (§5.3). **One** conversion per channel; no separate firmware/user variants |
+| `calibrationFile` | WebUI (ESP will need it later) | File name of the active calibration of a load cell, or `null` |
+| `primaryTemperatureSensorId` | WebUI | Temperature channel used for the uncertainty estimate, or `null` |
+| `loadLimits` | WebUI | Weight-based overload monitor of the browser (§5.4). The ESP stores it and ignores it for now |
 
-| Field | Meaning / constraint |
-|---|---|
-| `id` | Unique numerical sensor ID |
-| `type` | `hx711` for this driver |
-| `enabled` | Whether this sensor is active |
-| `rate_hz` | `10` or `80`; converter rate is selected by the RATE pin |
-| `ringbuffer_size_samples` | Configured number of retained samples for this sensor |
-| `hx711.dout_gpio` | HX711 data-ready/data output GPIO |
-| `hx711.sck_gpio` | HX711 clock GPIO |
-| `hx711.rate_gpio` | Optional GPIO driving RATE; when `null`, RATE must be physically strapped to the configured rate |
-| `hx711.gain` | `A128`, `A64`, `B32` or `null` |
+### 5.2 `rawFormat` [Agreed: transport is always uint64, WebUI converts]
 
-The initial implementation snapshot's initial example uses sensor ID `0`, DOUT GPIO `16` and SCK GPIO `4`; this is a starting board configuration only. Sensor IDs `1` and `2` in that scaffold were disabled because their pin assignments were unknown.
+`raw` is **always an unsigned 64-bit integer** on the wire (JSON and binary). `rawFormat` says how the WebUI decodes it. The uint64 holds the sensor's native value **zero-extended**, as bit pattern:
 
-The HX711 raw value originates as a signed 24-bit ADC reading. The common protocol transports the raw field as unsigned 64-bit; the encoding/mapping of negative HX711 values must be defined consistently (Open). The initial driver implementation does not apply calibration, offset, scale conversion or filtering.
+| `rawFormat` | Native value | Content of the uint64 |
+|---|---|---|
+| `uint32` / `uint64` | unsigned | the value |
+| `int24` | signed 24-bit (HX711) | the 24-bit two's-complement pattern (bits 0..23), upper bits 0 |
+| `int32` / `int64` | signed | two's-complement pattern of that width, upper bits 0 for `int32` |
+| `float32` | IEEE-754 single | the 32 bits |
+| `float64` | IEEE-754 double | the 64 bits |
 
-### 5.4 Warning configuration
+The WebUI handles JSON integers above 2^53 itself. The ESP sends plain unsigned integers. No sensor-type-specific history layout is needed.
 
-Overload and underload are optional raw-value comparisons. The illustrative structure uses `enabled` and `threshold` for each warning. Hysteresis was accepted: activation and clear conditions must be different so the warning does not chatter around a single threshold. Exact property names and the hysteresis representation were not agreed.
+### 5.3 `conversion` (WebUI-defined, opaque to the ESP)
 
-The numerical thresholds in the example above are illustrative only, not recommended HX711 operating thresholds.
+```json
+{ "type": "polynomial", "coefficients": [-12.3, 0.0042], "rawScale": 1, "unit": "°C" }
+```
 
-### 5.5 Ring-buffer sizing
+| `type` | Parameters | Definition (x = raw decoded × `rawScale`, `rawScale` default 1) |
+|---|---|---|
+| `direct` | none | y = x |
+| `polynomial` | `coefficients` `[c0, c1, …]` | y = c0 + c1·x + c2·x² … |
+| `steinhart-hart` | `a`, `b`, `c` | x = resistance in Ω; 1/T = a + b·ln x + c·(ln x)³ (T in K); y = T in °C |
+| `beta` | `beta`, `r0`, `t0` (°C), optional `rSeries` | x = resistance in Ω; R = x − rSeries; 1/T = 1/(t0+273.15) + ln(R/r0)/beta; y = °C. *`rSeries` meaning (series resistance subtracted) is a WebUI assumption, ESP side to confirm.* |
 
-`ringbuffer_size_samples` is per sensor. At allocation time, the firmware checks the sum of the per-sensor buffer allocations against the configured aggregate budget. Memory should be allocated as large as reasonably possible without starving stacks, networking and other essential allocations. PSRAM is optional and may be used to increase capacity.
+- `unit` = unit of the converted value. Temperature channels must deliver `°C`.
+- A failed conversion is an **invalid sample (NaN)**, never 0.
+- **[Open]** More elaborate conversions (user formulas) are planned. The object stays opaque for the ESP, so new `type` values need no firmware change. If the ESP worker has a richer conversion specification, send it.
 
-Runtime resizing without a device restart is required, with both behaviours:
+### 5.4 `loadLimits` (WebUI monitor; ESP only stores it)
 
-- `preserve`: keep/copy the newest samples that fit.
-- `clear`: release the existing buffer first, then allocate the new capacity to maximise memory availability; history is lost. If the new allocation fails, report it and attempt recovery where possible.
+| Key | Meaning | Default |
+|---|---|---|
+| `maxLoad` `{value, unit}` | Upper limit as a weight (unit id from `units.json`); `null`/missing = monitor off | off |
+| `minLoad` `{value, unit}` or `null` | Lower limit; `null` = −maxLoad | `null` |
+| `averageS` | Averaging time of the newest samples (s) | 0.1 |
+| `yellowPercent`, `orangePercent`, `redPercent` | Excess above the limit that triggers each level (rising) | 10, 20, 40 |
+| `breakS` | Gaps shorter than this stay one event (s) | 0.5 |
+| `holdS` | Keep the warning visible (s) | 8 |
 
-The API field that selects the mode remains open.
+These are calibrated-mass limits evaluated in the browser. They are independent of the ESP's raw `warnings` thresholds (hardware limits). The WebUI shows ESP `warning` events in addition.
 
-## 6. `units.json`
+### 5.5 Change handling [Proposal, see API doc §7]
 
-Path: `/data/settings/units.json`. This JSON resource is user-accessible through the data API. GET is available without an administrator password; PUT requires administrator password protection when a password is configured. The exact schema and sample unit definitions remain open.
+The ESP classifies a `sensors.json` PUT per changed key: WebUI-owned keys, `name`, `calibrationFile` etc. are **applied** without touching sensors. Changing `rate_hz`, `type`, `rawFormat`, driver blocks or `ringbuffer_size_samples` needs sensor reconfiguration. Ring-buffer resize mode is selected with the query parameter `?buffer=preserve|clear` (default `preserve`).
 
-Illustrative placeholder:
+## 6. `units.json` [WebUI-owned]
+
+The WebUI's existing unit table, verbatim. The ESP stores and serves it, and validates **structure only** (JSON object, `schemaVersion`, `units` array).
 
 ```json
 {
-  "units": []
-}
-```
-
-## 7. `webui-settings.json`
-
-This file belongs to the WebUI. The firmware stores and serves it, but must not interpret its contents. The exact schema is owned by the WebUI project and is not defined here.
-
-Minimal valid placeholder:
-
-```json
-{}
-```
-
-The selected HTTP index path is **not** stored here; it is `http_indexpath` in `settings.json`.
-
-## 8. Calibration JSON files
-
-Any number of calibration JSON files may be stored under `/data/calibration/`. There is no one-file-per-sensor restriction. The document itself identifies the sensor to which it belongs; the URL does not contain a sensor ID. No active-calibration selection field or final calibration schema was specified.
-
-Illustrative minimal association example:
-
-```json
-{
-  "sensorId": 0
-}
-```
-
-`sensorId` is the proposed field spelling based on the sensor ID naming used elsewhere; the sensor association is required, but the exact property name and calibration payload schema remain open. Do not interpret the example as a complete calibration document.
-
-Calibration documents are non-essential. If validation fails, the ESP still stores and serves the submitted JSON and reports the failed check to the WebUI. PUT requires administrator password protection when a password is configured; GET and DELETE do not.
-
-## 8. JSON exchange payloads
-
-The following JSON structures were proposed for HTTP/SSE exchange. The protocol document records the associated URL and unresolved negotiation points.
-
-### 8.1 History response
-
-```json
-{
-  "sensorId": 0,
-  "samples": [
-    {
-      "n": 1001,
-      "t": 123456789012,
-      "raw": 123456
-    },
-    {
-      "n": 1002,
-      "t": 123469289012,
-      "raw": 123457
-    }
-  ],
-  "latestId": 1200
-}
-```
-
-- `sensorId`: numerical sensor ID.
-- `n`: per-sensor sample ID.
-- `t`: monotonic microseconds since boot.
-- `raw`: unsigned raw measurement value.
-- `latestId`: latest sample ID currently known for this sensor; useful for pagination/truncation detection. It is not needed in SSE.
-
-The example is per-sensor. Whether the final history API returns one sensor or multiple sensors in one response was not conclusively settled.
-
-### 8.2 SSE event payloads
-
-SSE frames use the global `id:` field and an event name; the JSON `data` payload for a sample is:
-
-```text
-id: <bootId>-<eventCounter>
-event: sample
-data: {"sensorId":0,"n":501,"t":123456789,"raw":12345}
-```
-
-The `id:` line of the SSE frame is a separate, device-global event ID of the form `<bootId>-<eventCounter>`. The event ID is not the sensor sample ID.
-
-### 8.2.2 Warning event candidate
-
-```json
-{
-  "sensorId": 0,
-  "type": "overload",
-  "active": true,
-  "threshold": 8388607,
-  "raw": 9000000,
-  "n": 501,
-  "t": 123456789
-}
-```
-
-When the condition clears, emit the same event type with `active: false`. The event is sent on state transition. The warning event includes the same sample context fields as the sample event (`sensorId`, `n`, `t`, `raw`) plus warning-specific fields. The precise inactive-event payload remains open.
-
-Threshold-derived warning flags are generated on-the-fly and are not stored in ring buffers to avoid increasing RAM use. Sensor quality/status flags include at least disconnection, sensor error, overload, underload, invalid measurement and future quality indicators; bit assignments and persistence of non-threshold flags remain open.
-
-### 8.3 Device metadata candidate
-
-```json
-{
-  "product": "OpenScale",
-  "firmwareVersion": "0.1.0",
-  "firmwareBuild": "development",
-  "gitCommit": "abcdef123456",
-  "idfVersion": "6.1",
-  "chip": "ESP32-S3",
-  "revision": 0,
-  "psram": true,
-  "capabilities": {
-    "sse": true,
-    "historyJson": true,
-    "historyBinary": true,
-    "wifiApSta": true,
-    "https": false,
-    "ota": false
-  }
-}
-```
-
-This is an illustrative example, not a final field list. Later discussion explicitly requested as much hardware/memory information as practical, including PSRAM size/type and flash size/type, physical flash capacity, filesystem/partition used/free space, chip revision and core count, plus supported features and protocol versions.
-
-### 8.4 Runtime status candidate
-
-A representative shape using the agreed information categories is:
-
-```json
-{
-  "bootId": "a83f21c9",
-  "uptimeUs": 123456789012,
-  "memory": {
-    "heapFree": 120000,
-    "heapMinFree": 80000,
-    "heapLargestBlock": 64000,
-    "psramTotal": 8388608,
-    "psramFree": 7000000,
-    "psramLargestBlock": 4000000
-  },
-  "flash": {
-    "physicalTotal": 4194304,
-    "filesystemTotal": 1900000,
-    "filesystemUsed": 400000,
-    "filesystemFree": 1500000
-  },
-  "wifi": {
-    "connected": true,
-    "rssi": -55,
-    "ip": "192.168.1.50"
-  },
-  "sensors": [
-    {
-      "sensorId": 0,
-      "ringBufferCapacity": 1600,
-      "ringBufferUsed": 1200,
-      "queueDrops": 0,
-      "readErrors": 0
-    }
+  "schemaVersion": 1,
+  "baseUnit": "mg",
+  "defaultUnit": "g",
+  "units": [
+    {"id":"ug","name":"Micrograms","symbol":"µg","factor":0.001,"decimals":0,"group":"Metric"},
+    {"id":"mg","name":"Milligrams","symbol":"mg","factor":1,"decimals":1,"group":"Metric"},
+    {"id":"g","name":"Grams","symbol":"g","factor":1000,"decimals":3,"group":"Metric"},
+    {"id":"kg","name":"Kilograms","symbol":"kg","factor":1000000,"decimals":3,"group":"Metric"},
+    {"id":"oz_av","name":"Ounces (avoirdupois)","symbol":"oz","factor":28349.523125,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"lb_av","name":"Pounds (avoirdupois)","symbol":"lb","factor":453592.37,"decimals":5,"group":"Imperial / US customary"},
+    {"id":"oz_troy","name":"Troy ounces","symbol":"oz t","factor":31103.4768,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"st","name":"Stone","symbol":"st","factor":6350293.18,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"raw","name":"Raw sensor counts (diagnostic)","symbol":"counts","factor":null,"decimals":0,"group":"Diagnostic"}
   ]
 }
 ```
 
-This example is structural only. Exact property names, units, nullability and completeness were not specified. Physical flash capacity must be reported separately from free filesystem space; they are not interchangeable. A per-boot CSRF token is expected to be delivered through the initial authenticated device/status exchange, but its JSON field name remains open.
+- `factor` converts the canonical unit (milligram) to the display unit: value in unit = mg / `factor`. `factor: null` marks the non-physical `raw` entry.
+- Factory default = the table above (DELETE restores it). The WebUI also embeds this table as fallback.
 
-## 9. Binary-history reference
+## 7. `webui-settings.json` [WebUI-owned]
 
-The binary format is described here because it carries the same logical sample fields as the JSON history response. It is **not JSON**.
+Server-side default of the WebUI's interface preferences (each browser may keep its own copy in local storage). The ESP stores and serves it without interpretation. `{}` is valid and means "built-in defaults". Factory default: `{}`.
 
-| Field | Size | Type / meaning |
-|---|---:|---|
-| Magic `HIST` | 4 bytes | Fixed ASCII signature (`48 49 53 54`) |
-| Version | 2 bytes | Unsigned 16-bit format version; value `1` |
-| Header flags | 2 bytes | Unsigned 16-bit; intended for future options, bit assignments open |
-| Sample count | 4 bytes | Unsigned 32-bit count of records in this response |
-| `n` | 8 bytes | Unsigned 64-bit per-sensor sample ID |
-| `t` | 8 bytes | Unsigned 64-bit timestamp, microseconds since boot |
-| `raw` | 8 bytes | Unsigned 64-bit raw value |
-| Sample flags | 4 bytes | 32-bit sensor quality/status flags; bit assignments open |
-
-All multi-byte fields are little-endian. The sample record is therefore 28 bytes.
-
-**Header size:** the fields total 12 bytes (`4 + 2 + 2 + 4`). No additional bytes are present or required. The expected payload length is:
-
-```text
-12 + (sampleCount × 28)
+```json
+{
+  "schemaVersion": 1,
+  "theme": "dark",
+  "navPanelVisible": false,
+  "yResponsePercent": 5,
+  "downsample": false,
+  "zeroFill": false,
+  "zeroRawFill": false,
+  "zeroLine": false,
+  "wizardMode": "simple",
+  "bandMode": "symmetric",
+  "subPixel": false,
+  "tempRateWindowS": 60
+}
 ```
 
-The format version is `1`. Header flags remain reserved for future use. Sample flags cover at least sensor disconnection, sensor error, overload, underload, invalid measurement and future quality indicators. Threshold-derived overload/underload warning flags are generated on-the-fly and are not saved in the ring buffer; therefore they must not be represented as persisted ring-buffer flags. If a binary history response includes these calculated flags, the firmware must derive them during response generation.
+- Missing keys fall back to built-in defaults; unknown keys are ignored.
+- **[Agreed] Not stored in any file:** tare state, time since tare, and the "typical use" assumptions of the uncertainty estimate (reading delay, session since tare, temperature difference). They live only in the browser session.
+- The selected index page is **not** here, it is `http_indexpath` in `settings.json`.
+
+## 8. Calibration files [WebUI-owned schema, stored compressed]
+
+- **Path:** `/data/calibration/calibration_<sensorId>_<profileId>.json`. Any number of files per sensor. The **sensor ID is part of the filename**: `<sensorId>` is the decimal sensor ID, `<profileId>` is `[A-Za-z0-9._-]+`. The WebUI parses `^calibration_(\d+)_(.+)\.json$` from `/api/files` to list and assign files. The document also contains `"sensorId": <number>` (equal to the filename's).
+- **Compression [Agreed]:** the WebUI uploads gzip bytes with `Content-Type: application/json` and `Content-Encoding: gzip`. The ESP stores the bytes as received and serves them with `Content-Encoding: gzip` (the browser decompresses). The ESP does **not** decompress or validate them for now (future feature, see §10).
+- **Active calibration** of a sensor is `calibrationFile` in `sensors.json` (§5), not a field of the calibration files.
+- **Size:** unknown in advance; the WebUI estimates roughly 30 to 250 KB uncompressed JSON, far less gzipped (observations carry validity checks and optional time series). The ESP decides the limit; the WebUI will show compressed size and free space while a calibration is being created and handles HTTP 507.
+- **Schema:** the WebUI owns it. Top-level keys: `schemaVersion`, `sensorId`, `profileId`, `profileName`, `createdAt`, `modifiedAt`, `applicationVersion`, `calibrationUnit`, `calibrationMethod`, `sensor`, `environment`, `referenceWeights`, `referenceWeightGroups`, `referenceLoads`, `observations`, `calibrationAnchors`, `fit`, `uncertainty`, `characterization`, `validation`, `reserved`, `revisionId`, `contentHash`. The ESP never needs to read it.
+- `GET`, `PUT`, `DELETE` on the same URL. Protection: see §2 and open point 1.
+
+## 9. Future file formats (reminder, "maybe-TBD")
+
+- **`checkweighings.json`** (long-term drift log, format exists in the WebUI, no UI yet). Proposed location: `/data/user/checkweighings.json`, stored compressed like calibration files. More such WebUI data files may follow; **all will be stored compressed**.
+- **ESP-side validation of calibration files** (needs decompression of larger files; the ESP worker should see whether this is feasible).
+- **ETag / `If-Match`** on settings files, to stop two browsers overwriting each other (GET-modify-PUT race). Judged unlikely and complex, so omitted for now.
+- **ESP using calibration files** (e.g. weight-based overload on the device).
+
+## 10. Notes for the ESP worker
+
+1. No `PATCH`: the ESP must work out by itself what a whole-file PUT changes (e.g. compare new GPIOs with the active ones) and report it (API doc §7).
+2. `wifi.json`: stable network `id`, password stripping on GET, merge on PUT, atomic replace via `.tmp` file.
+3. Preserve unknown keys in `sensors.json` (WebUI keys).
+4. Calibration files are opaque gzip blobs; do not decompress; filename carries the sensor ID.
+5. Define the **device-log** entry layout and its types (API doc §6). This is a todo for the ESP worker.
+6. Define the sample-flag bit assignments (API doc §4.3).
+7. The WebUI must be able to show the detailed error text the ESP puts into HTTP error bodies.
+
+## 11. Open points
+
+1. Calibration `DELETE` is unprotected in ESP v0.2 ("PUT only"), although "all other mutating operations are protected". Intended? WebUI assumes DELETE is protected like PUT.
+2. `wifi.json`: treatment of networks missing from a PUT (WebUI proposes: deleted).
+3. Hysteresis property names for `warnings` (ESP decides; the WebUI does not read the thresholds).
+4. Exact object path of the administrator password field in `settings.json`.
+5. Beta-conversion `rSeries` semantics (hardware knowledge needed).
