@@ -11,10 +11,10 @@ Status tags: **[Agreed]** settled between user and WebUI side. **[Proposal]** We
 ## 1. General rules
 
 - **[Agreed]** Every JSON file carries `"schemaVersion": 1` (integer) as a top-level key. Additive changes keep version 1.
-- **[Agreed]** Sensor IDs are **numeric** everywhere (JSON number, e.g. `0`). The WebUI converts them to strings internally.
+- **[Agreed]** Sensor IDs are **numeric** everywhere (JSON number, e.g. `0`).
 - **[Agreed]** Unknown keys must be **preserved** by the ESP when it re-saves a file (the WebUI adds keys the firmware does not know).
 - **[Agreed]** Settings files are stored uncompressed (ESP v0.2 rule). **Calibration files (and future similar WebUI data files) are sent, stored and served gzip-compressed** (see §9).
-- **[Agreed]** `PUT` replaces the whole file. There is **no `PATCH`**. The ESP compares the new content with the active one itself (e.g. changed GPIOs) and decides what needs reconfiguration. The WebUI does GET, modify, PUT of the complete document.
+- **[Agreed]** `PUT` replaces the whole file. There is **no `PATCH`**. Where needed the ESP compares the new content with the active one itself (e.g. changed GPIOs) and decides what needs reconfiguration. The WebUI does GET, modify, PUT of the complete document.
 - **[Agreed]** `DELETE /data/settings/<name>.json` **resets that file to its factory default**. A following `GET` returns the default content (HTTP 200, not 404).
 - **[Agreed]** Critical files are validated before replacement; a failed check must not replace the working configuration (ESP v0.2). Calibration/WebUI files are non-essential.
 - **[Agreed]** Config URLs: GET, PUT and DELETE use the **same** URL `/data/settings/<name>.json` (the `/api/config/` prefix is dropped).
@@ -29,7 +29,7 @@ Status tags: **[Agreed]** settled between user and WebUI side. **[Proposal]** We
 | `/data/settings/sensors.json` | ESP (driver part) + WebUI (marked keys) | partly (see §5) | PUT, DELETE |
 | `/data/settings/units.json` | WebUI | structure only | PUT, DELETE |
 | `/data/settings/webui-settings.json` | WebUI | no, stores and serves | PUT, DELETE |
-| `/data/calibration/<name>.json` | WebUI | no, stores and serves (gzip) | PUT |
+| `/data/calibration/<name>.json` | WebUI | no, stores and serves (gzip) | PUT, DELETE |
 
 `sensor_settings.json` / `webui-sensor-settings.json` do **not** exist any more; their content is merged into `sensors.json` or dropped (§5, §8).
 
@@ -53,7 +53,7 @@ As in v0.2, plus `schemaVersion`. The WebUI only reads and edits what the ESP de
 
 - **GET:** the ESP strips every password and adds `"passwordSet": true` (a password exists but is not returned) or `"passwordSet": false` (none).
 - **PUT:** `password` omitted = keep the existing one. `"password": "new-secret"` = set or replace. `"password": null` = remove.
-- The administrator password follows the same pattern (exact object path is the ESP's choice, e.g. `security.password` / `security.passwordSet`). It is stored as PBKDF2 verifier, never returned.
+- `password` is stored as PBKDF2 verifier, never returned.
 - The ESP merges the PUT with the stored file on its side.
 
 ## 4. `wifi.json` [ESP]
@@ -146,6 +146,8 @@ One document for all sensors (load cells and auxiliary channels such as temperat
 | `calibrationFile` | WebUI (ESP will need it later) | File name of the active calibration of a load cell, or `null` |
 | `primaryTemperatureSensorId` | WebUI | Temperature channel used for the uncertainty estimate, or `null` |
 | `loadLimits` | WebUI | Weight-based overload monitor of the browser (§5.4). The ESP stores it and ignores it for now |
+
+- **[Open]** For the **ESP**: Add again missing hysteresis fields for `warnings`.
 
 ### 5.2 `rawFormat` [Agreed: transport is always uint64, WebUI converts]
 
@@ -245,15 +247,16 @@ Server-side default of the WebUI's interface preferences (each browser may keep 
 - Missing keys fall back to built-in defaults; unknown keys are ignored.
 - **[Agreed] Not stored in any file:** tare state, time since tare, and the "typical use" assumptions of the uncertainty estimate (reading delay, session since tare, temperature difference). They live only in the browser session.
 - The selected index page is **not** here, it is `http_indexpath` in `settings.json`.
+- **[Open]** Note to the **WebUI**: Only send this file rarely (reducing write to the ESPs flash memory) and if really needed. So e.g. with a delay or similar.
 
 ## 8. Calibration files [WebUI-owned schema, stored compressed]
 
 - **Path:** `/data/calibration/calibration_<sensorId>_<profileId>.json`. Any number of files per sensor. The **sensor ID is part of the filename**: `<sensorId>` is the decimal sensor ID, `<profileId>` is `[A-Za-z0-9._-]+`. The WebUI parses `^calibration_(\d+)_(.+)\.json$` from `/api/files` to list and assign files. The document also contains `"sensorId": <number>` (equal to the filename's).
 - **Compression [Agreed]:** the WebUI uploads gzip bytes with `Content-Type: application/json` and `Content-Encoding: gzip`. The ESP stores the bytes as received and serves them with `Content-Encoding: gzip` (the browser decompresses). The ESP does **not** decompress or validate them for now (future feature, see §10).
-- **Active calibration** of a sensor is `calibrationFile` in `sensors.json` (§5), not a field of the calibration files.
+- **Active calibration** of a sensor is `calibrationFile` in `sensors.json` (§5), not a field of the calibration files. **[Open]** Note for **WebUI**: Allow for temporary change of calibrationFile, without saving to the ESP.
 - **Size:** unknown in advance; the WebUI estimates roughly 30 to 250 KB uncompressed JSON, far less gzipped (observations carry validity checks and optional time series). The ESP decides the limit; the WebUI will show compressed size and free space while a calibration is being created and handles HTTP 507.
 - **Schema:** the WebUI owns it. Top-level keys: `schemaVersion`, `sensorId`, `profileId`, `profileName`, `createdAt`, `modifiedAt`, `applicationVersion`, `calibrationUnit`, `calibrationMethod`, `sensor`, `environment`, `referenceWeights`, `referenceWeightGroups`, `referenceLoads`, `observations`, `calibrationAnchors`, `fit`, `uncertainty`, `characterization`, `validation`, `reserved`, `revisionId`, `contentHash`. The ESP never needs to read it.
-- `GET`, `PUT`, `DELETE` on the same URL. Protection: see §2 and open point 1.
+- `GET`, `PUT`, `DELETE` on the same URL. Protection: see §2.
 
 ## 9. Future file formats (reminder, "maybe-TBD")
 
@@ -274,7 +277,7 @@ Server-side default of the WebUI's interface preferences (each browser may keep 
 
 ## 11. Open points
 
-1. Calibration `DELETE` is unprotected in ESP v0.2 ("PUT only"), although "all other mutating operations are protected". Intended? WebUI assumes DELETE is protected like PUT.
+1. **[Done]** Calibration `DELETE` is unprotected in ESP v0.2 ("PUT only"), although "all other mutating operations are protected". Intended? WebUI assumes DELETE is protected like PUT.
 2. `wifi.json`: treatment of networks missing from a PUT (WebUI proposes: deleted).
 3. Hysteresis property names for `warnings` (ESP decides; the WebUI does not read the thresholds).
 4. Exact object path of the administrator password field in `settings.json`.

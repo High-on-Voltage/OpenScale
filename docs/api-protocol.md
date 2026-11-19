@@ -17,7 +17,7 @@ Status tags: **[Agreed]** settled between user and WebUI side. **[Proposal]** We
 - **[Agreed]** `DELETE` on a settings file resets it to its factory default; a following GET returns the default (200).
 - **[Agreed]** No `PATCH`. Whole-file PUT; the ESP works out the effect itself.
 - **[Agreed]** Same origin: the WebUI is served by the ESP. No CORS needed.
-- **[Agreed]** Static WebUI assets are gzip (ESP v0.2). The WebUI's uPlot library is served by the ESP as an asset (`/vendor/uPlot.iife.min.js`, `/vendor/uPlot.min.css`, version 1.6.32); no CDN dependency in production.
+- **[Agreed]** Static WebUI assets are gzip (ESP v0.2).
 
 ## 2. Endpoints
 
@@ -114,22 +114,51 @@ When live `n` jumps (dropped frames, reconnect) the WebUI requests the missing `
 - **[Agreed]** One endpoint for all sensors. No replay, no `Last-Event-ID` handling; a new connection starts at the live edge. The browser reconnects itself; the WebUI fills gaps via history.
 - **[Agreed]** `id:` line `<bootId>-<eventCounter>` as in v0.2 (informational for the WebUI).
 - **[Agreed]** Events: `sample`, `warning`, `device`, `sensor_error`, plus a device-log event (name **[ESP]**).
-- **[Agreed]** **One `sample` event per sample**; the WebUI also accepts a JSON array of samples in one event (handles both). Open questions on the ESP side are not a WebUI problem.
+- **[Agreed]** **One `sample` event per sample** but not mandatory; the WebUI also accepts a JSON array of samples in one event (handles both). Open questions on the ESP side are not a WebUI problem.
 
-```text
-id: a83f21c9-1042
-event: sample
-data: {"sensorId":0,"n":501,"t":123456789,"raw":12345}
+```JSON
+{
+  "bootId": "a83f21c9",
+  "eventId": 1042,
+  "t": 123456789,
+  "event": "sample",
+  "data": {
+    "sensorId": 0,
+    "n": 501,
+    "t": 123456781,
+    "raw": 12345,
+    "flags": 0
+  }
+}
 ```
 
-- **[Agreed]** SSE samples carry **no flags**. Overload/underload reach the WebUI through `warning` events:
+- **[Open]** SSE samples can carry flags. But overload/underload reach the WebUI **also** through `warning` events:
 
-```text
-event: warning
-data: {"sensorId":0,"type":"overload","active":true,"threshold":8388607,"raw":9000000,"n":501,"t":123456789}
+```JSON
+{
+  "bootId": "a83f21c9",
+  "eventId": 1042,
+  "t": 123456789,
+  "event": "warning",
+  "type": "sensor",
+  "data": {
+    "code": "overload",
+    "active": true,
+    "sensor": {
+      "sensorId": 0,
+      "threshold": 8000000,
+      "sample": {
+        "n": 501,
+        "t": 123456789,
+        "raw": 9388607,
+        "flags": 1
+      }
+    }
+  }
+}
 ```
 
-Sent on state change only (also `active:false` on clear). The WebUI shows these in addition to its own weight-based monitor. `device` and `sensor_error` payloads: **[ESP]** to define (the WebUI needs at least `sensorId`, `state`/`message`, `t`).
+Sent on state change only (also `active:false` on clear). The WebUI shows these in addition to its own weight-based monitor. It's up to **[ESP]** to define `device` and `sensor_error` payloads (the WebUI needs at least `state`/`message`, `t`).
 
 ## 6. `/api/device`, `/api/status`, `/api/device-log`
 
@@ -160,6 +189,7 @@ As v0.2, with these WebUI needs:
 
 - **[Agreed]** `bootId` is only here; the WebUI polls status regularly anyway.
 - **[Proposal]** `csrfToken` (field name), `pendingChanges` (files saved but not yet active), per sensor the **effective** `rate_hz`, a `configRevision` counter that increments when anything changes the meaning of the samples (rate, type, `rawFormat`, buffer cleared), plus `oldestId`/`latestId`. The WebUI starts a new buffer when `configRevision` changes.
+- **[Proposal]** Fields to add for open SSE connections and (if possible) connected WiFi devices. Also wall-time if available; *future request*, reserving a field `unixtimestamp`, null if unavailable. **[ESP]** should add these if possible.
 - **[Agreed]** `flash.filesystemFree` (remaining capacity) is needed so the WebUI can show free space; **[ESP]** may add a maximum file size if known in advance.
 
 ### 6.3 `/api/device-log` [Agreed layout, ESP to specify content]
@@ -177,7 +207,7 @@ General purpose log. Each entry:
 ```
 
 - `logEntryId`: increasing ID; `t`: µs since boot (**[ESP]** may add wall-clock/boot reference); `type`: string; `message`: human-readable; `details`: object whose content depends on `type`.
-- For sample-related types `details` should carry `sensorId` and a sample range (`fromN`, `toN`) so the WebUI can mark affected samples later.
+- For sample-related types `details` should carry `sensorId` and a sample range (`fromN`, `toN`) so the WebUI can mark affected samples later. **[ESP]** needs to decide if `fromN` and `toN` are feasible.
 - **Todo for the ESP worker:** define the log types, the `details` per type, retention and the SSE event name for new entries. Startup fallback notices (v0.2) stay.
 
 ## 7. Configuration writes
@@ -224,14 +254,14 @@ Ring-buffer resize mode: query parameter on the `sensors.json` PUT, `?buffer=pre
 
 As v0.2: gzip upload with `Content-Encoding: gzip`, served as stored; PUT/DELETE protected; `default.*` immutable; `/data` not reachable through the generic asset API.
 
-The WebUI consists of one HTML file, one JavaScript file and the uPlot files under `/vendor/`. The user selects the page via `http_indexpath`.
+The WebUI **currently** consists of one HTML file, one JavaScript file and the uPlot files under `/lib/`. The user selects the default page for `/` via `http_indexpath`.
 
 ## 10. Calibration files over HTTP
 
 - Upload: `PUT /data/calibration/calibration_<sensorId>_<profileId>.json`, body gzip, headers `Content-Type: application/json`, `Content-Encoding: gzip`, plus `X-CSRF-Token` (and `Authorization` if required).
 - The ESP stores the bytes unchanged and serves them with `Content-Encoding: gzip`.
-- `GET /api/files` must list each file with its **stored (compressed) size** so the WebUI can show sizes and free space. **[Proposal]** entry shape: `{ "path", "kind": "asset|settings|calibration|api", "size", "modified" }` (`modified` optional).
-- The sensor assignment comes from the filename (see file-format doc §8).
+- `GET /api/files` must list each file with its **stored (compressed) size** so the WebUI can show sizes and free space. **[Proposal]** entry shape: `{ "path", "kind": "asset|settings|calibration|api", "size", "modified" }` (`modified` optional; `size` is null for APIs).
+- The sensor assignment comes from the filename (see file-format doc §8); required for the WebUI.
 
 ## 11. Notes for the ESP worker
 
