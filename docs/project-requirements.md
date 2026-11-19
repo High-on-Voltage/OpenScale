@@ -1,8 +1,8 @@
 # OpenScale ESP32 — Project Requirements and Architecture
 
-**Version:** 0.4.2  
+**Version:** 0.5  
 **Purpose:** Firmware requirements and architecture baseline  
-**Companion documents:** `json-file-formats_v0.4.2.md`, `api-protocol_v0.4.2.md`
+**Companion documents:** `json-file-formats_v0.5.md`, `api-protocol_v0.5.md`
 
 ## 1. Status terminology
 
@@ -103,7 +103,7 @@ Do not reserve enough memory for both buffers when executing `clear` mode.
 
 Per-sample flags are **not stored in ring-buffer entries**. This avoids increasing RAM usage per sample. Firmware overload/underload flags are calculated on demand from each raw value and the current sensor thresholds when producing history or live sample responses. Consequently, historical overload/underload flags reflect the currently configured thresholds, not necessarily the thresholds that were active when the sample was acquired.
 
-The 32-bit flag layout is defined in `api-protocol_v0.4.2.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
+The 32-bit flag layout is defined in `api-protocol_v0.5.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
 
 ### 5.3 Warning hysteresis
 
@@ -155,26 +155,29 @@ HTTP itself cannot be disabled. If HTTPS is enabled, configured and fully operat
 
 ## 8. HTTP, SSE and device observability
 
-The definitive method/path, payload, authentication, history and SSE contract is in `api-protocol_v0.4.2.md`. In summary:
+The definitive method/path, payload, authentication, history and SSE contract is in `api-protocol_v0.5.md`. In summary:
 
 - HTTP handles finite history, metadata, status, logs, configuration, file operations and restart.
 - One `/stream` SSE endpoint multiplexes `sample`, `warning`, `device`, `sensor_error` and `device_log` events.
 - History is requested separately per sensor; no SSE replay or `Last-Event-ID` support.
 - A random boot ID is generated once at boot and exposed only through `/api/status`. The SSE `id:` line has the form `<bootId>-<eventCounter>`; the 64-bit counter increments for every application event sent through SSE.
 - `GET /api/device` reports relatively static hardware/build metadata and protocol/file-format versions. `GET /api/status` reports changing runtime state and CSRF token.
+- Successful calibration and static-asset PUT operations return the common JSON write result (`status`, `saved`, `errors`, `warnings`, `pendingChanges`); successful uploads use `status: "applied"`, `saved: true` and an empty `pendingChanges` array. These uploads do not increment either sensor revision. Calibration files remain opaque gzip blobs to the ESP.
 - `GET /api/device-log` returns bounded per-boot diagnostic/network log entries. Each new entry is also emitted as a `device_log` SSE event. A new SSE connection receives the retained current-boot device-log snapshot (not sample history), allowing startup fallback notices to be delivered even if they occurred before the WebUI connected; the WebUI deduplicates by `logEntryId`.
 
 ### 8.1 Runtime application and restart policy
 
 Do not automatically restart after configuration writes. Responses classify changes as `applied`, `needs-sensor-reconfig`, `needs-restart` or `rejected`. `pendingChanges` in `/api/status` lists files saved but not yet fully active. The WebUI decides whether/when to call `POST /api/restart` and polls `/api/status` until `bootId` changes.
 
-Per-sensor `configRevision` increments when a change becomes active and affects sample interpretation/stream continuity (sensor type, `rawFormat`, driver measurement configuration, sample rate, warning-threshold configuration, or a buffer clear). It resets to its initial value for a new boot. The WebUI starts a new logical sample segment when it changes.
+Per-sensor `configRevision` (**Explicit**) starts at 1 each boot and increments only when an actual effective configuration value changes and can alter sample interpretation or continuity: sensor type, `rawFormat`, effective sample rate, driver measurement configuration affecting raw measurements, or an explicit buffer clear. A preserving ring-buffer resize does not increment it unless it also clears/restarts retained sample continuity. The WebUI starts a new logical sample segment when `configRevision` changes.
+
+Per-sensor `warningRevision` (**Explicit**) is separate, starts at 1 each boot, and increments when a change to active firmware warning configuration takes effect (overload/underload enablement, thresholds or hysteresis). Warning-only changes do not increment `configRevision` and must not cause a new WebUI sample buffer/continuity segment.
 
 ### 8.2 Device metadata and runtime status
 
 Static metadata should report product/firmware version, build ID, Git commit, ESP-IDF version, chip model/revision/core count, flash type/capacity, filesystem/partition information, PSRAM presence/type/capacity, capabilities, protocol version, file-format versions and upload limit.
 
-Runtime status should report boot ID, uptime, CSRF token, pending changes, memory (free/minimum-ever heap, largest block, internal RAM and PSRAM), physical flash and filesystem capacity/used/free, Wi-Fi state/RSSI/IP/client count where available, open SSE connection count, optional wall-clock Unix time, and per-sensor state/effective rate/config revision/uptime/ring-buffer capacity/usage/oldest/latest IDs/queue drops/read errors.
+Runtime status should report boot ID, uptime, CSRF token, pending changes, memory (free/minimum-ever heap, largest block, internal RAM and PSRAM), physical flash and filesystem capacity/used/free, Wi-Fi state/RSSI/IP/client count where available, open SSE connection count, optional wall-clock Unix time, and per-sensor state/effective rate/`configRevision`/`warningRevision`/uptime/ring-buffer capacity/usage/oldest/latest IDs/queue drops/read errors.
 
 ## 9. Security and file serving
 
@@ -229,7 +232,7 @@ The firmware build must gzip all required static WebUI assets in development and
 
 The initial starter scaffold described an HX711-only implementation with one acquisition task per enabled HX711, a shared FreeRTOS queue, per-sensor ring buffers, a total buffer budget, asynchronous multiplexed SSE, per-sensor history, Wi-Fi STA/fallback AP, JSON settings management, calibration upload, gzip static assets and serial recovery. It explicitly lacked a successful ESP-IDF build/hardware test in its original environment.
 
-That scaffold is not the v0.4.2 contract: its endpoint names, single combined device/status endpoint, old configuration routes, flat-only asset paths, HTTP-disable command and older file schemas are superseded by the current companion API/JSON documents. Do not describe a v0.4.2 requirement as implemented unless it has separately passed build and hardware validation.
+That scaffold is not the v0.5 contract: its endpoint names, single combined device/status endpoint, old configuration routes, flat-only asset paths, HTTP-disable command and older file schemas are superseded by the current companion API/JSON documents. Do not describe a v0.5 requirement as implemented unless it has separately passed build and hardware validation.
 
 ## 13. Deferred items and remaining open points
 

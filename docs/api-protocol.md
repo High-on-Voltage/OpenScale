@@ -1,8 +1,8 @@
 # OpenScale — HTTP, SSE and Data Protocol
 
-**Version:** 0.4.2  
+**Version:** 0.5  
 **Purpose:** Authoritative firmware/WebUI communication contract  
-**Companion documents:** `project-requirements_v0.4.2.md`, `json-file-formats_v0.4.2.md`
+**Companion documents:** `project-requirements_v0.5.md`, `json-file-formats_v0.5.md`
 
 ## 1. Status terminology and conventions
 
@@ -292,6 +292,7 @@ Example shape:
       "rate_hz": 80,
       "sensorUptimeUs": 123000000,
       "configRevision": 3,
+      "warningRevision": 2,
       "ringBufferCapacity": 1600,
       "ringBufferUsed": 1200,
       "oldestId": 801,
@@ -311,7 +312,9 @@ Field rules:
 - `unixtimestamp`: Unix time in seconds UTC corresponding to the same status snapshot as `uptimeUs`, or null when wall-clock time is not available/synchronised. The pair provides a wall-clock/monotonic-time correlation; it never changes sample `t`.
 - `openSseConnections`: current SSE connection count.
 - `wifi.clientsConnected`: AP client count when available; omit if not supported/not applicable.
-- Per sensor `rate_hz` is the effective rate, not merely the requested setting. `configRevision` is a per-sensor monotonic revision within the boot and increments when an affecting configuration change becomes active and changes sample interpretation or continuity (type, rawFormat, driver measurement configuration, rate, warning thresholds, or buffer clear). It starts at 1 each boot.
+- Per sensor `rate_hz` is the effective rate, not merely the requested setting.
+- `configRevision` (**Explicit**) is a per-sensor monotonic revision within the boot. It starts at 1 each boot and increments only when an actual effective configuration value changes and becomes active in a way that can change sample interpretation or continuity: sensor type, `rawFormat`, effective sampling rate, driver measurement configuration affecting raw measurements, or an explicit buffer clear. A resize with `buffer=preserve` does not increment it unless the operation also clears/restarts the retained sample sequence.
+- `warningRevision` (**Explicit**) is a separate per-sensor monotonic revision within the boot. It starts at 1 each boot and increments only when an actual change to the active firmware warning configuration becomes effective (warning enablement, overload/underload threshold, or hysteresis). Warning-only changes do not increment `configRevision` and must not cause the WebUI to start a new sample buffer/continuity segment.
 - `sensorUptimeUs` is monotonic time since that sensor entered the running state.
 - Flash physical size is distinct from filesystem partition capacity/used/free.
 
@@ -401,6 +404,22 @@ PUT /data/settings/sensors.json?buffer=clear
 Default is `preserve`.
 
 For a newly created Wi-Fi entry without `id`, the ESP assigns a stable ID and returns the canonical redacted configuration (with assigned IDs and `passwordSet`) in the response. A submitted full network list defines the new list: an existing ID omitted from the submitted list is deleted.
+
+### 7.1.1 Calibration and static-asset PUT responses
+
+Successful `PUT` requests to `/data/calibration/<name>.json` and `/<static-asset-path>` use the same JSON response structure as configuration writes (**Explicit**). They return HTTP 200 with:
+
+```json
+{
+  "status": "applied",
+  "saved": true,
+  "errors": [],
+  "warnings": [],
+  "pendingChanges": []
+}
+```
+
+For these resource types, `status` is `applied` once the resource has been stored and is immediately retrievable from its resource URL. `pendingChanges` is empty: storing a calibration blob or static asset does not change active sensor configuration, does not increment `configRevision` or `warningRevision`, and does not require a restart. Calibration content remains an opaque gzip blob to the ESP; this response does not mean that the firmware has parsed, validated or applied the calibration. Static assets are immediately available at their paths after a successful upload. `errors` and `warnings` are empty when the operation succeeds; storage failure uses the existing HTTP error response, especially 507 for insufficient flash space. Invalid static-asset gzip input is rejected according to the static-asset validation rules; calibration bytes are stored unchanged whenever flash space permits.
 
 ### 7.2 HTTP status codes and error body
 

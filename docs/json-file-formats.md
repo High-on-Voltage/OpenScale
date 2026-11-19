@@ -1,8 +1,8 @@
 # OpenScale — JSON File Formats and Examples
 
-**Version:** 0.4.2  
+**Version:** 0.5  
 **Purpose:** Configuration, WebUI-owned files, calibration files and JSON payload reference  
-**Companion documents:** `project-requirements_v0.4.2.md`, `api-protocol_v0.4.2.md`
+**Companion documents:** `project-requirements_v0.5.md`, `api-protocol_v0.5.md`
 
 ## 1. General rules
 
@@ -29,7 +29,7 @@
 | Calibration | `/data/calibration/calibration_<sensorId>_<profileId>.json` | WebUI-owned; ESP stores/serves opaque gzip bytes | Gzip JSON |
 | Generic static assets | `/<static-asset-path>` | WebUI-owned, served as gzip | Gzip bytes |
 
-The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentication and method details are in `api-protocol_v0.4.2.md`.
+The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentication and method details are in `api-protocol_v0.5.md`.
 
 ## 3. `settings.json` — system settings
 
@@ -264,7 +264,12 @@ These are evaluated in the browser and are independent of ESP raw `warnings`. Th
 
 ### 5.6 Configuration change handling
 
-WebUI-owned fields and presentation metadata (`notes`, `kind`, `conversion`, `loadLimits`, `calibrationFile`, `primaryTemperatureSensorId`) are stored without touching sensor drivers. Changes to `type`, `rawFormat`, `rate_hz`, driver blocks, raw warning thresholds/hysteresis and `ringbuffer_size_samples` require at least sensor reconfiguration. The ESP reports the effect in the PUT response and `/api/status.pendingChanges`.
+WebUI-owned fields and presentation metadata (`notes`, `kind`, `conversion`, `loadLimits`, `calibrationFile`, `primaryTemperatureSensorId`) are stored without touching sensor drivers. Changes to `type`, `rawFormat`, `rate_hz`, driver blocks, raw warning thresholds/hysteresis and `ringbuffer_size_samples` require the corresponding runtime application/reconfiguration. The ESP reports the effect in the PUT response and `/api/status.pendingChanges`.
+
+Revision handling is separate from the write classification:
+
+- `configRevision` (**Explicit**) increments only when an actual effective configuration value changes and can alter sample interpretation or continuity: `type`, `rawFormat`, effective `rate_hz`, driver measurement configuration affecting raw measurements, or an explicit buffer clear. It starts at 1 per sensor per boot. A `buffer=preserve` resize does not increment it unless continuity is also cleared/restarted.
+- `warningRevision` (**Explicit**) increments only when active warning enablement, overload/underload thresholds or hysteresis actually changes. It starts at 1 per sensor per boot. A warning-only change never increments `configRevision` and never starts a new WebUI sample buffer.
 
 Ring-buffer resize mode is `?buffer=preserve|clear` on the `sensors.json` PUT; default is `preserve`.
 
@@ -361,6 +366,20 @@ The uncompressed WebUI JSON may be roughly 30–250 KiB; compressed upload size 
 
 ## 10. JSON exchange payload notes
 
-History samples use `sensorId`, `n`, `t`, `raw` and optional `flags`. `raw` and all 64-bit fields are unsigned integer tokens on the wire. Warning event JSON adds `type:"sensor"`, `code`, `active` and a nested `sensor` object containing `sensorId`, `threshold` and `sample`; see `api-protocol_v0.4.2.md` for complete SSE payloads.
+Successful calibration-file and static-asset PUT requests return the common write-response JSON:
+
+```json
+{
+  "status": "applied",
+  "saved": true,
+  "errors": [],
+  "warnings": [],
+  "pendingChanges": []
+}
+```
+
+For these uploads, `applied` means stored and immediately retrievable at the same resource URL. They do not increment `configRevision` or `warningRevision`. The calibration file remains an opaque gzip blob to the ESP; the response does not imply calibration parsing or application. A successful static-asset PUT makes the new gzip asset available at its path. Storage failures use the protocol's HTTP error responses (including 507 when flash capacity is insufficient).
+
+History samples use `sensorId`, `n`, `t`, `raw` and optional `flags`. `raw` and all 64-bit fields are unsigned integer tokens on the wire. Warning event JSON adds `type:"sensor"`, `code`, `active` and a nested `sensor` object containing `sensorId`, `threshold` and `sample`; see `api-protocol_v0.5.md` for complete SSE payloads.
 
 A JSON `flags` value is u32; absent means zero. The same bit meanings apply as in binary history. Threshold flags are computed on demand; they are not retained in ring buffers. Historical bits for sensor disconnection/error/invalid measurement cannot be reconstructed unless future firmware stores additional metadata; device log/events provide those historical transitions.
