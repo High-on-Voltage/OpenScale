@@ -19,7 +19,7 @@
   along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   Attribution: AI Collaborator (Claude, GPT, Gemini) + Humans
-  uPlot is loaded from the approved jsDelivr CDN; see its license and
+  uPlot is served by the device itself (jsDelivr CDN only as a development fallback); see its license and
   attribution at https://github.com/leeoniya/uPlot.
 -->
 <html lang="en">
@@ -109,7 +109,13 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <h3>Sensors</h3>
         <div id="sensorListInfo" class="small">—</div>
         <div class="button-row"><button id="sensorReloadBtn">Reload sensor list</button></div>
-        <div class="small" style="margin-top:4px">Reloading keeps all collected data. The test signal is always available.</div>
+        <div class="small" style="margin-top:4px">Reads sensors.json from the device again. Reloading keeps all collected data. The test signal is always available.</div>
+        <hr class="settings-divider">
+        <h3>Device</h3>
+        <div id="deviceInfo" class="small">No device connection (local test signal only).</div>
+        <div class="button-row"><button id="deviceRestartBtn" title="POST /api/restart">Restart device…</button></div>
+        <div class="field" style="margin-top:6px"><label for="deviceResetSelect">Reset a device file to its factory default (DELETE)</label><div class="range-row"><select id="deviceResetSelect"><option>sensors.json</option><option>units.json</option><option>webui-settings.json</option><option>settings.json</option><option>wifi.json</option></select><button id="deviceResetBtn">Reset…</button></div></div>
+        <div id="deviceMessages" class="small" style="margin-top:4px"></div>
         <hr class="settings-divider">
         <h3>Layout</h3>
         <label class="check"><input type="checkbox" id="navPanelToggle"> Show Navigation panel (zoom / older / newer buttons)</label>
@@ -117,7 +123,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <h3>Calibration</h3>
         <div id="calibrationInfo" class="small">Loading calibration…</div>
         <div class="button-row" style="margin-bottom:6px"><button id="calWizardBtn" class="primary">Calibration wizard &amp; fitting editor…</button></div>
-        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button><button id="calUploadBtn" title="Send the active calibration to the server (needs the password if one is set)">Send to server</button></div>
+        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button><button id="calUploadBtn" title="Compress the active calibration and send it to the device as calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json (needs the password if one is set)">Send to device</button></div>
         <input id="calFile" type="file" accept=".json,application/json" hidden>
         <div id="calMessages" class="small" style="margin-top:6px"></div>
         <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
@@ -232,15 +238,21 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or event.</span><button id="clearLogBtn">Clear log</button></div>
           <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No events yet.</div></div>
         </details>
+        <details id="deviceLogDetails" style="margin-top:10px">
+          <summary>Device log <span id="deviceLogCount" class="small">(0 entries)</span></summary>
+          <div class="small" style="margin:8px 0">General-purpose log of the device (restarts, sensor errors, configuration changes, …) plus notes of this tool about epoch breaks.</div>
+          <div id="deviceLogList" class="log-list"><div class="small" style="padding:10px 0">No device log entries.</div></div>
+        </details>
       </section>
   </div>
   <div id="eventTip" class="event-tip" hidden></div>
-  <footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is loaded asynchronously from jsDelivr CDN.</footer>
+  <footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is served by the device (CDN only as a development fallback).</footer>
 </main>
 
 <!-- Unit factors convert the canonical milligram value into the selected display unit. -->
 <script type="application/json" id="unitConfig">
 {
+  "schemaVersion": 1,
   "baseUnit": "mg",
   "defaultUnit": "g",
   "units": [
@@ -331,8 +343,8 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="tabs" role="tablist"><button role="tab" id="smTab_ui" aria-selected="true">Interface</button><button role="tab" id="smTab_sensor" aria-selected="false">Sensor</button></div>
     <div class="modal-body" id="smPane_ui">
       <div id="uiSettingsInfo" class="readout">—</div>
-      <div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser (<code>ui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the server default, or the built-in values if there is none.</div>
-      <div class="button-row"><button id="uiResetBtn">Reset UI settings</button><button id="uiExportBtn">Export ui-settings.json</button></div>
+      <div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser (<code>webui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the server default, or the built-in values if there is none.</div>
+      <div class="button-row"><button id="uiResetBtn">Reset UI settings</button><button id="uiExportBtn">Export webui-settings.json</button></div>
       <div class="button-row"><button id="uiSaveServerBtn">Save current as server default</button><button id="uiResetServerBtn">Reset server default</button></div>
       <hr class="settings-divider"><div id="authInfo" class="readout">—</div>
       <div class="button-row"><button id="authForgetBtn">Forget password</button></div>
@@ -341,16 +353,17 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     </div>
     <div class="modal-body" id="smPane_sensor" hidden>
       <div class="field"><label for="ssSensor">Sensor</label><select id="ssSensor"></select></div>
-      <div id="ssNone" class="small" style="margin-top:8px">No server sensor yet. The test signal has no settings; load a sensor list first.</div>
+      <div id="ssNone" class="small" style="margin-top:8px">No sensor yet. Connect to a device (sensors.json) or use the test signal.</div>
       <div id="ssForm">
+        <div class="small" id="ssDeviceInfo" style="margin-top:6px"></div>
         <div class="control-grid" style="margin-top:8px">
           <div class="field span2"><label for="ssName">Display name</label><input type="text" id="ssName"></div>
-          <div class="field"><label for="ssRate">Nominal sampling rate (Hz)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
+          <div class="field"><label for="ssRate">Sampling rate (Hz, effective, read-only)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
           <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
         </div>
-        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><span class="small">Files are named calibration_&lt;profileId&gt;.json and belong to one sensor. Import files under Settings → Calibration.</span></div>
+        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Apply &amp; send sensors.json” makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
         <h3 style="margin:12px 0 4px">Overload warning</h3>
-        <div class="small">Limits are weights, compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used.</div>
+        <div class="small">Limits are weights (stored as <code>loadLimits</code> in sensors.json), compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used. They are independent of the firmware warnings on raw values.</div>
         <div class="control-grid" style="margin-top:6px">
           <div class="field"><label for="ssMaxLoad">Maximum load</label><input type="number" id="ssMaxLoad" step="any" min="0" placeholder="off"></div>
           <div class="field"><label for="ssLoadUnit">Unit</label><select id="ssLoadUnit"></select></div>
@@ -363,7 +376,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssHold">Keep the warning visible for (s)</label><input type="number" id="ssHold" step="any" min="1"></div>
         </div>
         <h3 style="margin:12px 0 4px">Use conditions</h3>
-        <div class="small" id="ssUseNote">—</div>
+        <div class="small" id="ssUseNote">—</div><div class="small">These assumptions live in this browser session only (not in any file).</div>
         <div class="control-grid" style="margin-top:6px">
           <div class="field"><label for="ssReadDelay">How long after placing a load you usually read the value (s)</label><input type="number" id="ssReadDelay" step="any" min="0"></div>
           <div class="field"><label for="ssSessionS">How long after the last tare you usually weigh (s)</label><input type="number" id="ssSessionS" step="any" min="0"></div>
@@ -371,14 +384,14 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssPrimaryTemp">Temperature channel used for the uncertainty</label><select id="ssPrimaryTemp"></select></div>
         </div>
         <div id="ssAuxBox" hidden><h3 style="margin:12px 0 4px">Auxiliary channels</h3>
-          <div class="small">Correct the conversion of a channel (for example an ice-point offset). The firmware values stay the default; your correction is kept in sensor_settings.json.</div>
-          <div class="control-grid" style="margin-top:6px"><div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div><div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g. {"type":"polynomial","coefficients":[-12.3,0.0042]})</label><input type="text" id="ssAuxConv"></div></div>
-          <div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Use the firmware conversion</button></div><div class="small" id="ssAuxInfo"></div></div>
+          <div class="small">The conversion of a channel (raw × rawScale, then the formula; for example an ice-point offset in a polynomial). There is only one conversion per channel: it is stored in sensors.json when you apply and send.</div>
+          <div class="control-grid" style="margin-top:6px"><div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div><div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g. {"type":"polynomial","rawScale":0.001,"unit":"°C","coefficients":[-12.3,1]})</label><input type="text" id="ssAuxConv"></div></div>
+          <div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Back to the stored conversion</button></div><div class="small" id="ssAuxInfo"></div></div>
         <div class="field span2" style="margin-top:8px"><label>Sample history</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the server</button></div><div class="small" id="ssHistoryInfo">—</div></div>
-        <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensor_settings.json</button><button id="ssDownloadBtn">Download sensor_settings.json</button><button id="ssLoadBtn">Load sensor_settings.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
+        <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensors.json</button><button id="ssDownloadBtn">Download sensors.json</button><button id="ssLoadBtn">Load sensors.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
       </div>
       <div id="ssMessages" class="small" style="margin-top:8px"></div>
-      <div class="small" style="margin-top:6px">More sensor settings will follow. The file contains all server sensors.</div>
+      <div class="small" style="margin-top:6px">The device owns the hardware settings (GPIOs, rate, raw format, firmware warnings); this tool only changes name, notes, calibration file, temperature channel, load limits and conversions and sends the rest back untouched. The use conditions are not saved anywhere.</div>
     </div>
   </div>
 </div>
@@ -400,6 +413,6 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
     <div class="modal-body" id="wizBody"></div>
   </div>
 </div>
-<script src="telemetry_workbench_v16.js"></script>
+<script src="telemetry_workbench_v17.js"></script>
 </body>
 </html>

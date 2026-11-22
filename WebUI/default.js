@@ -5,18 +5,77 @@
 const RATE_HZ_DEFAULT = 80;
 let RATE_HZ = RATE_HZ_DEFAULT;
 let PERIOD_MS = 1000 / RATE_HZ;
-// ---- server connection (prepared, no server exists yet) ----
-// SENSOR_LIST_URL: URL of the JSON sensor list, e.g. '/api/sensors'. null = test signal only.
-// Expected JSON: an array (or {"sensors":[...]}) of {"id":"s1","name":"Scale 1","sseUrl":"/stream/a", ...}.
-// Further keys (rateHz, details, ...) are kept; rateHz is read when the sensor is first created.
-const SENSOR_LIST_URL = 'sensors_example.json';
+// ---- device connection (OpenScale API protocol v0.5, same origin as this page) ----
+const STREAM_URL='/stream',STATUS_URL='/api/status',DEVICE_URL='/api/device',DEVICE_LOG_URL='/api/device-log',FILES_URL='/api/files',RESTART_URL='/api/restart',HISTORY_URL='/api/history';
+const SENSORS_URL='/data/settings/sensors.json',UNITS_URL='/data/settings/units.json',WEBUI_SETTINGS_URL='/data/settings/webui-settings.json',CALIBRATION_DIR='/data/calibration';
+const PROTOCOL_VERSION=1;
+const FLAG_OVERLOAD=1,FLAG_UNDERLOAD=2,FLAG_DISCONNECT=4,FLAG_ERROR=8,FLAG_INVALID=16,FLAG_ANY_BAD=FLAG_DISCONNECT|FLAG_ERROR|FLAG_INVALID;   // per-sample flags (bit numbers as in the protocol)
 const TEST_SENSOR_ID = 'test';
-// Server sensors have no calibration of their own yet. Until one is imported they are shown as RAW
+// Server sensors start without a calibration of their own. Until one is imported they are shown as RAW
 // counts rather than as masses computed with the illustrative demo calibration (conservative choice).
 const SERVER_SENSOR_DEFAULT_UNIT = 'raw';
 const $ = id => document.getElementById(id);
-const UNIT_CONFIG = JSON.parse($('unitConfig').textContent);
+let UNIT_CONFIG = JSON.parse($('unitConfig').textContent);
+const UNIT_EMBEDDED = UNIT_CONFIG;   // fallback when the device has no (valid) units.json
 const EMBEDDED_CALIBRATION = JSON.parse($('calibrationConfig').textContent);
+// ===== v17: WIRE LAYER (protocol v0.5): lossless JSON, raw decoding, flags =====================================
+// 64-bit values (n, t, raw, logEntryId, ...) are integer tokens on the wire. JSON.parse would round everything above 2^53-1, so text that
+// contains a run of 16 or more digits goes through parseWire(): integer tokens beyond the safe range become BigInt, everything else is parsed normally.
+function parseWire(text) {
+  if (!/\d{16,}/.test(text)) return JSON.parse(text);
+  let i = 0; const n = text.length, numRe = /-?\d+(\.\d+)?([eE][+-]?\d+)?/y;
+  const ws = () => { while (i < n) { const c = text.charCodeAt(i); if (c === 32 || c === 9 || c === 10 || c === 13) i++; else break; } };
+  const str = () => { const s = i; i++; while (i < n) { const ch = text[i]; if (ch === '\\') i += 2; else if (ch === '"') { i++; return JSON.parse(text.slice(s, i)); } else i++; } throw new SyntaxError('unterminated string'); };
+  const num = () => {
+    numRe.lastIndex = i; const r = numRe.exec(text); if (!r) throw new SyntaxError('unexpected character at ' + i);
+    i = numRe.lastIndex; const tok = r[0];
+    if (r[1] === undefined && r[2] === undefined) { const v = Number(tok); return Number.isSafeInteger(v) ? v : BigInt(tok); }
+    return Number(tok);
+  };
+  const val = () => {
+    ws(); const c = text[i];
+    if (c === '{') { i++; const o = {}; ws(); if (text[i] === '}') { i++; return o; } for (;;) { ws(); const k = str(); ws(); if (text[i++] !== ':') throw new SyntaxError('expected :'); o[k] = val(); ws(); const d = text[i++]; if (d === '}') return o; if (d !== ',') throw new SyntaxError('expected ,'); } }
+    if (c === '[') { i++; const a = []; ws(); if (text[i] === ']') { i++; return a; } for (;;) { a.push(val()); ws(); const d = text[i++]; if (d === ']') return a; if (d !== ',') throw new SyntaxError('expected ,'); } }
+    if (c === '"') return str();
+    if (text.startsWith('true', i)) { i += 4; return true; }
+    if (text.startsWith('false', i)) { i += 5; return false; }
+    if (text.startsWith('null', i)) { i += 4; return null; }
+    return num();
+  };
+  const v = val(); ws(); if (i < n) throw new SyntaxError('trailing characters'); return v;
+}
+const toNum = v => (typeof v === 'bigint' ? Number(v) : v);
+// raw is a uint64 bit pattern; rawFormat says how to read it. Returns the native value as a JS number (int64 / uint64 above 2^53 lose low bits: documented limit).
+const RAW_FORMATS = new Set(['uint32', 'uint64', 'int24', 'int32', 'int64', 'float32', 'float64']);
+const _rawDv = new DataView(new ArrayBuffer(8));
+function decodeRaw(v, fmt) {
+  if (!RAW_FORMATS.has(fmt)) return NaN;
+  if (typeof v === 'number') {
+    if (!Number.isInteger(v) || v < 0) return NaN;
+    if (v <= 0xFFFFFFFF) {   // fast path: the value fits in 32 bits
+      switch (fmt) { case 'uint32': case 'uint64': return v; case 'int24': return (v << 8) >> 8; case 'int32': return v | 0; case 'int64': return v; case 'float32': _rawDv.setUint32(0, v); return _rawDv.getFloat32(0); case 'float64': _rawDv.setBigUint64(0, BigInt(v)); return _rawDv.getFloat64(0); }
+    }
+    if (!Number.isSafeInteger(v)) return NaN;
+    v = BigInt(v);
+  }
+  if (typeof v !== 'bigint' || v < 0n || v > 0xFFFFFFFFFFFFFFFFn) return NaN;
+  switch (fmt) {
+    case 'uint32': return Number(v & 0xFFFFFFFFn); case 'uint64': return Number(v);
+    case 'int24': return Number(BigInt.asIntN(24, v)); case 'int32': return Number(BigInt.asIntN(32, v)); case 'int64': return Number(BigInt.asIntN(64, v));
+    case 'float32': _rawDv.setUint32(0, Number(v & 0xFFFFFFFFn)); return _rawDv.getFloat32(0);
+    case 'float64': _rawDv.setBigUint64(0, v); return _rawDv.getFloat64(0);
+  }
+  return NaN;
+}
+function numericSensorId(id) { return /^\d+$/.test(String(id)) ? Number(id) : null; }
+function fmtBytes(n) { return !Number.isFinite(n) ? '—' : n >= 1048576 ? `${(n / 1048576).toFixed(2)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${n} B`; }
+async function gzipText(text) {
+  if (typeof CompressionStream === 'undefined') throw new Error('This browser cannot compress (CompressionStream is missing).');
+  const cs = new CompressionStream('gzip'), w = cs.writable.getWriter(); w.write(new TextEncoder().encode(text)); w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+function cloneJson(v) { return JSON.parse(JSON.stringify(v)); }
+
 let CALIBRATION = EMBEDDED_CALIBRATION;   // the ACTIVE calibration (switchable since v8)
 const MAX_ROBUST_WINDOW = 4096;
 const OVL_DEFAULTS = Object.freeze({maxMg: null, minMg: null, averageS: 0.1, yellowPct: 10, orangePct: 20, redPct: 40, breakS: 0.5, holdS: 8});
@@ -113,7 +172,7 @@ function createSensorState(opts = {}) {
   const N0 = 100000, D0 = opts.lazy ? 0 : N0;
   return {
   capacity: N0, unlimited: false, count: 0, head: 0,
-  times: new Float64Array(N0), raw: new Int32Array(N0), massMg: new Float64Array(D0), ids: new Float64Array(N0).fill(NaN),   // v14: ids = device sample counter (NaN if unknown)
+  times: new Float64Array(N0), raw: new Float64Array(N0), massMg: new Float64Array(D0), ids: new Float64Array(N0).fill(NaN),   // v14: ids = device sample counter (NaN if unknown)
   rawMA: new Float64Array(D0), rawSD: new Float64Array(D0),
   massMA: new Float64Array(D0), massSD: new Float64Array(D0),
   derivedReady: !opts.lazy, unprocessed: 0,          // samples stored but not yet calibrated / averaged
@@ -169,7 +228,7 @@ let state = null;
 function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
-  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, deviceId: def.deviceId || null, details: def.details || {}, settings: {notes: ''}, unlisted: false,
+  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, rawFormat: null, def: null, sensorType: null, disabled: false, epochNo: 1, err: null, fw: {overload: null, underload: null}, configRev: null, warnRev: null, status: null, details: {}, settings: {notes: ''}, unlisted: false,
     ovl: newOverloadState(), firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
@@ -435,7 +494,7 @@ function resizeBuffers(requested) {
   const start = state.count - keep;
   const oldCapacity = state.capacity;
   const D = state.derivedReady, dn = D ? capacity : 0;   // derived arrays exist only for sensors that have been shown
-  const times = new Float64Array(capacity), raw = new Int32Array(capacity), mass = new Float64Array(dn), ids = new Float64Array(capacity).fill(NaN);
+  const times = new Float64Array(capacity), raw = new Float64Array(capacity), mass = new Float64Array(dn), ids = new Float64Array(capacity).fill(NaN);
   const rawMA = new Float64Array(dn), rawSD = new Float64Array(dn), massMA = new Float64Array(dn), massSD = new Float64Array(dn);
   for (let i = 0; i < keep; i++) {
     const oldIndex = start + i;
@@ -615,6 +674,12 @@ function drawSpans(u){
   drawOverloads(u);
 }
 function drawOverloads(u){
+  drawOverloadsBase(u);
+  const ctx=u.ctx,dpr=window.devicePixelRatio||1;ctx.save();ctx.strokeStyle='rgba(229,56,74,.9)';ctx.lineWidth=2*dpr;
+  for(const l of state.logs){if(l.type!=='fwwarning'||!Number.isFinite(l.effectiveFromTime))continue;const x=u.valToPos(l.effectiveFromTime/1000,'x',true);ctx.setLineDash(l.active?[]:[3*dpr,3*dpr]);ctx.beginPath();ctx.moveTo(x,u.bbox.top);ctx.lineTo(x,u.bbox.top+u.bbox.height);ctx.stroke();}
+  ctx.restore();
+}
+function drawOverloadsBase(u){
   const ctx=u.ctx,dpr=window.devicePixelRatio||1,top=u.bbox.top,h=u.bbox.height,list=state.logs.filter(l=>l.type==='overload');
   const a=activeSensor&&activeSensor.ovl&&activeSensor.ovl.active;if(a)list.push({t0:a.t0,t1:a.lastOverT,peakLevel:a.peakLevel});
   ctx.save();
@@ -636,7 +701,7 @@ function setHoverRange(r){if(rangeKey(r)===rangeKey(state.hoverRange))return;sta
 function logEntryOf(id){return state.logs.find(x=>(x.entryId||x.eventId)===id)||null;}
 function logEntryRange(e){
   if(!e)return null;
-  if(e.type==='tare'||e.type==='calibration')return{t0:e.effectiveFromTime,t1:e.effectiveFromTime,marker:true};
+  if(e.type==='tare'||e.type==='calibration'||e.type==='fwwarning')return{t0:e.effectiveFromTime,t1:e.effectiveFromTime,marker:true};
   if(e.type==='selection'||e.type==='measurement'||e.type==='overload')return{t0:e.t0,t1:e.t1};
   return null;
 }
@@ -648,6 +713,7 @@ function describeEventHTML(e){
   if(e.type==='tare')return `<strong>${esc(e.eventId)} · Tare</strong><br>${esc(e.method)}<br>Tare mass ${formatMass(e.tareMassMg)} · effective from ${tt(e.effectiveFromTime)}`+(e.tareRaw==null?'':`<br>Raw reference ${fmtNumber(e.tareRaw,2)} counts`);
   if(e.type==='calibration')return `<strong>Calibration change</strong><br>${esc(e.profileName)} · revision ${esc(e.revisionId)}<br>Effective from ${tt(e.effectiveFromTime)}`;
   if(e.type==='measuring')return `<strong>Measurement in progress</strong><br>${e.collected.toLocaleString()} / ${e.target.toLocaleString()} samples`;
+  if(e.type==='fwwarning')return fwWarningLineHTML(e);
   if(e.type==='overload')return overloadLineHTML(e);
   const val=raw?`${fmtNumber(e.rawEstimatorValue,0)} counts`:formatMass(e.originalValueMg),sig=raw?`${fmtNumber(e.rawSpread,2)} counts`:formatMass(e.spreadMg);
   return `<strong>${e.type==='measurement'?'Measurement':'Selection'} · ${e.totalSamples.toLocaleString()} samples</strong><br>${tt(e.t0)} – ${tt(e.t1)} (${((e.t1-e.t0)/1000).toFixed(2)} s)<br>Result ${val} · σ ${sig}${e.uncertainty&&e.uncertainty.status==='ok'&&!raw?'<br>'+uncertaintyLineText(e.uncertainty):''}<br>${esc(estimatorLabel(e.estimator))}`+analysisBadgeHTML(e.analysis,'<br>')+(e.crossesTare?'<br><span class="warning">spans a tare event</span>':'')+(e.crossesCalibration?'<br><span class="warning">spans a calibration change</span>':'');
@@ -658,7 +724,7 @@ function hitTestEvents(u,x,y){
   const t=u.posToVal(x,'x')*1000,tol=6*Math.abs(u.posToVal(1,'x')-u.posToVal(0,'x'))*1000,lane=(u===state.miniPlot?10:14),hits=[],seen=new Set();
   const add=(prio,entry,range)=>{if(seen.has(entry))return;seen.add(entry);hits.push({prio,entry,range});};
   for(const e of state.tareEvents)if(Math.abs(e.effectiveFromTime-t)<=tol)add(0,e,logEntryRange({type:'tare',effectiveFromTime:e.effectiveFromTime}));
-  for(const l of state.logs)if(l.type==='calibration'&&Math.abs(l.effectiveFromTime-t)<=tol)add(0,l,logEntryRange(l));
+  for(const l of state.logs)if((l.type==='calibration'||l.type==='fwwarning')&&Math.abs(l.effectiveFromTime-t)<=tol)add(0,l,logEntryRange(l));
   if(y<=lane)for(const l of state.logs)if((l.type==='selection'||l.type==='measurement'||l.type==='overload')&&t>=l.t0-tol&&t<=l.t1+tol)add(1+(l.t1-l.t0)/1e12,l,logEntryRange(l));
   const inside=r=>r&&t>=r.t0&&t<=r.t1;
   if(state.measurement&&inside(state.highlight))add(2,{type:'measuring',collected:state.measurement.collected,target:state.measurement.target},state.highlight);
@@ -1280,7 +1346,7 @@ function appendLogEntry(entry){state.logs.unshift(entry);renderLog();}
 function appendSelectionLog(s){const entry={type:'selection',entryId:`selection-${Date.now()}-${state.logs.length}`,createdAt:new Date().toISOString(),...s};appendLogEntry(entry);}
 function addTareEvent(tareMassMg,{method='manual',tareRaw=null,tareRawSamples=null,sourceCount=0,outOfRangeCount=0}={}){
   const previous=currentTareEvent();
-  const event={type:'tare',eventId:`tare-${String(state.tareEvents.length+1).padStart(4,'0')}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,tareMassMg,tareRaw,method,sourceCount,outOfRangeCount,previousTareMassMg:previous?previous.tareMassMg:0,calibrationRevisionId:state.revisionId,tareRawSamples:tareRawSamples?Int32Array.from(tareRawSamples):null};
+  const event={type:'tare',eventId:`tare-${String(state.tareEvents.length+1).padStart(4,'0')}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,tareMassMg,tareRaw,method,sourceCount,outOfRangeCount,previousTareMassMg:previous?previous.tareMassMg:0,calibrationRevisionId:state.revisionId,tareRawSamples:tareRawSamples?Float64Array.from(tareRawSamples):null};
   // A new tare affects only future samples. Previously stored calibrated masses and
   // their tare-adjusted display values remain unchanged and can be reproduced from events.
   cancelMeasurement('tare event'); cancelCharRec('tare event');   // a tare changes the zero reference, so a running measurement would mix epochs
@@ -1301,7 +1367,7 @@ function autoTare(){
   // Average only samples recorded under the ACTIVE calibration (a calibration change starts a new epoch).
   const calStart=Math.min(lowerBoundTime(state.calibrations[state.calibrations.length-1].effectiveFromTime),state.count-1);
   const n=Math.max(1,Math.min(state.window,state.count-calStart)),start=state.count-n;
-  let massSum=0,rawSum=0,outOfRangeCount=0;const rawSamples=new Int32Array(n);
+  let massSum=0,rawSum=0,outOfRangeCount=0;const rawSamples=new Float64Array(n);
   for(let j=0;j<n;j++){const i=start+j,r=getRaw(i);massSum+=getMassMg(i);rawSum+=r;rawSamples[j]=r;if(calibrateAbsolute(r).outOfRange)outOfRangeCount++;}
   addTareEvent(massSum/n,{method:'Auto-Tare · mean of calibrated samples',tareRaw:rawSum/n,tareRawSamples:rawSamples,sourceCount:n,outOfRangeCount});
   updateSelectionForNewContext();scheduleRender();
@@ -1749,6 +1815,7 @@ function renderLog(){
     const detail=e=>`${estimatorLabel(e.estimator)} · ${e.estimator==='trimmed'?e.trimPercent+'% trim · ':''}${(e.estimator==='ema'||e.estimator==='emaNorm')?'τ '+e.emaTau+' s · ':''}${e.estimator==='hampelLocal'?'k='+e.hampelHalf+', '+e.hampelSigma+'σ · ':''}${((e.t1-e.t0)/1000).toFixed(2)} s · Calibration ${esc(e.calibrationRevisionId)}`;
     if(entry.type==='tare')return row('event','tare',`<strong>${esc(entry.eventId)} · ${esc(entry.method)}</strong><br>Tare: ${formatMass(entry.tareMassMg)} · Raw reference: ${entry.tareRaw==null?'not applicable':fmtNumber(entry.tareRaw,2)+' counts'}${entry.outOfRangeCount?`<br><span class="warning">${entry.outOfRangeCount} of ${entry.sourceCount} tare samples were outside the calibrated range.</span>`:''}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s · Calibration ${esc(entry.calibrationRevisionId)}</span>`);
     if(entry.type==='calibration')return row('calibration','calibration',`<strong>Calibration changed · ${esc(entry.profileName)}</strong><br>Revision ${esc(entry.revisionId)} · ${esc(entry.source)}<br><span class="small">Effective from ${(entry.effectiveFromTime/1000).toFixed(2)} s. Earlier samples keep their recorded calibration; the tare was reset.</span>`);
+    if(entry.type==='fwwarning')return row('overload','fwwarning',fwWarningLineHTML(entry)+`<br><span class="small">${(entry.effectiveFromTime/1000).toFixed(2)} s</span>`);
     if(entry.type==='overload')return row('overload','overload',overloadLineHTML(entry)+`<br><span class="small">${(entry.t0/1000).toFixed(2)}–${(entry.t1/1000).toFixed(2)} s</span>`);
     if(entry.type==='note')return row('note','note',esc(entry.text));
     const result=state.unitId==='raw'?`Raw estimator: ${fmtNumber(entry.rawEstimatorValue,0)} counts`:(entry.type==='measurement'?`Result: <strong>${formatMass(entry.originalValueMg)}</strong> · σ ${formatMass(entry.spreadMg)}`:`Original: ${formatMass(entry.originalValueMg)} · Current: ${formatMass(entry.currentValueMg)}`);
@@ -1758,6 +1825,7 @@ function renderLog(){
 }
 function jumpToLogEntry(id,type){
   if(type==='note')return;
+  if(type==='fwwarning'){const e=logEntryOf(id);if(!e)return;{const r=logEntryRange(e);state.logPinned=r?{...r,id}:null;}if(e.effectiveFromTime>=oldestTime()&&e.effectiveFromTime<=newestTime()){const half=state.liveWindowSpan/2;state.live=false;state.viewMin=clamp(e.effectiveFromTime-half,oldestTime(),Math.max(oldestTime(),newestTime()-state.liveWindowSpan));state.viewMax=Math.min(newestTime(),state.viewMin+state.liveWindowSpan);state.selection=null;}$('selectionSummary').innerHTML=fwWarningLineHTML(e);scheduleRender();return;}
   if(type==='overload'){const e=logEntryOf(id);if(!e)return;{const r=logEntryRange(e);state.logPinned=r?{...r,id}:null;}if(e.t0<oldestTime()||e.t1>newestTime()){$('selectionSummary').innerHTML='<span class="warning">The samples of this event are no longer retained. The log record remains.</span>';return;}const sp=Math.max(e.t1-e.t0,PERIOD_MS),vs=Math.max(sp*3,state.liveWindowSpan);state.live=false;state.liveWindowSpan=vs;state.viewMin=clamp((e.t0+e.t1)/2-vs/2,oldestTime(),Math.max(oldestTime(),newestTime()-vs));state.viewMax=Math.min(newestTime(),state.viewMin+vs);state.selection=null;$('selectionSummary').innerHTML=overloadLineHTML(e);scheduleRender();return;}
   {const pe=logEntryOf(id),r=logEntryRange(pe);state.logPinned=r?{...r,id}:null;}   // blue highlight in both graphs
   if(type==='tare'||type==='calibration'){
@@ -1831,10 +1899,7 @@ function mainChartHeight(){return Math.max(300,Math.min(560,window.innerHeight*.
 function resizeCharts(){if(!state.mainPlot||!state.miniPlot)return;state.mainPlot.setSize({width:$('mainChart').clientWidth,height:mainChartHeight()});state.miniPlot.setSize({width:$('miniChart').clientWidth,height:125});scheduleRender();}
 
 function populateSettings(){
-  const select=$('unitSelect');
-  const groups=[...new Set(UNIT_CONFIG.units.map(u=>u.group))];
-  for(const group of groups){const optgroup=document.createElement('optgroup');optgroup.label=group;for(const unit of UNIT_CONFIG.units.filter(u=>u.group===group)){const option=document.createElement('option');option.value=unit.id;option.textContent=`${unit.name}${unit.id==='raw'?'':' ('+unit.symbol+')'}`;optgroup.appendChild(option);}select.appendChild(optgroup);}
-  select.value=state.unitId;
+  populateUnitSelect();
   const precision=$('precisionSelect');for(let i=0;i<=10;i++){const opt=document.createElement('option');opt.value=String(i);opt.textContent=`${i} decimal places`;precision.appendChild(opt);}precision.value='auto';
 }
 function openSettings(open){$('settingsMenu').hidden=!open;$('settingsBtn').setAttribute('aria-expanded',String(open));}
@@ -1865,8 +1930,9 @@ function validateCalibrationConfig(config){
   const errors=[],warnings=[];let prepared=null;
   if(!config||typeof config!=='object'||Array.isArray(config))return{errors:['The top level must be a JSON object.'],warnings,prepared};
   if(config.schemaVersion!==1)errors.push('schemaVersion must be 1.');
-  if(config.sensorId!=null&&(typeof config.sensorId!=='string'||!config.sensorId.trim()))errors.push('"sensorId" must be a non-empty text.');
+  if(config.sensorId!=null&&!(Number.isInteger(config.sensorId)&&config.sensorId>=0))errors.push('"sensorId" must be a whole number (the numeric sensor id of the device).');
   for(const key of['profileId','profileName'])if(typeof config[key]!=='string'||!config[key].trim())errors.push(`"${key}" must be a non-empty text.`);
+  if(typeof config.profileId==='string'&&config.profileId.trim()&&!/^[A-Za-z0-9._-]+$/.test(config.profileId))errors.push('"profileId" may only contain letters, digits, dot, underscore and hyphen (it is part of the file name).');
   if(!UNIT_CONFIG.units.some(u=>u.id===config.calibrationUnit&&u.id!=='raw'))errors.push('"calibrationUnit" must be one of the supported mass units.');
   if(config.calibrationMethod!=='piecewise-linear')errors.push('Only calibrationMethod "piecewise-linear" is supported.');
   for(const o of (Array.isArray(config.observations)?config.observations:[]))if(o&&o.purpose!=null&&!['calibration','eccentricity','creep','zero-drift'].includes(o.purpose))errors.push(`Observation "${o.observationId}": unknown purpose "${o.purpose}".`);
@@ -1897,15 +1963,14 @@ function validateCalibrationConfig(config){
 }
 // v15: a calibration file belongs to ONE sensor (top-level "sensorId"; older files have none and are bound to the sensor they are first used on).
 // File name: calibration_<profileId>.json. calLibrary keeps the files known in this session (by file name); the file that is active for a
-// sensor is stored in sensor_settings.json ("calibrationFile").
-const CALIBRATION_FILES_URL = null;   // optional: GET <url>/<file name> returns a calibration file (a server library)
+// sensor is stored in sensors.json ("calibrationFile").
 const calLibrary = new Map();
-function calFileName(config){return `calibration_${String(config.profileId).replace(/[^\w.-]+/g,'_')}.json`;}
-function calLibraryAdd(config,sensorId){const name=calFileName(config);calLibrary.set(name,{name,config:JSON.parse(JSON.stringify(config)),sensorId:config.sensorId||sensorId,profileName:config.profileName});return name;}
+function calFileName(config,sensorId){const sid=config.sensorId!=null?config.sensorId:(sensorId!=null?sensorId:activeSensor.id);return `calibration_${numericSensorId(sid)!=null?numericSensorId(sid):'test'}_${config.profileId}.json`;}   // calibration_<sensorId>_<profileId>.json
+function calLibraryAdd(config,sensorId){const name=calFileName(config,sensorId),old=calLibrary.get(name);calLibrary.set(name,{name,config:JSON.parse(JSON.stringify(config)),sensorId:String(config.sensorId!=null?config.sensorId:sensorId),profileName:config.profileName,onDevice:old?old.onDevice:false,sizeBytes:old?old.sizeBytes:undefined});return name;}
 async function activateCalibration(config,source){
   const checked=validateCalibrationConfig(config);
   if(checked.errors.length)return checked;
-  if(config.sensorId&&config.sensorId!==activeSensor.id){checked.errors.push(`This calibration belongs to sensor “${config.sensorId}”, but “${activeSensor.id}” is shown. Show that sensor first.`);return checked;}
+  if(config.sensorId!=null&&String(config.sensorId)!==activeSensor.id){checked.errors.push(`This calibration belongs to sensor “${config.sensorId}”, but “${activeSensor.id}” is shown. Show that sensor first.`);return checked;}
   const calName=calLibraryAdd(config,activeSensor.id);
   const target=state,fp=await fingerprintConfig(config);
   if(state!==target){checked.errors.push('The shown sensor changed while the calibration was being checked; nothing was applied. Select the sensor again and retry.');return checked;}
@@ -1927,12 +1992,12 @@ async function importCalibrationFile(file){
   try{
     if(file.size>2e6)throw new Error('File is larger than 2 MB.');
     const cfg=JSON.parse(await file.text());
-    if(cfg&&cfg.sensorId&&cfg.sensorId!==activeSensor.id){
-      if(!sensors.has(cfg.sensorId)){showCalibrationMessages([`This calibration belongs to sensor “${cfg.sensorId}”, which is not in the sensor list.`],[],'');return;}
-      activateSensor(cfg.sensorId);
+    if(cfg&&cfg.sensorId!=null&&String(cfg.sensorId)!==activeSensor.id){
+      if(!sensors.has(String(cfg.sensorId))){showCalibrationMessages([`This calibration belongs to sensor “${cfg.sensorId}”, which is not in the sensor list.`],[],'');return;}
+      activateSensor(String(cfg.sensorId));
     }
     const result=await activateCalibration(cfg,`file: ${file.name}`);
-    if(!result.errors.length&&cfg&&!cfg.sensorId)result.warnings.push(`This file names no sensor. It is now used for “${activeSensor.name}”; exporting it again stores that link.`);
+    if(!result.errors.length&&cfg&&cfg.sensorId==null)result.warnings.push(`This file names no sensor. It is now used for “${activeSensor.name}”; exporting it again stores that link.`);
     showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':`Calibration imported and activated on “${activeSensor.name}”. Structure checked only; this is not a metrological validation.`);
   }catch(error){showCalibrationMessages([`Could not import the file: ${error.message}`],[],'');}
 }
@@ -1942,11 +2007,9 @@ async function restoreDemoCalibration(){
   showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Embedded illustrative demo calibration restored.');
 }
 async function exportCalibration(){
-  // v15: the file always names its sensor; a file without one is stamped with the shown sensor (and fingerprinted again).
-  const out={...CALIBRATION};if(!out.sensorId)out.sensorId=activeSensor.id;
-  const fp=out.sensorId===CALIBRATION.sensorId?{id:state.revisionId,full:state.fullHash}:await fingerprintConfig(out);
-  out.revisionId=fp.id;if(fp.full)out.contentHash=fp.full;else delete out.contentHash;
-  downloadBlob(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),calFileName(out));
+  // the file always names its sensor (numeric id of the device); a file without one is stamped with the shown sensor and fingerprinted again
+  const out=await stampedCalibration();
+  downloadBlob(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),calFileName(out,activeSensor.id));
 }
 // Makes the file `name` the active calibration of sensor `id` ('' = the embedded demo). Shows that sensor first (changes are only possible on the shown sensor).
 async function selectCalibrationFile(id,name){
@@ -1954,8 +2017,8 @@ async function selectCalibrationFile(id,name){
   if(s!==activeSensor)activateSensor(id);
   if(!name){await restoreDemoCalibration();return'Embedded demo calibration is active.';}
   let e=calLibrary.get(name);
-  if(!e&&CALIBRATION_FILES_URL){try{const r=await fetch(`${CALIBRATION_FILES_URL}/${encodeURIComponent(name)}`,{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);const cfg=await r.json();calLibraryAdd(cfg,id);e=calLibrary.get(name);}catch(err){return`Could not load ${name} from the server: ${err.message}`;}}
-  if(!e){s.settings.calibrationFile=name;s.settings.calibrationPending=true;return`${name} is not loaded in this session. Import the file in Settings → Calibration (it is then used for “${s.name}”).`;}
+  if((!e||!e.config)&&deviceReachable){try{const cfg=await fetchWire(`${CALIBRATION_DIR}/${encodeURIComponent(name)}`);if(calFileName(cfg,id)!==name)throw new Error('the file name and the profile / sensor id inside the file disagree');calLibraryAdd(cfg,id);e=calLibrary.get(name);}catch(err){return`Could not load ${name} from the device: ${err.message}`;}}
+  if(!e||!e.config){s.settings.calibrationFile=name;s.settings.calibrationPending=true;return`${name} is not loaded in this session. Import the file in Settings → Calibration (it is then used for “${s.name}”).`;}
   if(e.sensorId&&e.sensorId!==id)return`${name} belongs to sensor “${e.sensorId}”.`;
   const r=await activateCalibration(JSON.parse(JSON.stringify(e.config)),`file: ${name}`);
   if(!r.errors.length)delete s.settings.calibrationPending;
@@ -1963,10 +2026,11 @@ async function selectCalibrationFile(id,name){
 }
 function updateCalibrationInfo(){
   const weights=CALIBRATION.referenceWeights||[],count=state.calibrations.length;
-  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Characterization: ${esc(charSummaryText(CALIBRATION.characterization))}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
+  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION,activeSensor.id))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Characterization: ${esc(charSummaryText(CALIBRATION.characterization))}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
 }
 
 function initEvents(){
+  $('overloadBanner').addEventListener('click',e=>{const it=e.target.closest&&e.target.closest('[data-sensor]');if(it)activateSensor(it.dataset.sensor);});
   $('pauseBtn').addEventListener('click',()=>setSensorPaused(activeSensor,!activeSensor.state.paused));
   $('pauseAllBtn').addEventListener('click',pauseAllToggle);
   $('clearChartsBtn').addEventListener('click',clearCharts);$('clearAllChartsBtn').addEventListener('click',clearAllCharts);$('clearAllBtn').addEventListener('click',clearAll);
@@ -2115,9 +2179,9 @@ function updateOverloadBanner() {
   const now = performance.now(), items = [];
   for (const s of sensors.values()) { const r = overloadStatus(s, now); if (r) items.push(r); }
   items.sort((a, b) => OVL_RANK[b.level] - OVL_RANK[a.level]);
-  el.hidden = !items.length;
+  const fwHtml = fwBannerHTML(); el.hidden = !items.length && !fwHtml;
   const unit = x => { const u = x.sensor.state.unitId === 'raw' ? 'g' : x.sensor.state.unitId; return v => esc(formatMass(v, u)); };
-  setHTML(el, items.map(r => { const f = unit(r);
+  setHTML(el, fwHtml + items.map(r => { const f = unit(r);
     return `<div class="ovl-item ovl-${r.level}${r.now ? ' ovl-now' : ''}" data-sensor="${esc(r.sensor.id)}" title="Click to show this sensor"><strong>⚠ ${esc(r.sensor.name)}: ${r.side === 'under' ? 'UNDERLOAD' : 'OVERLOAD'}</strong> peak ${f(r.peakMg)} (limit ${f(r.limitMg)}, ${r.side === 'under' ? '−' : '+'}${(r.peakExcess * 100).toFixed(0)} %) · ${fmtSpan(r.durationMs / 1000)} · <strong>${r.stale ? 'no data (status unknown)' : r.now ? 'STILL OVERLOADED' : `ended ${r.endedAgoS == null ? 'just now' : r.endedAgoS.toFixed(0) + ' s ago'}`}</strong></div>`; }).join(''));
 }
 // ===== v15: CONNECTION TIMEOUT ===========================================================================================
@@ -2125,7 +2189,7 @@ function updateOverloadBanner() {
 // max(STREAM_TIMEOUT_MIN_MS, STREAM_TIMEOUT_PERIODS x nominal period) is shown as "no data for N s".
 const STREAM_TIMEOUT_MIN_MS = 2000, STREAM_TIMEOUT_PERIODS = 20;
 function sensorStaleMs(s, nowWall) {
-  if (s.state.paused || s.unlisted) return 0;
+  if (s.state.paused || s.unlisted || s.disabled || s.kind === 'archive') return 0;
   let base = s.state.lastWall;
   if (s.kind === 'server') { const c = s.sseUrl && sseConnections.get(s.sseUrl); if (!c) return 0; if (base == null || (c.since != null && c.since > base)) base = c.since; }
   if (base == null) return 0;
@@ -2138,6 +2202,7 @@ function housekeeping() {
   if (sig !== housekeepingSig) { housekeepingSig = sig; renderSensorSelect(); renderAuxToggles(); }
   updateStatusUI(); updateOverloadBanner();
 }
+// ===== v17: epochs follow below the multi-sensor layer
 // ===== MULTI-SENSOR LAYER (v11) ======================================================================
 // Ingest. All data of all sensors enters here. A sensor that is paused THROWS AWAY what arrives for it
 // (counted in state.dropped). Only the shown sensor is processed; the others just store time + raw counts.
@@ -2184,6 +2249,7 @@ function prepareStateForDisplay(){
     state.curveCache={key:'',map:new Map()};state.miniCache={key:'',map:new Map()};
   }
 }
+
 function activateSensor(id){
   const next=sensors.get(id);if(!next||next===activeSensor)return;
   if(activeSensor){
@@ -2213,11 +2279,73 @@ function syncUIFromState(){
   if(state.manualY){$('yMinRange').value=state.yMin;$('yMaxRange').value=state.yMax;$('yMinText').textContent=fmtNumber(state.yMin,3);$('yMaxText').textContent=fmtNumber(state.yMax,3);}
   $('bandModeSelect').value=bandMode;$('simModeSelect').value=state.simMode;$('simControls').hidden=!sim;$('testSamplesBtn').hidden=!sim;
   $('headerSub').textContent=`${RATE_HZ} Hz sensor stream · calibrated mass · local-only session`;
-  if(sim)$('sourceNote').textContent='Test signal: bounded marching randomness';else updateSourceNote();
+  if(sim)$('sourceNote').textContent='Test signal: bounded marching randomness';else if(activeSensor.kind==='archive')$('sourceNote').textContent='Earlier epoch: a read-only copy of a sample buffer that ended at a restart or configuration change';else updateSourceNote();
   $('measRateText').textContent=String(RATE_HZ);syncMeasurementInputs('samples');
   setSelectMode(false);
   if(state.selection)updateSelectionReadout();else $('selectionSummary').innerHTML=SELECTION_DEFAULT_HTML;
   renderLog();updateCalibrationInfo();updateStatusUI();renderSensorSelect();updateViewLabel();updateMeasurementUI();renderAuxToggles();
+}
+// ===== v17: SAMPLE EPOCHS (restart / configuration change) ====================================================================================
+// A device restart (new bootId) restarts the monotonic clock and the sample ids; a changed configRevision of a sensor changes what a raw value means.
+// In both cases the samples collected so far are NEVER deleted: the old buffer becomes a read-only "archive" entry in the sensor list (id "<sensor>@<epoch>"),
+// and the live sensor continues with a fresh buffer. The break is written to the logs of both.
+const EPOCH_COPY_KEYS=['unitId','precision','estimator','trimPercent','emaTau','hampelHalf','hampelSigma','window','activeWindow','manualY','yMin','yMax','liveWindowSpan'];
+function resetSensorLinkState(sensor,opts){
+  sensor.firstLiveId=null;sensor.skipNextGap=true;sensor.gaps=[];sensor.gapCount=0;sensor.err=null;sensor.fw={overload:null,underload:null};
+  sensor.history={status:'idle',loaded:0,running:false,error:null,minId:null,autoStarted:!!opts.configChange,noOlder:!!opts.configChange};   // after a configuration change older history has another meaning: not loaded
+}
+function repointActive(){
+  state=activeSensor.state;CALIBRATION=state.calConfig;calibration=state.calPrepared;RATE_HZ=state.rateHz;PERIOD_MS=1000/RATE_HZ;
+  prepareStateForDisplay();state.snapY=true;state.autoYMin=null;state.autoYMax=null;state.lastFrameTs=0;
+  if(state.live)fitLiveWindow();else clampHistoricalView();
+  syncUIFromState();if(window.uPlot)createCharts();if(wiz.open)wizRender();scheduleRender();
+}
+function startNewEpoch(sensor,reason,opts={}){
+  const old=sensor.state,wasActive=sensor===activeSensor,out={archived:null},rate=Number.isFinite(opts.rateHz)&&opts.rateHz>0?opts.rateHz:old.rateHz;
+  if(!old.count){
+    old.timeOrigin=opts.keepOrigin?old.timeOrigin:null;old.nextTime=0;old.rateHz=rate;resetSensorLinkState(sensor,opts);
+    if(wasActive&&rate!==RATE_HZ)setSensorRate(sensor,rate);
+    return out;
+  }
+  if(wasActive){withState(old,()=>{cancelMeasurement('a new sample epoch started');cancelCharRec('a new sample epoch started');});old.hoverRange=null;hideEventTip();destroyCharts();}
+  const wasPaused=old.paused,archId=`${sensor.id}@${sensor.epochNo}`;
+  const arch={id:archId,name:`${sensor.name} · earlier epoch ${sensor.epochNo} (${reason})`,kind:'archive',parentId:sensor.id,sseUrl:null,rawFormat:sensor.rawFormat,details:{},settings:{notes:'',calibrationFile:sensor.settings.calibrationFile||null,primaryTemperatureSensorId:sensor.settings.primaryTemperatureSensorId||null},unlisted:false,disabled:false,
+    ovl:newOverloadState(),firstLiveId:null,skipNextGap:false,gaps:[],gapCount:0,history:{status:'archived',loaded:0,running:false,error:null,minId:null,autoStarted:true},fw:{overload:null,underload:null},err:null,epochNo:0,state:old};
+  old.paused=true;sensors.set(archId,arch);sensor.epochNo++;out.archived=archId;
+  const fresh=createSensorState({rateHz:rate,lazy:!wasActive,unitId:old.unitId});
+  for(const k of EPOCH_COPY_KEYS)fresh[k]=old[k];
+  fresh.window=Math.min(old.window,fresh.capacity);fresh.auxHidden=new Set(old.auxHidden);
+  fresh.calConfig=old.calConfig;fresh.calPrepared=old.calPrepared;fresh.revisionId=old.revisionId;fresh.hashType=old.hashType;fresh.fullHash=old.fullHash;
+  fresh.calibrations=[{effectiveFromTime:-Infinity,revisionId:old.revisionId,profileId:old.calConfig.profileId,hashType:old.hashType,config:old.calPrepared,source:'carried over to the new epoch'}];
+  fresh.paused=wasPaused;fresh.timeOrigin=opts.keepOrigin?old.timeOrigin:null;fresh.lastWall=old.lastWall;
+  const stamp=new Date().toISOString();
+  fresh.logs=[{type:'note',entryId:`note-${Date.now()}-e`,createdAt:stamp,text:`New sample epoch: ${reason}. The earlier samples were kept as “${arch.name}” (select it in the sensor list).`}];
+  old.logs.unshift({type:'note',entryId:`note-${Date.now()}-x`,createdAt:stamp,text:`This epoch ended: ${reason}.`});
+  sensor.state=fresh;resetSensorLinkState(sensor,opts);
+  sensor.ovl.q=[];sensor.ovl.active=null;sensor.ovl.current=null;
+  for(const ch of auxChannels.values())if(!ch.archived&&ch.attachedTo.includes(sensor.id))ch.archiveAttach.add(archId);   // same clock: the live channel also explains the old epoch
+  if(wasActive)repointActive();
+  renderSensorSelect();updateStatusUI();
+  return out;
+}
+// an auxiliary channel whose own configuration changed: its buffer is kept as an archived (unattached) channel
+function archiveAuxChannel(ch,reason,attachedMap){
+  if(ch.buf.count){
+    const id=`${ch.id}@${ch.epochNo||1}`;
+    auxChannels.set(id,Object.assign({},ch,{id,name:`${ch.name} · earlier epoch (${reason})`,archived:true,paused:true,unlisted:false,sseUrl:null,attachedTo:attachedMap?ch.attachedTo.map(x=>attachedMap.get(x)).filter(Boolean):[],archiveAttach:new Set(),gaps:[],gapCount:0,history:{...ch.history,status:'archived',running:false,autoStarted:true}}));
+    ch.epochNo=(ch.epochNo||1)+1;
+  }
+  ch.buf=auxNewBuffer(ch.buf.cap);ch.archiveAttach=new Set();ch.gaps=[];ch.gapCount=0;ch.skipNextGap=true;ch.firstLiveId=null;ch.err=null;
+  ch.history={status:'idle',loaded:0,running:false,error:null,minId:null,autoStarted:false};
+}
+function onBootChanged(prev,cur,via){
+  deviceLogLocal('webui_boot',`Device restarted (boot ${prev} → ${cur}, noticed via ${via}). Samples collected so far are kept as earlier epochs; the clock and the sample ids start again.`,{previous:prev,current:cur});
+  deviceOrigins.clear();if(via!=='status')csrfToken=null;deviceState=null;
+  const map=new Map();
+  for(const s of [...sensors.values()])if(s.kind==='server'){const r=startNewEpoch(s,`device restarted (boot ${prev} → ${cur})`);if(r.archived)map.set(s.id,r.archived);s.configRev=null;s.warnRev=null;s.status=null;}
+  for(const c of [...auxChannels.values()])if(!c.archived){archiveAuxChannel(c,`device restarted (boot ${prev} → ${cur})`,map);c.configRev=null;}
+  if(typeof fetch!=='undefined'){pollStatus();loadDeviceLog();}
+  renderSensorSelect();updateStatusUI();
 }
 function setSubPixel(on){subPixel=!!on;const t=$('subPixelToggle');if(t)t.checked=subPixel;if(state&&state.mainPlot){destroyCharts();createCharts();}scheduleRender();}
 function setBandMode(m){bandMode=BAND_MODES[m]?m:'symmetric';if(state){state.curveCache={key:'',map:new Map()};recreateMainChart();}const s=$('bandModeSelect');if(s)s.value=bandMode;scheduleRender();}
@@ -2248,6 +2376,9 @@ function setNavPanelVisible(on){$('navPanel').hidden=!on;$('sidePanels').classLi
 
 // ---- pause, links, status -----------------------------------------------------------------------
 function sensorLink(s){
+  if(s.kind==='archive')return{key:'archived',text:'Earlier epoch (read-only copy)'};
+  if(s.disabled)return{key:'disabled',text:'Disabled on the device'};
+  if(s.err&&s.err.state!=='ok')return{key:'sensorerr',text:`Sensor ${s.err.state}: ${s.err.message||s.err.code||''}`};
   if(s.state.paused)return{key:'paused',text:'Paused'};
   if(s.kind==='test'){const age=sensorStaleMs(s,performance.now());return age>0?{key:'timeout',text:`No data for ${(age/1000).toFixed(0)} s`}:{key:'live',text:'Streaming'};}
   if(s.unlisted)return{key:'unlisted',text:'Not in the server list (no data)'};
@@ -2257,12 +2388,12 @@ function sensorLink(s){
   if(c.status==='live'){const age=sensorStaleMs(s,performance.now());if(age>0)return{key:'timeout',text:`No data for ${(age/1000).toFixed(0)} s`};}
   return c.status==='live'?{key:'live',text:'Streaming'}:c.status==='error'?{key:'error',text:'Connection failed'}:{key:'connecting',text:'Connecting…'};
 }
-const LINK_ICON={timeout:'⏱',live:'●',connecting:'◌',paused:'Ⅱ',error:'⚠',idle:'○',unlisted:'⊘'};
+const LINK_ICON={archived:'▣',disabled:'⊘',sensorerr:'⚠',timeout:'⏱',live:'●',connecting:'◌',paused:'Ⅱ',error:'⚠',idle:'○',unlisted:'⊘'};
 function updateStatusUI(){
   // v13: "streaming" counts only sensors whose link is really live (test signal running, or a server connection that
   // is open). Before, every listed, un-paused sensor counted as recording even when its URL could not be reached.
-  const s=activeSensor,link=sensorLink(s),all=[...sensors.values()],live=all.filter(x=>sensorLink(x).key==='live').length;
-  $('statusText').textContent=link.text+(chartsPending?' · loading chart':'')+(all.length>1?` · ${live} of ${all.length} sensors streaming`:'');
+  const s=activeSensor,link=sensorLink(s),all=[...sensors.values()].filter(x=>x.kind!=='archive'),live=all.filter(x=>sensorLink(x).key==='live').length;
+  $('statusText').textContent=link.text+(chartsPending?' · loading chart':'')+(all.length>1?` · ${live} of ${all.length} sensors streaming`:'')+(pendingChanges&&pendingChanges.length?` · pending: ${pendingChanges.join(', ')}`:'')+(deviceState&&deviceState.state&&deviceState.state!=='running'&&deviceState.state!=='ok'?` · device: ${deviceState.state}`:'');
   $('statusDot').classList.toggle('paused',link.key!=='live');
   const anyOn=all.some(x=>!x.state.paused&&!x.unlisted)||[...auxChannels.values()].some(c=>!c.paused&&!c.unlisted);
   $('pauseBtn').textContent=s.state.paused?'▶ Resume':'Ⅱ Pause';
@@ -2279,9 +2410,9 @@ function setSensorPaused(s,paused,quiet=false){
 }
 // Pause all / resume all. If anything is recording, everything is paused; otherwise everything resumes.
 function pauseAllToggle(){
-  const anyRunning=[...sensors.values()].some(s=>!s.state.paused)||[...auxChannels.values()].some(c=>!c.paused);
-  for(const s of sensors.values())setSensorPaused(s,anyRunning,true);
-  for(const c of auxChannels.values())setAuxPaused(c,anyRunning,true);
+  const live=[...sensors.values()].filter(s=>s.kind!=='archive'),liveAux=[...auxChannels.values()].filter(c=>!c.archived),anyRunning=live.some(s=>!s.state.paused)||liveAux.some(c=>!c.paused);
+  for(const s of live)setSensorPaused(s,anyRunning,true);
+  for(const c of liveAux)setAuxPaused(c,anyRunning,true);
   syncConnections();renderSensorSelect();updateStatusUI();
 }
 
@@ -2296,12 +2427,196 @@ function pauseAllToggle(){
 // sensor becomes its time origin (so the chart starts at 0 s).
 const sseConnections=new Map();
 const sseStats={unknown:0,bad:0};
+// ===== v17: DEVICE LAYER: status, boot detection, CSRF, device log, units, startup =============================================
+// Startup (protocol §3): status + device -> units / files / webui-settings -> sensors.json (+ the calibration each sensor names) -> status again -> device log
+// -> only then the ONE multiplexed /stream is opened (startupHold), so no sample arrives before the sensor list and calibrations exist.
+let startupHold = false, deviceReachable = false, deviceBootId = null, deviceStatus = null, deviceInfo = null, deviceInfoError = null, csrfToken = null, pendingChanges = [], deviceFiles = null, deviceState = null, sensorsDocRaw = null, statusPromise = null, statusError = '', startupNotes = [];
+const deviceLog = [], deviceLogKeys = new Set(), DEVICE_LOG_MAX = 1000;
+function deviceOnline() { return deviceReachable; }
+async function httpErrorText(r) {
+  let body = ''; try { body = await r.text(); } catch (_) {}
+  let msg = ''; try { const j = JSON.parse(body); if (j && j.error) msg = `${j.error.message || j.error.code || ''}${j.error.code && j.error.message ? ` [${j.error.code}]` : ''}${j.error.details ? ' ' + JSON.stringify(j.error.details) : ''}`; else msg = body.trim().slice(0, 300); } catch (_) { msg = body.trim().slice(0, 300); }
+  const hint = r.status === 401 ? 'password needed or not accepted' : r.status === 403 ? 'CSRF token rejected' : r.status === 413 ? `request larger than the device limit${deviceInfo && deviceInfo.maxUploadBytes ? ` (${deviceInfo.maxUploadBytes} bytes)` : ''}` : r.status === 507 ? 'not enough flash space on the device' : '';
+  return `HTTP ${r.status}${hint ? ' (' + hint + ')' : ''}${msg ? ': ' + msg : ''}`;
+}
+async function fetchWire(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error(await httpErrorText(r));
+  return parseWire(await r.text());
+}
+// PUT / DELETE answer {status, saved, errors, warnings, pendingChanges} (also calibration and asset uploads)
+async function writeResult(r) {
+  let j = null; try { j = parseWire(await r.text()); } catch (_) {}
+  if (j && Array.isArray(j.pendingChanges)) { pendingChanges = j.pendingChanges; updateStatusUI(); }
+  return j || {};
+}
+function writeResultText(j) {
+  if (!j || !j.status) return 'saved';
+  const p = [`status: ${j.status}`], f = a => (a || []).map(w => typeof w === 'string' ? w : JSON.stringify(w)).join('; ');
+  if (j.warnings && j.warnings.length) p.push('warnings: ' + f(j.warnings)); if (j.errors && j.errors.length) p.push('errors: ' + f(j.errors));
+  if (j.status === 'needs-sensor-reconfig') p.push('saved, but the device must reconfigure the sensor driver before it is active');
+  if (j.status === 'needs-restart') p.push('saved, but a device restart is needed (Settings Menu → Device)');
+  return p.join(' · ');
+}
+function pollStatus() {
+  if (typeof fetch === 'undefined') return Promise.resolve(null);
+  if (statusPromise) return statusPromise;
+  statusPromise = (async () => {
+    try { const st = await fetchWire(STATUS_URL); deviceReachable = true; statusError = ''; handleStatus(st); return st; }
+    catch (e) { deviceReachable = false; statusError = e.message; updateStatusUI(); updateDeviceInfoUI(); return null; }
+    finally { statusPromise = null; }
+  })();
+  return statusPromise;
+}
+let statusTick = 0;
+function statusTimer() { statusTick++; if (!deviceReachable && statusTick % 10 !== 0) return; pollStatus(); }
+function noteBootId(id, via) {
+  if (!id || id === deviceBootId) return;
+  const prev = deviceBootId; deviceBootId = id;
+  if (prev == null) return;
+  onBootChanged(prev, id, via);
+}
+function handleStatus(st) {
+  deviceStatus = st; if (typeof st.csrfToken === 'string') csrfToken = st.csrfToken;
+  if (typeof st.bootId === 'string') noteBootId(st.bootId, 'status');
+  pendingChanges = Array.isArray(st.pendingChanges) ? st.pendingChanges : [];
+  for (const e of st.sensors || []) {
+    const key = String(toNum(e.sensorId)), s = sensors.get(key), ac = auxChannels.get(key);
+    if (s && s.kind === 'server') {
+      s.status = e;
+      if (Number.isFinite(e.oldestId)) s.history.minId = Math.max(s.history.minId == null ? 0 : s.history.minId, e.oldestId);   // ids the ring buffer already evicted are not requested
+      if (Number.isFinite(e.rate_hz) && e.rate_hz > 0 && s.state.count === 0 && s.state.rateHz !== e.rate_hz) setSensorRate(s, e.rate_hz);   // the effective rate wins over the requested one
+      // a changed configRevision (type, rawFormat, effective rate, driver measurement config, buffer clear) starts a new sample epoch; warningRevision is ignored on purpose
+      if (s.configRev != null && e.configRevision !== s.configRev) { startNewEpoch(s, `sensor configuration changed (revision ${s.configRev} → ${e.configRevision})`, { keepOrigin: true, configChange: true, rateHz: e.rate_hz }); deviceLogLocal('webui_epoch', `${s.name}: configuration revision ${s.configRev} → ${e.configRevision}; a new sample epoch started and the earlier samples were kept.`, { sensorId: s.id }); setTimeout(() => loadSensorList(), 0); }
+      s.configRev = e.configRevision; s.warnRev = e.warningRevision;
+    } else if (ac && !ac.archived) {
+      if (ac.configRev != null && e.configRevision !== ac.configRev) { archiveAuxChannel(ac, `configuration changed (revision ${ac.configRev} → ${e.configRevision})`); deviceLogLocal('webui_epoch', `${ac.name}: configuration revision ${ac.configRev} → ${e.configRevision}; the earlier samples of this channel were kept as an archived channel.`, { sensorId: ac.id }); setTimeout(() => loadSensorList(), 0); }
+      ac.configRev = e.configRevision; ac.status = e;
+    }
+  }
+  updateStatusUI(); updateDeviceInfoUI();
+}
+function checkDeviceVersions() {
+  startupNotes = []; const d = deviceInfo; if (!d) return;
+  if (d.protocolVersion !== PROTOCOL_VERSION) startupNotes.push(`The device speaks protocol version ${d.protocolVersion}; this WebUI is written for ${PROTOCOL_VERSION}.`);
+  const f = d.fileFormatVersions || {}; for (const k of ['sensors', 'units', 'webuiSettings', 'calibration', 'historyBinary']) if (f[k] != null && f[k] !== 1) startupNotes.push(`File format “${k}” has version ${f[k]}; this WebUI understands version 1.`);
+}
+// ---- device log (entries from /api/device-log and the SSE event device_log; WebUI-side notes are added as local entries) ----
+function addDeviceLogEntry(e, via) {
+  if (!e || typeof e !== 'object') return;
+  const id = e.logEntryId == null ? null : toNum(e.logEntryId), key = id == null ? null : `${deviceBootId}:${id}`;
+  if (key && deviceLogKeys.has(key)) return;
+  if (key) deviceLogKeys.add(key);
+  deviceLog.push({ logEntryId: id, t: e.t == null ? null : toNum(e.t), type: String(e.type || 'unknown'), message: String(e.message || ''), details: e.details || null, bootId: deviceBootId, via, local: false });
+  if (deviceLog.length > DEVICE_LOG_MAX) deviceLog.splice(0, deviceLog.length - DEVICE_LOG_MAX);
+  renderDeviceLog();
+}
+function deviceLogLocal(type, message, details) {
+  deviceLog.push({ logEntryId: null, t: null, type, message, details: details || null, bootId: deviceBootId, via: 'webui', local: true, wall: Date.now() });
+  if (deviceLog.length > DEVICE_LOG_MAX) deviceLog.splice(0, deviceLog.length - DEVICE_LOG_MAX);
+  renderDeviceLog();
+}
+function renderDeviceLog() {
+  const list = $('deviceLogList'); if (!list) return; const c = $('deviceLogCount'); if (c) c.textContent = `(${deviceLog.length} entries)`;
+  if (!deviceLog.length) { setHTML(list, '<div class="small" style="padding:10px 0">No device log entries.</div>'); return; }
+  setHTML(list, deviceLog.slice(-200).reverse().map(e => `<div class="log-row ${e.local ? 'calibration' : 'note'}"><time>${e.t != null ? (e.t / 1e6).toFixed(1) + ' s' : new Date(e.wall || Date.now()).toLocaleTimeString()}</time><div><strong>${esc(e.type)}</strong> ${esc(e.message)}${e.details ? `<br><span class="small">${esc(JSON.stringify(e.details))}</span>` : ''}<br><span class="small">boot ${esc(e.bootId || '?')}${e.logEntryId != null ? ' · entry ' + e.logEntryId : ''}${e.local ? ' · WebUI note' : ''}</span></div></div>`).join(''));
+}
+async function loadDeviceLog() {
+  if (typeof fetch === 'undefined' || !deviceReachable) return;
+  try { const doc = await fetchWire(DEVICE_LOG_URL); for (const e of (doc && doc.entries) || []) addDeviceLogEntry(e, 'fetch'); } catch (e) { deviceLogLocal('webui_error', `Could not read ${DEVICE_LOG_URL}: ${e.message}`); }
+}
+// ---- units.json (WebUI-owned table; the embedded one is the fallback) ----
+function validateUnitsDoc(d) {
+  const er = [];
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return ['The top level must be a JSON object.'];
+  if (d.schemaVersion !== 1) er.push('schemaVersion must be 1.');
+  if (d.baseUnit !== 'mg') er.push('baseUnit must be "mg" (all masses are stored in milligrams).');
+  if (typeof d.defaultUnit !== 'string') er.push('defaultUnit must be a text.');
+  if (!Array.isArray(d.units) || !d.units.length) { er.push('units must be a non-empty list.'); return er; }
+  const ids = new Set();
+  for (const u of d.units) { if (!u || typeof u.id !== 'string' || typeof u.symbol !== 'string') { er.push('Every unit needs an id and a symbol.'); continue; } if (ids.has(u.id)) er.push(`Duplicate unit id “${u.id}”.`); ids.add(u.id); if (u.factor !== null && !(typeof u.factor === 'number' && u.factor > 0)) er.push(`Unit “${u.id}”: factor must be a number greater than 0 (or null for raw counts).`); if (u.id === 'raw' && u.factor !== null) er.push('The raw entry must have factor null.'); if (u.id !== 'raw' && u.factor === null) er.push(`Unit “${u.id}”: only raw may have factor null.`); }
+  if (typeof d.defaultUnit === 'string' && !ids.has(d.defaultUnit)) er.push('defaultUnit is not in the units list.');
+  if (d.defaultUnit === 'raw') er.push('defaultUnit must be a mass unit.');
+  return er;
+}
+function populateUnitSelect() {
+  const select = $('unitSelect'); select.innerHTML = '';
+  for (const group of [...new Set(UNIT_CONFIG.units.map(u => u.group))]) { const og = document.createElement('optgroup'); og.label = group || 'Other'; for (const unit of UNIT_CONFIG.units.filter(u => u.group === group)) { const o = document.createElement('option'); o.value = unit.id; o.textContent = `${unit.name || unit.id}${unit.id === 'raw' ? '' : ' (' + unit.symbol + ')'}`; og.appendChild(o); } select.appendChild(og); }
+  select.value = state.unitId;
+  const u = $('ssLoadUnit'); if (u) { u.innerHTML = ''; for (const x of UNIT_CONFIG.units.filter(x => x.id !== 'raw')) { const o = document.createElement('option'); o.value = x.id; o.textContent = x.symbol; u.appendChild(o); } }
+}
+function applyUnitsDoc(doc) {
+  const er = validateUnitsDoc(doc); if (er.length) return er;
+  const next = cloneJson(doc); if (!next.units.some(u => u.id === 'raw')) next.units.push(UNIT_EMBEDDED.units.find(u => u.id === 'raw'));
+  UNIT_CONFIG = next;
+  for (const s of sensors.values()) { const st = s.state; if (!UNIT_CONFIG.units.some(u => u.id === st.unitId)) st.unitId = st === state ? UNIT_CONFIG.defaultUnit : SERVER_SENSOR_DEFAULT_UNIT; }
+  populateUnitSelect(); scheduleRender(); return [];
+}
+// ---- calibration files known to the device (from /api/files) ----
+function indexCalibrationFiles(files) {
+  for (const f of (files && files.files) || []) {
+    if (f.kind !== 'calibration') continue;
+    const name = String(f.path || '').split('/').pop(), m = /^calibration_(\d+)_([A-Za-z0-9._-]+)\.json$/.exec(name); if (!m) continue;
+    const e = calLibrary.get(name); if (e) { e.sizeBytes = f.sizeBytes; e.onDevice = true; } else calLibrary.set(name, { name, config: null, sensorId: m[1], profileName: m[2], sizeBytes: f.sizeBytes, onDevice: true });
+  }
+}
+async function deviceStartup() {
+  if (typeof fetch === 'undefined') { startupHold = false; return false; }
+  startupHold = true;
+  try {
+    const st = await pollStatus();
+    if (!st) { setSensorListInfo('No device reachable (GET /api/status failed). Only the test signal is available.'); return false; }
+    try { deviceInfo = await fetchWire(DEVICE_URL); checkDeviceVersions(); } catch (e) { deviceInfoError = e.message; }
+    const jobs = await Promise.allSettled([fetchWire(UNITS_URL), fetchWire(FILES_URL), uiFetchServerDefault()]);
+    if (jobs[0].status === 'fulfilled') { const er = applyUnitsDoc(jobs[0].value); if (er.length) startupNotes.push('units.json not used (the embedded table stays): ' + er.join(' ')); } else startupNotes.push('units.json not available (embedded table used): ' + jobs[0].reason.message);
+    if (jobs[1].status === 'fulfilled') { deviceFiles = jobs[1].value; indexCalibrationFiles(deviceFiles); }
+    if (jobs[2].status === 'fulfilled' && jobs[2].value && !uiLocalRead()) applyUiSettings(jobs[2].value);
+    updateUiSettingsInfo(); startUPlot();
+    await loadSensorList(); await pollStatus(); await loadDeviceLog();
+    return true;
+  } finally { startupHold = false; syncConnections(); updateDeviceInfoUI(); updateSettingsAvailability(); }
+}
+function deviceMsg(t) { const el = $('deviceMessages'); if (el) el.textContent = t; }
+function updateSettingsAvailability() {
+  const on = deviceReachable;
+  for (const id of ['calUploadBtn', 'deviceRestartBtn', 'deviceResetBtn']) { const b = $(id); if (b) b.disabled = !on; }
+  const r = $('sensorReloadBtn'); if (r) r.disabled = !on;
+}
+function updateDeviceInfoUI() {
+  const el = $('deviceInfo'); if (!el) return; updateSettingsAvailability();
+  if (!deviceReachable) { setHTML(el, `No device connection (local test signal only).${statusError ? ' <span class="small">Last error: ' + esc(statusError) + '</span>' : ''}`); return; }
+  const d = deviceInfo || {}, s = deviceStatus || {}, fl = s.flash || {}, mem = s.memory || {}, w = s.wifi || {}, chip = d.chip || {};
+  setHTML(el, `<strong>${esc(d.product || d.productName || 'OpenScale device')}</strong> · firmware ${esc(d.firmwareVersion || (d.firmware && d.firmware.version) || '?')}${chip.model ? ' · ' + esc(chip.model) : ''}<br>Boot <strong>${esc(s.bootId || '?')}</strong> · uptime ${s.uptimeUs != null ? fmtSpan(Number(s.uptimeUs) / 1e6) : '—'} · SSE clients ${s.openSseConnections ?? '—'}<br>Flash: ${fmtBytes(fl.filesystemFree)} free of ${fmtBytes(fl.filesystemTotal)} · upload limit ${fmtBytes(d.maxUploadBytes)} · history chunk ${d.maxHistoryChunk ?? '—'} samples<br>Heap free ${fmtBytes(mem.heapFree)} · Wi-Fi ${w.connected ? 'connected ' + esc(w.ip || '') + ' (' + w.rssi + ' dBm)' : 'not connected'}${pendingChanges.length ? `<br><span class="warning">Saved but not active yet: ${esc(pendingChanges.join(', '))}</span>` : ''}${deviceState && deviceState.state ? `<br>Device state: <strong>${esc(deviceState.state)}</strong> ${esc(deviceState.message || '')}` : ''}${startupNotes.map(n => `<br><span class="warning">${esc(n)}</span>`).join('')}`);
+}
+async function deviceRestart() {
+  if (!deviceReachable) { deviceMsg('No device connection.'); return; }
+  if (!uiConfirm('Restart the device now? Streaming stops for a moment. The chart data already collected stays in this browser as an earlier epoch.')) return;
+  try { const r = await serverWrite(RESTART_URL, { method: 'POST' }); if (!r.ok) throw new Error(await httpErrorText(r)); deviceMsg('Restart requested.'); } catch (e) { deviceMsg(`Restart failed: ${e.message}`); }
+}
+const RESETTABLE_FILES = ['sensors.json', 'units.json', 'webui-settings.json', 'settings.json', 'wifi.json'];
+async function deviceResetFile(name) {
+  if (!RESETTABLE_FILES.includes(name)) return;
+  let text = `Reset ${name} on the device to its factory default?`;
+  if (name === 'settings.json') text += '\n\nWARNING: this also REMOVES THE ADMINISTRATOR PASSWORD and resets hostname, buffer and HTTPS settings.';
+  if (name === 'wifi.json') text += '\n\nWARNING: all saved Wi-Fi networks are removed. The device may only be reachable through its fallback access point afterwards.';
+  if (name === 'sensors.json') text += '\n\nAll sensor definitions (GPIOs, rates, calibration links, limits, conversions) are removed.';
+  if (!uiConfirm(text)) return;
+  try {
+    const r = await serverWrite(`/data/settings/${name}`, { method: 'DELETE' }); if (!r.ok) throw new Error(await httpErrorText(r));
+    const j = await writeResult(r); deviceMsg(`${name} reset (${writeResultText(j)}).`);
+    if (name === 'units.json') { try { applyUnitsDoc(await fetchWire(UNITS_URL)); } catch (_) {} } else if (name === 'sensors.json') loadSensorList(); else if (name === 'webui-settings.json') { uiServerDefault = null; await uiFetchServerDefault(); updateUiSettingsInfo(); }
+  } catch (e) { deviceMsg(`Could not reset ${name}: ${e.message}`); }
+}
+
 function wantedConnections(){
-  const want=new Map();
-  for(const s of sensors.values()){if(s.kind!=='server'||s.unlisted||s.state.paused||!s.sseUrl)continue;if(!want.has(s.sseUrl))want.set(s.sseUrl,new Set());want.get(s.sseUrl).add(s.id);}
-  for(const c of auxChannels.values()){if(c.unlisted||c.paused||!c.sseUrl)continue;if(!want.has(c.sseUrl))want.set(c.sseUrl,new Set());want.get(c.sseUrl).add(c.id);}
+  const want=new Map();if(startupHold)return want;
+  const ids=new Set();
+  for(const s of sensors.values()){if(s.kind!=='server'||s.unlisted||s.disabled||s.state.paused)continue;ids.add(s.id);}
+  for(const c of auxChannels.values()){if(c.archived||c.unlisted||c.disabled||c.paused)continue;ids.add(c.id);}
+  if(ids.size)want.set(STREAM_URL,ids);   // protocol v0.5: ONE multiplexed stream for all sensors and device events
   return want;
 }
+const SSE_EVENTS=['sample','warning','device','sensor_error','device_log'];
 function syncConnections(){
   const want=wantedConnections();
   for(const [url,c] of [...sseConnections]){if(!want.has(url)){try{c.es&&c.es.close();}catch(_){}sseConnections.delete(url);}}
@@ -2312,88 +2627,170 @@ function syncConnections(){
     if(typeof EventSource==='undefined'){c.status='error';continue;}
     try{
       c.es=new EventSource(url);
-      c.es.onopen=()=>{c.status='live';renderSensorSelect();updateStatusUI();};
+      c.es.onopen=()=>{c.status='live';renderSensorSelect();updateStatusUI();pollStatus();};   // compare the boot id after every (re)connection
       c.es.onerror=()=>{c.status=c.es.readyState===2?'error':'connecting';renderSensorSelect();updateStatusUI();};
-      c.es.onmessage=e=>{c.lastEventId=e.lastEventId||c.lastEventId;handleSseMessage(url,e.data);};
+      if(c.es.addEventListener)for(const name of SSE_EVENTS)c.es.addEventListener(name,e=>handleSseEvent(name,e.data,e.lastEventId));
     }catch(_){c.status='error';}
   }
 }
-function handleSseMessage(url,data){
-  let msg;try{msg=JSON.parse(data);}catch(_){sseStats.bad++;return;}
-  const items=Array.isArray(msg)?msg:(msg&&Array.isArray(msg.samples)?msg.samples:[msg]);
+// One application event = one SSE message. The SSE id is "<bootId>-<counter>": its boot part is a second witness of a restart (the JSON payloads carry no bootId).
+function handleSseEvent(name,data,eventId){
+  if(eventId){const m=/^(.+)-\d+$/.exec(eventId);if(m)noteBootId(m[1],'sse');}
+  let msg;try{msg=parseWire(data);}catch(_){sseStats.bad++;return;}
+  if(name==='sample'){handleSampleMessage(msg);return;}
+  if(name==='warning'){handleWarningEvent(msg);return;}
+  if(name==='device'){handleDeviceEvent(msg);return;}
+  if(name==='sensor_error'){handleSensorErrorEvent(msg);return;}
+  if(name==='device_log'){addDeviceLogEntry(msg,'sse');return;}
+  sseStats.unknown++;
+}
+function handleSampleMessage(msg){
+  const items=Array.isArray(msg)?msg:(msg&&Array.isArray(msg.samples)?msg.samples:[msg]);   // the protocol sends one sample per event; arrays are tolerated
   let touched=false;
   for(const it of items){
-    const s=it&&sensors.get(String(it.id));
-    if(!s){const ac=it&&auxChannels.get(String(it.id));if(ac&&ac.sseUrl===url){handleAuxSample(ac,it);continue;}sseStats.unknown++;continue;}
-    if(s.kind!=='server'||s.sseUrl!==url){sseStats.unknown++;continue;}
-    const raw=Math.round(Number(it.raw)),t=Number(it.t);
-    if(!Number.isFinite(raw)||!Number.isFinite(t)){s.state.rejected++;continue;}
-    if(s.state.paused){s.state.dropped++;continue;}
-    if(s.state.timeOrigin==null)s.state.timeOrigin=claimDeviceOrigin(deviceIdOf(s),t);
-    const sid=it.n==null?undefined:Number(it.n);
-    if(ingestSample(s,raw,t-s.state.timeOrigin,false,sid)&&s===activeSensor)touched=true;
+    if(!it||typeof it!=='object'){sseStats.bad++;continue;}
+    const key=String(toNum(it.sensorId)),s=sensors.get(key);
+    if(s&&s.kind==='server'){if(ingestWire(s,it)&&s===activeSensor)touched=true;continue;}
+    const ac=auxChannels.get(key);if(ac&&!ac.archived){handleAuxSample(ac,it);continue;}
+    sseStats.unknown++;
   }
   if(touched)scheduleRender();
+}
+function ingestWire(s,it){
+  const t=toNum(it.t),raw=decodeRaw(it.raw,s.rawFormat);
+  if(!Number.isFinite(raw)||!Number.isFinite(t)){s.state.rejected++;return false;}
+  if(s.state.paused){s.state.dropped++;return false;}
+  const tms=t/1000;   // t is microseconds since boot (one clock for all sensors)
+  if(s.state.timeOrigin==null)s.state.timeOrigin=claimDeviceOrigin(deviceIdOf(s),tms);
+  const flags=Number(toNum(it.flags))||0;if(flags&FLAG_ANY_BAD)s.state.flagged=(s.state.flagged||0)+1;   // flags are counted, not stored per sample
+  const sid=it.n==null?undefined:toNum(it.n),lastN=lastStoredId(s.state);
+  if(Number.isFinite(sid)&&Number.isFinite(lastN)&&sid<lastN&&tms-s.state.timeOrigin<newestOf(s)-1000)backwardsSignal();   // n AND t went backwards: a defensive second hint of a restart (bootId stays authoritative)
+  return ingestSample(s,raw,tms-s.state.timeOrigin,false,sid);
+}
+let lastBackSignal=-1e9;
+function backwardsSignal(){const now=performance.now();if(now-lastBackSignal<2000)return;lastBackSignal=now;pollStatus();}
+function newestOf(s){const st=s.state;return st.count?st.times[(st.head+st.count-1)%st.capacity]:0;}
+// Firmware overload / underload warning (raw thresholds, on state change only). Shown in the banner and written to the sensor's log; the
+// WebUI's own calibrated-weight monitor (loadLimits) is independent of it.
+function handleWarningEvent(m){
+  if(!m||m.type!=='sensor'||!m.sensor)return;
+  const s=sensors.get(String(toNum(m.sensor.sensorId)));if(!s||s.kind!=='server')return;
+  const code=m.code==='underload'?'underload':'overload',smp=m.sensor.sample||{},raw=smp.raw!=null?decodeRaw(smp.raw,s.rawFormat):NaN,thr=toNum(m.sensor.threshold),n=smp.n!=null?toNum(smp.n):null;
+  const rel=smp.t!=null&&s.state.timeOrigin!=null?toNum(smp.t)/1000-s.state.timeOrigin:newestOf(s);
+  s.fw[code]=m.active?{active:true,threshold:thr,raw,n}:null;
+  s.state.logs.unshift({type:'fwwarning',entryId:`fwwarning-${Date.now()}-${s.state.logs.length}`,createdAt:new Date().toISOString(),code,active:!!m.active,threshold:thr,raw,n,effectiveFromTime:rel});
+  if(s===activeSensor){renderLog();scheduleRender();}
+  updateOverloadBanner();
+}
+function handleDeviceEvent(m){
+  if(!m||typeof m!=='object')return;deviceState=m;
+  deviceLogLocal('device_event',`${m.state||''}${m.message?': '+m.message:''}`,m.details||null);
+  updateStatusUI();updateDeviceInfoUI();
+}
+function handleSensorErrorEvent(m){
+  if(!m)return;const key=String(toNum(m.sensorId)),o=sensors.get(key)||auxChannels.get(key);if(!o)return;
+  o.err=m.state==='ok'?null:{state:m.state,code:m.code,message:m.message,fromN:m.fromN!=null?toNum(m.fromN):null,toN:m.toN!=null?toNum(m.toN):null};
+  renderSensorSelect();updateStatusUI();
+}
+function fwWarningLineHTML(e){return `<strong>Firmware ${esc(e.code)} warning · ${e.active?'active':'cleared'}</strong><br>raw ${fmtNumber(e.raw,0)} · threshold ${fmtNumber(e.threshold,0)} (raw units)${e.n!=null?' · sample '+e.n:''}`;}
+function fwBannerHTML(){
+  let h='';
+  for(const s of sensors.values()){if(s.kind!=='server'||!s.fw)continue;for(const code of['overload','underload']){const w=s.fw[code];if(w&&w.active)h+=`<div class="ovl-item ovl-red ovl-now" data-sensor="${esc(s.id)}" title="Click to show this sensor"><strong>⚠ ${esc(s.name)}: FIRMWARE ${code.toUpperCase()} WARNING</strong> raw ${fmtNumber(w.raw,0)} (threshold ${fmtNumber(w.threshold,0)}) · reported by the device</div>`;}}
+  return h;
 }
 
 // ---- sensor list from the server ------------------------------------------------------------------
 // Reloadable at any time. Known sensors (same id) keep their data, logs, tares and calibrations; only name,
 // SSE URL and details are updated. New ids are added. Sensors missing from the new list are NOT deleted:
 // they are marked 'not in list', stop receiving data and keep what was collected.
+function applyDefToSettings(s,e,result){
+  s.settings.notes=typeof e.notes==='string'?e.notes:'';
+  if(s.settings.calibrationFile===undefined)s.settings.calibrationFile=typeof e.calibrationFile==='string'&&e.calibrationFile?e.calibrationFile:null;   // later changes in this session win until the list is loaded again after a restart
+  s.settings.primaryTemperatureSensorId=e.primaryTemperatureSensorId==null?null:String(e.primaryTemperatureSensorId);
+  if(e.loadLimits&&typeof e.loadLimits==='object'){const r=overloadApplySettings(s,e.loadLimits);if(r.errors.length)result.errors.push(`Sensor ${s.id}: loadLimits not applied (${r.errors.join(' ')})`);}
+}
+function setSensorRate(s,rate){s.state.rateHz=rate;if(s===activeSensor){RATE_HZ=rate;PERIOD_MS=1000/rate;syncUIFromState();}}
+// sensors.json (protocol v0.5): {schemaVersion:1, sensors:[{id (number), name, notes, kind, type, enabled, unit, rawFormat, rate_hz, ringbuffer_size_samples, <driver>, warnings,
+// calibrationFile, primaryTemperatureSensorId, loadLimits, attachedTo, conversion}]}. ESP-owned keys are read, WebUI-owned keys are applied. Reloadable at any time:
+// known ids keep their data; missing ids are marked "not in list" and keep what was collected.
 function applySensorList(list){
   const result={added:[],updated:[],unlisted:[],errors:[],auxAdded:[],auxUpdated:[],auxUnlisted:[]};
-  const entries=Array.isArray(list)?list:(list&&Array.isArray(list.sensors)?list.sensors:null);
-  if(!entries){result.errors.push('The sensor list must be a JSON array (or an object with a "sensors" array).');return result;}
+  const entries=list&&typeof list==='object'&&!Array.isArray(list)&&Array.isArray(list.sensors)?list.sensors:null;
+  if(!entries){result.errors.push('The sensor document must be an object with a "sensors" array.');return result;}
+  if(list.schemaVersion!==1){result.errors.push('schemaVersion must be 1.');return result;}
+  sensorsDocRaw=cloneJson(list);
   const seen=new Set();
   for(const e of entries){
-    const id=typeof e?.id==='string'?e.id.trim():(Number.isFinite(e?.id)?String(e.id):'');
-    if(!id){result.errors.push('An entry without an id was skipped.');continue;}
-    if(id===TEST_SENSOR_ID){result.errors.push(`The id "${id}" is reserved for the test signal.`);continue;}
-    if(seen.has(id)){result.errors.push(`Duplicate id "${id}" skipped.`);continue;}
-    if(e.kind!=null&&e.kind!=='loadcell'){if(applyAuxEntry(e,id,result))seen.add(id);continue;}
-    if(auxChannels.has(id)){result.errors.push(`The id "${id}" is already an auxiliary channel.`);continue;}
-    const url=String(e.sseUrl??e.sse_url??'').trim();
-    if(url){try{const u=new URL(url,typeof location!=='undefined'?location.href:'http://localhost/');if(!/^https?:$/.test(u.protocol))throw new Error();}catch(_){result.errors.push(`Sensor "${id}": invalid SSE URL, skipped.`);continue;}}
+    if(!e||typeof e!=='object'||!Number.isInteger(e.id)||e.id<0){result.errors.push('An entry without a valid numeric id was skipped.');continue;}
+    const id=String(e.id);
+    if(seen.has(id)){result.errors.push(`Duplicate id ${id} skipped.`);continue;}
+    const kind=e.kind==null?'loadcell':e.kind;
+    if(!['loadcell','temperature','generic'].includes(kind)){result.errors.push(`Sensor ${id}: unknown kind “${e.kind}”. Use loadcell, temperature or generic.`);continue;}
+    if(!RAW_FORMATS.has(e.rawFormat)){result.errors.push(`Sensor ${id}: rawFormat “${e.rawFormat}” is missing or unknown.`);continue;}
+    const rate=Number(e.rate_hz);if(!(rate>0)){result.errors.push(`Sensor ${id}: rate_hz is missing or not a positive number.`);continue;}
+    if(kind!=='loadcell'){if(applyAuxEntry(e,id,result,{kind,rf:e.rawFormat,rate}))seen.add(id);continue;}
+    if(auxChannels.has(id)){result.errors.push(`The id ${id} is already an auxiliary channel.`);continue;}
     seen.add(id);
-    const name=typeof e.name==='string'&&e.name.trim()?e.name.trim():id;
-    const known=sensors.get(id);
-    if(known){known.name=name;known.sseUrl=url||null;if(typeof e.historyUrl==='string'&&e.historyUrl.trim())known.historyUrl=e.historyUrl.trim();known.details={...known.details,...(e.details||{})};known.unlisted=false;if(typeof e.deviceId==='string'&&e.deviceId.trim())known.deviceId=e.deviceId.trim();result.updated.push(id);}
-    else{const s=makeSensor({id,name,kind:'server',sseUrl:url||null,historyUrl:typeof e.historyUrl==='string'&&e.historyUrl.trim()?e.historyUrl.trim():null,details:e.details,deviceId:typeof e.deviceId==='string'&&e.deviceId.trim()?e.deviceId.trim():null,rateHz:Number(e.rateHz)});if(embeddedFp)initSensorCalibration(s.state,embeddedFp);result.added.push(id);}
+    const name=typeof e.name==='string'&&e.name.trim()?e.name.trim():`Sensor ${id}`,known=sensors.get(id);
+    if(known&&known.kind==='server'){
+      Object.assign(known,{name,sseUrl:STREAM_URL,rawFormat:e.rawFormat,def:cloneJson(e),unlisted:false,disabled:e.enabled===false,sensorType:e.type||null});
+      if(!known.state.count&&known.state.rateHz!==rate)setSensorRate(known,rate);
+      applyDefToSettings(known,e,result);result.updated.push(id);
+    }else{
+      const s=makeSensor({id,name,kind:'server',sseUrl:STREAM_URL,rateHz:rate});
+      Object.assign(s,{rawFormat:e.rawFormat,def:cloneJson(e),disabled:e.enabled===false,sensorType:e.type||null});
+      if(embeddedFp)initSensorCalibration(s.state,embeddedFp);
+      applyDefToSettings(s,e,result);result.added.push(id);
+    }
   }
   for(const s of sensors.values())if(s.kind==='server'&&!seen.has(s.id)&&!s.unlisted){s.unlisted=true;result.unlisted.push(s.id);}
-  for(const c of auxChannels.values())if(!seen.has(c.id)&&!c.unlisted){c.unlisted=true;result.auxUnlisted.push(c.id);}
+  for(const c of auxChannels.values())if(!c.archived&&!seen.has(c.id)&&!c.unlisted){c.unlisted=true;result.auxUnlisted.push(c.id);}
   syncConnections();renderSensorSelect();updateStatusUI();renderAuxToggles();
   updateSourceNote();
   return result;
 }
-function setSensorListInfo(text){$('sensorListInfo').textContent=text;}
-async function loadSensorList(){
-  if(!SENSOR_LIST_URL){setSensorListInfo('No sensor server configured (SENSOR_LIST_URL is empty). Only the test signal is available.');return null;}
+function setSensorListInfo(text){const el=$('sensorListInfo');if(el)el.textContent=text;}
+// The calibration a sensor names in sensors.json becomes its active one at startup. Only for a sensor that holds no samples yet (every stored sample
+// must keep the calibration it was recorded with), so no new epoch or tare reset is needed.
+async function adoptCalibrationFile(s){
+  const name=s.settings.calibrationFile;if(!name||s.state.count>0||s.settings.calibrationAdopted===name)return;
   try{
-    const r=await fetch(SENSOR_LIST_URL,{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);
-    const res=applySensorList(await r.json());
-    setSensorListInfo(`Sensor list loaded: ${res.added.length} added, ${res.updated.length} updated, ${res.unlisted.length} no longer listed${res.errors.length?'; '+res.errors.join(' '):''}.`);
-    return res;
-  }catch(error){setSensorListInfo(`Could not load the sensor list: ${error.message}`);return null;}
+    let e=calLibrary.get(name);
+    if(!e||!e.config){const cfg=await fetchWire(`${CALIBRATION_DIR}/${encodeURIComponent(name)}`);if(calFileName(cfg,s.id)!==name)throw new Error('the file name and the profile / sensor id inside the file disagree');calLibraryAdd(cfg,s.id);e=calLibrary.get(name);}
+    const checked=validateCalibrationConfig(e.config);if(checked.errors.length)throw new Error(checked.errors.join(' '));
+    if(e.config.sensorId!=null&&String(e.config.sensorId)!==s.id)throw new Error(`it belongs to sensor ${e.config.sensorId}`);
+    const fp=await fingerprintConfig(e.config);if(s.state.count>0)return;
+    const st=s.state;st.calConfig=e.config;st.calPrepared=checked.prepared;st.revisionId=fp.id;st.hashType=fp.type;st.fullHash=fp.full;
+    st.calibrations=[{effectiveFromTime:-Infinity,revisionId:fp.id,profileId:e.config.profileId,hashType:fp.type,config:checked.prepared,source:`file: ${name}`}];
+    if(st.unitId==='raw')st.unitId=UNIT_CONFIG.defaultUnit;
+    if(s===activeSensor){CALIBRATION=e.config;calibration=checked.prepared;updateCalibrationInfo();syncUIFromState();}
+    s.settings.calibrationAdopted=name;s.settings.calibrationError=null;
+  }catch(err){s.settings.calibrationError=`${name}: ${err.message}`;deviceLogLocal('webui_error',`Calibration ${name} of sensor ${s.id} could not be used: ${err.message}`);}
 }
+async function loadSensorList(){
+  if(typeof fetch==='undefined'||!deviceReachable){setSensorListInfo('No device connection. Only the test signal is available.');return null;}
+  try{
+    const res=applySensorList(await fetchWire(SENSORS_URL));
+    setSensorListInfo(`sensors.json loaded: ${res.added.length+res.auxAdded.length} added, ${res.updated.length+res.auxUpdated.length} updated, ${res.unlisted.length+res.auxUnlisted.length} no longer listed${res.errors.length?'; '+res.errors.join(' '):''}.`);
+    for(const s of sensors.values())if(s.kind==='server')await adoptCalibrationFile(s);
+    return res;
+  }catch(error){setSensorListInfo(`Could not load sensors.json: ${error.message}`);return null;}
+}
+
 function initSensorCalibration(st,fp){
   st.calConfig=EMBEDDED_CALIBRATION;st.calPrepared=EMBEDDED_PREPARED;st.revisionId=fp.id;st.hashType=fp.type;st.fullHash=fp.full;
   st.calibrations=[{effectiveFromTime:-Infinity,revisionId:fp.id,profileId:EMBEDDED_CALIBRATION.profileId,hashType:fp.type,config:EMBEDDED_PREPARED,source:'embedded demo'}];
 }
 
 // ===== v12: SETTINGS (UI settings + sensor settings) ====================================================
-// ASSUMED server API (no server exists yet; both URLs are null, which disables the server buttons):
-//   UI_SETTINGS_URL      GET -> 200 + ui-settings.json | 404 = no default stored; PUT = store the body as the
-//                        server default; DELETE = remove the server default.
-//   SENSOR_SETTINGS_URL  PUT sensor_settings.json (all server sensors in one document).
+// Device API (protocol v0.5): GET /data/settings/webui-settings.json (a factory default is {"schemaVersion":1}, HTTP 200); PUT stores the current settings as the
+// default; DELETE resets it. The sensors.json document is described at sensorsDoc().
 // Order of precedence for the UI settings: this browser's own copy (localStorage) > server default > built-in.
 // Applying a setting never writes it anywhere; only a user change writes the browser copy.
-const UI_SETTINGS_URL = null;
-const SENSOR_SETTINGS_URL = null;
 const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
 const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false, tempRateWindowS: 60 });
 const UI_CONTROL_IDS = new Set(['wizMode', 'tempRateWindow', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
-let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = UI_SETTINGS_URL ? 'not loaded yet' : 'not configured';
+let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = 'not configured (no device)';
 const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
 
 // Missing keys fall back to the built-in default, unknown keys are ignored, wrong types are reported.
@@ -2440,33 +2837,33 @@ function uiMsg(t) { $('uiMessages').textContent = t; }
 function updateUiSettingsInfo() {
   const local = uiLocalRead();
   $('uiSettingsInfo').innerHTML = `This browser: <strong>${local ? 'own settings stored' : 'nothing stored (server default or built-in values apply)'}</strong><br>Server default: <strong>${esc(uiServerState)}</strong><br><span class="small">Stored items: theme, navigation panel, Y-axis response, downsampling, zero fills, zero line, spread band mode, wizard mode (simple / advanced).</span>`;
-  $('uiSaveServerBtn').disabled = !UI_SETTINGS_URL; $('uiResetServerBtn').disabled = !UI_SETTINGS_URL;
+  $('uiSaveServerBtn').disabled = !deviceReachable; $('uiResetServerBtn').disabled = !deviceReachable;
 }
 async function uiFetchServerDefault() {
-  if (!UI_SETTINGS_URL) { uiServerState = 'not configured'; return null; }
+  if (!deviceReachable) { uiServerState = 'not configured (no device)'; return null; }
   try {
-    const r = await fetch(UI_SETTINGS_URL, { cache: 'no-store' });
+    const r = await fetch(WEBUI_SETTINGS_URL, { cache: 'no-store' });
     if (r.status === 404) { uiServerDefault = null; uiServerState = 'no default stored'; return null; }
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const s = sanitizeUiSettings(await r.json()); if (!s.value) throw new Error(s.errors.join(' '));
+    if (!r.ok) throw new Error(await httpErrorText(r));
+    const s = sanitizeUiSettings(JSON.parse(await r.text())); if (!s.value) throw new Error(s.errors.join(' '));   // {"schemaVersion":1} alone = the factory default: every missing key takes its built-in value
     uiServerDefault = s.value; uiServerState = 'default available'; return s.value;
   } catch (e) { uiServerState = `unavailable (${e.message})`; return null; }
 }
 async function uiSaveAsServerDefault() {
-  if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
+  if (!deviceReachable) { uiMsg('No settings server is reachable (no device connection).'); return; }
   try {
-    const body = collectUiSettings(), r = await serverWrite(UI_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body, null, 2) });
-    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
-    uiServerDefault = body; uiServerState = 'default available'; uiMsg('The current UI settings are now the server default.');
+    const body = collectUiSettings(), r = await serverWrite(WEBUI_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body, null, 2) });
+    if (!r.ok) throw new Error(await httpErrorText(r));
+    uiServerDefault = body; uiServerState = 'default available'; uiMsg(`The current UI settings are now the server default (${writeResultText(await writeResult(r))}).`);
   } catch (e) { uiMsg(`Could not save the server default: ${e.message}`); }
   updateUiSettingsInfo();
 }
 async function uiResetServerDefault() {
-  if (!UI_SETTINGS_URL) { uiMsg('No settings server is configured (UI_SETTINGS_URL is empty).'); return; }
+  if (!deviceReachable) { uiMsg('No settings server is reachable (no device connection).'); return; }
   try {
-    const r = await serverWrite(UI_SETTINGS_URL, { method: 'DELETE' });
-    if (!r.ok && r.status !== 404) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
-    uiServerDefault = null; uiServerState = 'no default stored'; uiMsg('The server default was removed. Browsers without their own settings use the built-in values.');
+    const r = await serverWrite(WEBUI_SETTINGS_URL, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) throw new Error(await httpErrorText(r));
+    uiServerDefault = null; uiServerState = 'factory default'; uiMsg('The server default was reset (DELETE). Browsers without their own settings use the built-in values.');
   } catch (e) { uiMsg(`Could not reset the server default: ${e.message}`); }
   updateUiSettingsInfo();
 }
@@ -2484,8 +2881,7 @@ function initUiSettings() {
   $('uiResetBtn').addEventListener('click', uiResetLocal);
   $('uiSaveServerBtn').addEventListener('click', uiSaveAsServerDefault);
   $('uiResetServerBtn').addEventListener('click', uiResetServerDefault);
-  $('uiExportBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(collectUiSettings(), null, 2)], { type: 'application/json' }), 'ui-settings.json'));
-  if (UI_SETTINGS_URL) uiFetchServerDefault().then(d => { if (!local && d) applyUiSettings(d); updateUiSettingsInfo(); });
+  $('uiExportBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(collectUiSettings(), null, 2)], { type: 'application/json' }), 'webui-settings.json'));
   updateUiSettingsInfo();
 }
 
@@ -2493,13 +2889,22 @@ function initUiSettings() {
 // One document for all server sensors (the test signal has no settings). The nominal rate can be changed
 // locally only while the sensor has no samples: every statistic of the stored samples assumes it.
 let ssSelectedId = null, ssAuxId = null;
-function sensorSettingsDoc() {
-  return { schemaVersion: 1, generatedAt: new Date().toISOString(),
-    sensors: [...sensors.values()].filter(s => s.kind === 'server').map(s => ({ id: s.id, name: s.name, nominalRateHz: s.state.rateHz, notes: s.settings.notes || '', calibrationFile: s.settings.calibrationFile || null, overload: overloadDoc(s), useConditions: s.settings.useConditions ? { ...s.settings.useConditions } : null })),
-    auxChannels: [...auxChannels.values()].map(c => ({ id: c.id, name: c.name, kind: c.kind, conversion: c.userConversion || null })) };
+// sensors.json is ONE document owned by both sides. The WebUI changes only its own keys (name, notes, calibrationFile, primaryTemperatureSensorId,
+// loadLimits; conversion of auxiliary channels) inside the document it last received; every other key (driver settings, GPIOs, warnings, ...) is sent back untouched.
+function sensorsDoc() {
+  const doc = sensorsDocRaw ? cloneJson(sensorsDocRaw) : { schemaVersion: 1, sensors: [] }, by = new Map((doc.sensors || []).map(e => [String(e.id), e]));
+  const put = (e, k, v) => { if ((v == null || v === '') && !(k in e)) return; e[k] = v; };
+  for (const s of sensors.values()) {
+    if (s.kind !== 'server') continue; const e = by.get(s.id); if (!e) continue;
+    e.name = s.name; put(e, 'notes', s.settings.notes || ''); put(e, 'calibrationFile', s.settings.calibrationFile || null);
+    put(e, 'primaryTemperatureSensorId', s.settings.primaryTemperatureSensorId == null ? null : Number(s.settings.primaryTemperatureSensorId));
+    if (s.settings.overload) e.loadLimits = overloadDoc(s);
+  }
+  for (const c of auxChannels.values()) { if (c.archived) continue; const e = by.get(c.id); if (!e) continue; e.name = c.name; e.conversion = cloneJson(auxConversion(c)); }
+  return doc;
 }
 function sensorSettingsRender() {
-  const server = [...sensors.values()];   // v15: the test signal is listed too (overload and calibration file apply to it as well)
+  const server = [...sensors.values()].filter(x => x.kind !== 'archive');   // the test signal is listed too; archived epochs are not settings subjects
   if (!ssSelectedId || !sensors.has(ssSelectedId)) ssSelectedId = activeSensor.id;
   const sel = $('ssSensor'); sel.innerHTML = '';
   for (const s of server) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.name + (s.unlisted ? ' (not in list)' : ''); sel.appendChild(o); }
@@ -2509,7 +2914,8 @@ function sensorSettingsRender() {
   if (none) return;
   $('ssName').value = s.name; $('ssRate').value = s.state.rateHz; $('ssNotes').value = s.settings.notes || '';
   $('ssHistoryInfo').textContent = historyStatusText(s); $('ssHistoryBtn').disabled = !historyUrlFor(s);
-  $('ssRate').disabled = s.state.count > 0 || s.kind !== 'server'; $('ssRateNote').textContent = s.kind !== 'server' ? 'Fixed for the test signal.' : s.state.count > 0 ? 'Fixed: this sensor already holds samples.' : 'Can still be changed: no samples yet.';
+  $('ssRate').disabled = true; $('ssRateNote').textContent = s.kind !== 'server' ? 'Fixed for the test signal.' : 'Effective rate reported by the device; it is changed in sensors.json (rate_hz), not here.';
+  $('ssDeviceInfo').textContent = s.kind !== 'server' ? '' : `${s.sensorType ? 'type ' + s.sensorType + ' · ' : ''}raw format ${s.rawFormat || '?'} · ${s.disabled ? 'DISABLED on the device · ' : ''}config revision ${s.configRev ?? '—'}, warning revision ${s.warnRev ?? '—'}${s.status ? ` · state ${s.status.state || 'ok'} · queue drops ${s.status.queueDrops ?? 0} · read errors ${s.status.readErrors ?? 0}` : ''}${s.def && s.def.warnings ? ' · firmware warnings (raw): ' + JSON.stringify(s.def.warnings) : ''}${s.settings.calibrationError ? ' · calibration problem: ' + s.settings.calibrationError : ''}${s.state.flagged ? ' · samples with error flags: ' + s.state.flagged : ''}`;
   const ov = s.settings.overload || {}, ml = ov.maxLoad, nl = ov.minLoad;
   $('ssMaxLoad').value = ml ? ml.value : ''; $('ssLoadUnit').value = (ml && ml.unit) || 'g'; $('ssMinLoad').value = nl ? nl.value : '';
   $('ssAvgS').value = ov.averageS ?? OVL_DEFAULTS.averageS; $('ssYellow').value = ov.yellowPercent ?? OVL_DEFAULTS.yellowPct; $('ssOrange').value = ov.orangePercent ?? OVL_DEFAULTS.orangePct; $('ssRed').value = ov.redPercent ?? OVL_DEFAULTS.redPct;
@@ -2520,54 +2926,35 @@ function sensorSettingsRender() {
   const want = s.settings.calibrationFile || ''; if (want && !calLibrary.has(want)) addOpt(want, `${want} (file not loaded)`);
   cs.value = want;
   const uc = useConditionsOf(s); $('ssReadDelay').value = uc.readingDelayS; $('ssSessionS').value = uc.sessionSinceTareS; $('ssTempDelta').value = uc.temperatureDeltaK;
-  const pt = $('ssPrimaryTemp'); pt.innerHTML = ''; { const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'first attached channel'; pt.appendChild(o0); for (const c of attachedAux(s, 'temperature')) { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; pt.appendChild(o); } pt.value = uc.primaryTemperature || ''; }
+  const pt = $('ssPrimaryTemp'); pt.innerHTML = ''; { const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'first attached channel'; pt.appendChild(o0); for (const c of attachedAux(s, 'temperature')) { const o = document.createElement('option'); o.value = c.id; o.textContent = c.name; pt.appendChild(o); } pt.value = s.settings.primaryTemperatureSensorId || ''; }
   $('ssUseNote').textContent = useConditionsNote(s);
   const alist = [...auxChannels.values()]; $('ssAuxBox').hidden = !alist.length;
-  if (alist.length) { if (!ssAuxId || !auxChannels.has(ssAuxId)) ssAuxId = alist[0].id; const as = $('ssAuxSelect'); as.innerHTML = ''; for (const c of alist) { const o = document.createElement('option'); o.value = c.id; o.textContent = `${c.name} (${c.kind})`; as.appendChild(o); } as.value = ssAuxId; const ac = auxChannels.get(ssAuxId); $('ssAuxConv').value = JSON.stringify(auxConversion(ac)); $('ssAuxInfo').textContent = `${ac.userConversion ? 'your correction is active' : 'firmware conversion'} · unit ${ac.unit || '—'} · attached to ${ac.attachedTo.join(', ') || 'no sensor'} · ${ac.buf.count.toLocaleString()} samples${ac.invalid ? ` · ${ac.invalid} invalid` : ''} · ${historyStatusText(ac)}`; }
+  if (alist.length) { if (!ssAuxId || !auxChannels.has(ssAuxId)) ssAuxId = alist[0].id; const as = $('ssAuxSelect'); as.innerHTML = ''; for (const c of alist) { const o = document.createElement('option'); o.value = c.id; o.textContent = `${c.name} (${c.kind})`; as.appendChild(o); } as.value = ssAuxId; const ac = auxChannels.get(ssAuxId); $('ssAuxConv').value = JSON.stringify(auxConversion(ac)); $('ssAuxInfo').textContent = `conversion from sensors.json (editable) · unit ${ac.unit || '—'} · attached to ${ac.attachedTo.join(', ') || 'no sensor'} · ${ac.buf.count.toLocaleString()} samples${ac.invalid ? ` · ${ac.invalid} invalid` : ''} · ${historyStatusText(ac)}`; }
 }
 function ssReadOverload() {
   const v = id => $(id).value, nn = id => (v(id) === '' ? null : Number(v(id))), u = v('ssLoadUnit') || 'g';
   return { maxLoad: v('ssMaxLoad') === '' ? null : { value: Number(v('ssMaxLoad')), unit: u }, minLoad: v('ssMinLoad') === '' ? null : { value: Number(v('ssMinLoad')), unit: u },
     averageS: nn('ssAvgS'), yellowPercent: nn('ssYellow'), orangePercent: nn('ssOrange'), redPercent: nn('ssRed'), breakS: nn('ssBreak'), holdS: nn('ssHold') };
 }
-// Reads a sensor_settings.json (overload settings, names, notes, the active calibration file per sensor).
-async function applySensorSettingsDoc(doc) {
-  const msgs = [], list = doc && Array.isArray(doc.sensors) ? doc.sensors : null;
-  if (!list) return ['The file must contain a "sensors" array.'];
-  const shown = activeSensor;
-  for (const e of list) {
-    const s = e && sensors.get(String(e.id)); if (!s) { msgs.push(`Sensor “${e && e.id}” is not in the sensor list: skipped.`); continue; }
-    if (typeof e.name === 'string' && e.name.trim()) s.name = e.name.trim();
-    if (typeof e.notes === 'string') s.settings.notes = e.notes;
-    if (e.overload) { const r = overloadApplySettings(s, e.overload); if (r.errors.length) msgs.push(`${s.name}: overload settings not applied (${r.errors.join(' ')})`); }
-    if (e.useConditions) { const r = applyUseConditions(s, e.useConditions); if (r.errors.length) msgs.push(`${s.name}: use conditions not applied (${r.errors.join(' ')})`); }
-    if (typeof e.calibrationFile === 'string' && e.calibrationFile) msgs.push(`${s.name}: ${await selectCalibrationFile(s.id, e.calibrationFile)}`);
-  }
-  if (Array.isArray(doc.auxChannels)) for (const e of doc.auxChannels) { const c = e && auxChannels.get(String(e.id)); if (!c) { msgs.push(`Channel “${e && e.id}” is not in the sensor list: skipped.`); continue; } const er = auxSetUserConversion(c, e.conversion == null ? null : e.conversion); if (er.length) msgs.push(`${c.name}: conversion not applied (${er.join(' ')})`); }
-  if (activeSensor !== shown && sensors.has(shown.id)) activateSensor(shown.id);
-  renderSensorSelect(); sensorSettingsRender();
-  return msgs.length ? msgs : ['sensor_settings.json applied.'];
-}
 function ssMsg(t) { $('ssMessages').textContent = t; }
 async function sensorSettingsApply() {
   const s = ssSelectedId && sensors.get(ssSelectedId); if (!s) return;
-  const rate = Number($('ssRate').value);
-  if (s.kind === 'server' && s.state.count === 0 && !(rate > 0 && rate <= 10000)) { ssMsg('The nominal rate must be between 0 and 10,000 Hz.'); return; }
   { const ovr = overloadApplySettings(s, ssReadOverload()); if (ovr.errors.length) { ssMsg('Not applied: ' + ovr.errors.join(' ')); return; } }
-  { const r = applyUseConditions(s, { readingDelayS: $('ssReadDelay').value, sessionSinceTareS: $('ssSessionS').value, temperatureDeltaK: $('ssTempDelta').value, primaryTemperature: $('ssPrimaryTemp').value }); if (r.errors.length) { ssMsg('Not applied: ' + r.errors.join(' ')); return; } }
-  s.name = ($('ssName').value || '').trim() || s.id; s.settings.notes = $('ssNotes').value || '';
-  if (s.kind === 'server' && s.state.count === 0 && rate !== s.state.rateHz) {
-    s.state.rateHz = rate;
-    if (s === activeSensor) { RATE_HZ = rate; PERIOD_MS = 1000 / rate; syncUIFromState(); }
-  }
+  { const r = applyUseConditions(s, { readingDelayS: $('ssReadDelay').value, sessionSinceTareS: $('ssSessionS').value, temperatureDeltaK: $('ssTempDelta').value }); if (r.errors.length) { ssMsg('Not applied: ' + r.errors.join(' ')); return; } }
+  s.settings.primaryTemperatureSensorId = $('ssPrimaryTemp').value || null;
+  s.name = ($('ssName').value || '').trim() || `Sensor ${s.id}`; s.settings.notes = $('ssNotes').value || '';
   renderSensorSelect(); sensorSettingsRender();
-  if (!SENSOR_SETTINGS_URL) { ssMsg('Applied in this session. Nothing was sent: no sensor server is configured (SENSOR_SETTINGS_URL is empty). “Download” saves sensor_settings.json.'); return; }
+  if (s.kind !== 'server') { ssMsg('Applied in this session (the test signal has no device).'); return; }
+  if (!deviceReachable) { ssMsg('Applied in this session. Nothing was sent: no device connection. “Download” saves sensors.json.'); return; }
   try {
-    const r = await serverWrite(SENSOR_SETTINGS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sensorSettingsDoc(), null, 2) });
-    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
-    ssMsg('Applied and sent sensor_settings.json to the server.');
-  } catch (e) { ssMsg(`Applied locally, but the server did not accept sensor_settings.json: ${e.message}`); }
+    const r = await serverWrite(SENSORS_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sensorsDoc(), null, 2) });
+    if (!r.ok) throw new Error(await httpErrorText(r));
+    const j = await writeResult(r); if (j.saved !== false) sensorsDocRaw = sensorsDoc();
+    ssMsg(`Applied and sent sensors.json: ${writeResultText(j)}. The use conditions above stay in this browser session only.`);
+  } catch (e) { ssMsg(`Applied locally, but the device did not accept sensors.json: ${e.message}`); }
 }
+// "Load sensors.json…": reads a file into the sensor list of this session (like a reload); nothing is sent until "Apply & send".
+function applySensorsFile(doc) { const r = applySensorList(doc); return [`File read: ${r.added.length + r.auxAdded.length} added, ${r.updated.length + r.auxUpdated.length} updated.${r.errors.length ? ' ' + r.errors.join(' ') : ''} Nothing was sent to the device; use “Apply & send sensors.json” for that.`]; }
 function openSettingsMenu(tab) {
   openSettings(false); $('settingsModal').hidden = false; settingsMenuTab(tab || 'ui');
   updateUiSettingsInfo(); sensorSettingsRender();
@@ -2576,7 +2963,7 @@ function settingsMenuTab(tab) {
   for (const t of ['ui', 'sensor']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); }
 }
 function initSettingsMenu() {
-  authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); $('calUploadBtn').disabled = !CALIBRATION_UPLOAD_URL;
+  authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
   $('ssHistoryBtn').addEventListener('click', () => { const s = ssSelectedId && sensors.get(ssSelectedId); if (s) historyLoadOlder(s).then(sensorSettingsRender); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
@@ -2585,13 +2972,14 @@ function initSettingsMenu() {
   $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
   $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
   $('ssAuxSelect').addEventListener('change', e => { ssAuxId = e.target.value; sensorSettingsRender(); });
-  $('ssAuxApply').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; let conv; try { conv = JSON.parse($('ssAuxConv').value); } catch (err) { ssMsg(`The conversion is not valid JSON: ${err.message}`); return; } const er = auxSetUserConversion(c, conv); ssMsg(er.length ? 'Not applied: ' + er.join(' ') : 'Conversion applied to the stored samples of this channel. “Download sensor_settings.json” keeps it.'); sensorSettingsRender(); scheduleRender(); });
-  $('ssAuxReset').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; auxSetUserConversion(c, null); ssMsg('The firmware conversion is used again.'); sensorSettingsRender(); scheduleRender(); });
-  { const u = $('ssLoadUnit'); if (u) for (const x of UNIT_CONFIG.units.filter(x => x.id !== 'raw')) { const o = document.createElement('option'); o.value = x.id; o.textContent = x.symbol; u.appendChild(o); } }
+  $('ssAuxApply').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; let conv; try { conv = JSON.parse($('ssAuxConv').value); } catch (err) { ssMsg(`The conversion is not valid JSON: ${err.message}`); return; } const er = auxSetConversion(c, conv); ssMsg(er.length ? 'Not applied: ' + er.join(' ') : 'Conversion applied to the stored samples of this channel. “Apply & send sensors.json” keeps it.'); sensorSettingsRender(); scheduleRender(); });
+  $('ssAuxReset').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; auxSetConversion(c, (c.def && c.def.conversion) || null); ssMsg('The conversion stored on the device is used again.'); sensorSettingsRender(); scheduleRender(); });
+  populateUnitSelect();
+  $('deviceRestartBtn').addEventListener('click', deviceRestart); $('deviceResetBtn').addEventListener('click', () => deviceResetFile($('deviceResetSelect').value)); updateDeviceInfoUI(); renderDeviceLog();
   $('ssCalFile').addEventListener('change', async e => { ssMsg(await selectCalibrationFile(ssSelectedId, e.target.value)); sensorSettingsRender(); });
   $('ssLoadBtn').addEventListener('click', () => $('ssFile').click());
-  $('ssFile').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { ssMsg((await applySensorSettingsDoc(JSON.parse(await f.text()))).join(' ')); } catch (err) { ssMsg(`Could not read the file: ${err.message}`); } });
-  $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorSettingsDoc(), null, 2)], { type: 'application/json' }), 'sensor_settings.json'));
+  $('ssFile').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { ssMsg(applySensorsFile(JSON.parse(await f.text())).join(' ')); } catch (err) { ssMsg(`Could not read the file: ${err.message}`); } });
+  $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorsDoc(), null, 2)], { type: 'application/json' }), 'sensors.json'));
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('authModal').hidden) $('authCancel').click(); else if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
 }
 
@@ -2913,7 +3301,7 @@ function buildCalibrationConfig(W, fit, nowIso, extra = {}) {
   const rel = id => { for (const s of stats) { const m = s.members.find(x => x.weightId === id); if (m && m.relMassMg != null) return { valueMg: m.relMassMg, standardErrorMg: m.relMassSeMg, basis: 'sensor comparison within the weight group; approximate' }; } return null; };
   const w5 = v => (Number.isFinite(v) ? v : null);
   return {
-    schemaVersion: 1, sensorId: W.sensorId || null, profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '16.0-wizard',
+    schemaVersion: 1, sensorId: numericSensorId(W.sensorId), profileId: W.profile.profileId, profileName: W.profile.profileName, createdAt: nowIso, modifiedAt: nowIso, applicationVersion: '17.0-wizard',
     calibrationUnit: unit, calibrationMethod: 'piecewise-linear',
     sensor: { model: W.profile.sensorModel || '', hardwareId: W.sensorId || '', adcResolutionBits: null, samplingRateHz: W.rateHz || null },
     environment: { temperatureC: numOrNull(W.profile.temperatureC), relativeHumidityPercent: numOrNull(W.profile.humidityPercent), notes: W.profile.notes || '' },
@@ -3268,6 +3656,7 @@ function wizBuild() {
   const { pts, fits } = wizFits(), model = wizActiveModel(fits), fit = fits[model], errors = [...pts.errors], warnings = [];
   const W = (text, plain, code) => warnings.push({ code, text, plain: plain || text });
   if (!wiz.profile.profileName.trim()) errors.push('The profile needs a name.');
+  if (!/^[A-Za-z0-9._-]+$/.test(String(wiz.profile.profileId || ''))) errors.push('The profile ID may only contain letters, digits, dot, underscore and hyphen (it becomes part of the file name).');
   if (!fit.ok) errors.push(...fit.errors);
   let cfg = null, stats = [];
   if (!errors.length) {
@@ -3332,6 +3721,21 @@ function wizPaneFit() {
   ${gstat ? `<h3 style="margin:12px 0 4px">Weight groups: are the weights equal?</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Group</th><th>Data</th><th>Within-weight SD (counts)</th><th>Between-weight SD (counts)</th><th>F</th><th>Verdict</th></tr></thead><tbody>${gstat}</tbody></table></div><div class="small">One-way variance components: within = scatter of repeated placements of the same weight, between = differences between the weights beyond that. “Weights differ” is an informal finding (between &gt; within), not an error. Relative masses show how the sensor ranks the weights; a bias shared by all of them cannot be seen this way.</div>` : ''}
   ${rrows ? `<h3 style="margin:12px 0 4px">Residuals (observed scatter, not uncertainty)</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Observation</th><th>Mass</th><th>Counts</th><th>Fit</th><th>Residual (counts)</th><th>Residual (${esc(us)})</th><th>Weight</th><th>Standardised</th><th title="Observed value minus the prediction of the fit WITHOUT this observation: a point that only the fit itself can explain stands out here">Leave-one-out (counts)</th><th>Leave-one-out (${esc(us)})</th></tr></thead><tbody>${rrows}</tbody></table></div>` : ''}`;
 }
+function wizSizeLine(cfg) {
+  if (!cfg || typeof CompressionStream === 'undefined') return '';
+  const text = JSON.stringify({ ...cfg, createdAt: 0, modifiedAt: 0 }); let h = 5381; for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  const key = text.length + ':' + h;
+  if (!wiz.size || wiz.size.key !== key) { wiz.size = { key, bytes: null }; gzipText(JSON.stringify(cfg)).then(g => { if (wiz.size && wiz.size.key === key) { wiz.size.bytes = g.length; if (wiz.open && (wiz.tab === 'review' || wiz.tab === 'fit')) setTimeout(wizRender, 0); } }).catch(() => {}); }
+  const fl = deviceStatus && deviceStatus.flash ? deviceStatus.flash.filesystemFree : null, max = deviceInfo && deviceInfo.maxUploadBytes;
+  return `<div class="small" style="margin:6px 0">Compressed size on the device: <strong>${wiz.size.bytes == null ? 'calculating…' : fmtBytes(wiz.size.bytes)}</strong>${deviceReachable ? ` · free flash: ${fmtBytes(fl)} · limit per upload: ${fmtBytes(max)}` : ' · no device connected'}${wiz.size.bytes != null && max && wiz.size.bytes > max ? ' <span class="warning">(too large for the device)</span>' : ''}${wiz.size.bytes != null && fl != null && wiz.size.bytes > fl ? ' <span class="warning">(more than the free flash; only fits if it replaces a file)</span>' : ''}</div>`;
+}
+async function wizSend() {
+  const r = wizBuild(); if (!r.cfg || r.errors.length) { wiz.message = 'Fix the listed errors first.'; wizRender(); return; }
+  try { const out = await sendCalibrationToDevice(r.cfg, wiz.sensorId); wiz.message = `Sent ${out.name} (${fmtBytes(out.bytes)} compressed): ${writeResultText(out.result)}. To make it the sensor’s default, choose it in Settings Menu → Sensor and apply.`; }
+  catch (e) { wiz.message = `Not sent: ${e.message}`; }
+  wizRender();
+}
+function wizCanSend() { return deviceReachable && numericSensorId(wiz.sensorId) != null; }
 function wizPaneReview() {
   const b = wizBuild(), u = wiz.profile.unit;
   const anchors = b.fit.ok ? b.fit.anchors.slice(0, 40).map(a => `<tr><td>${wizMassText(a.massMg, u)}</td><td>${fmtNumber(a.raw, 3)}</td></tr>`).join('') + (b.fit.anchors.length > 40 ? `<tr><td colspan="2" class="small">… ${b.fit.anchors.length - 40} more</td></tr>` : '') : '';
@@ -3343,7 +3747,7 @@ function wizPaneReview() {
   <div class="readout" style="margin:6px 0">Characterization: <strong>${esc(charSummaryText(b.char))}</strong> <span class="small">(tab 5)</span></div>
   ${over.length ? `<div class="small warning">Overridden observations (included although the validity check failed): ${over.map(esc).join(', ')}</div>` : ''}
   <div class="small" style="margin:6px 0">Activating starts a new calibration epoch on the shown sensor: the tare is reset, a running measurement is aborted, and earlier samples keep the calibration they were recorded with. The file claims no uncertainty (validation status “not-characterized”); only its structure and monotonicity are checked.</div>
-  <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button></div>
+  ${wizSizeLine(b.cfg)}<div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button><button data-wa="sendCal" ${b.errors.length || !wizCanSend() ? 'disabled' : ''} title="Compress and upload to the device">Send to device</button></div>
   ${block ? `<div class="warning small">${esc(block)}</div>` : ''}
   ${anchors ? `<h3 style="margin:12px 0 4px">Anchors that will be written</h3><div class="tablewrap"><table class="wiz-table"><thead><tr><th>Mass</th><th>Counts</th></tr></thead><tbody>${anchors}</tbody></table></div>` : ''}`;
 }
@@ -3393,7 +3797,7 @@ function wizSimpleFinish() {
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.plain)}</div>`).join('')}
   <div class="small" style="margin:6px 0">Characterization (optional, tab 4 Extra checks): <strong>${esc(charSummaryText(b.char))}</strong>.</div>
   <div class="small" style="margin:6px 0">After activating, put a weight you know on the scale and check that it reads right. Activating starts a new calibration period: the tare is reset and earlier readings keep the calibration they were recorded with.</div>
-  <div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration file</button></div>
+  ${wizSizeLine(b.cfg)}<div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration file</button><button data-wa="sendCal" ${b.errors.length || !wizCanSend() ? 'disabled' : ''} title="Compress and upload to the device">Send to device</button></div>
   ${block ? `<div class="warning small">${esc(block)}</div>` : ''}`;
 }
 function wizRender() {
@@ -3491,10 +3895,11 @@ function wizOnClick(e) {
     case 'useSel': return wizUseSelection();
     case 'addManual': return wizAddManual();
     case 'delObs': wiz.observations.splice(i, 1); break;
-    case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), calFileName(r.cfg)); return; }
+    case 'exportCal': { const r = wizBuild(); if (r.cfg) downloadBlob(new Blob([JSON.stringify(r.cfg, null, 2)], { type: 'application/json' }), calFileName(r.cfg, wiz.sensorId)); return; }
     case 'exportReport': { const rep = wizFitReport(); downloadBlob(new Blob([JSON.stringify(rep, null, 2)], { type: 'application/json' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.json`); return; }
     case 'exportReportText': { const rep = wizFitReport(); downloadBlob(new Blob([wizFitReportText(rep)], { type: 'text/markdown' }), `fit-report-${String(wiz.profile.profileId).replace(/[^\w.-]+/g, '_')}.md`); return; }
     case 'activate': return wizActivate();
+    case 'sendCal': return wizSend();
   }
   wizRender();
 }
@@ -3741,46 +4146,49 @@ function mergeSampleLists(existing, incoming) {
   }
   return { t, raw, id, added: inc.length, duplicates: dup };
 }
-// PROPOSED binary layout of a history chunk (to be confirmed with the firmware): little endian, 'HIST' magic, u16 version = 1, u16 reserved,
-// u32 count, then count x 12 bytes {u32 sample id, u32 device time ms, i32 raw counts}.
-const HISTORY_MAGIC = 0x54534948;
-function decodeHistoryBinary(buf) {
+// Binary history chunk (protocol v0.5, layout version 1): little endian; 12-byte header {'HIST' magic u32, version u16 = 1, reserved u16, count u32}
+// followed by count x 28 bytes {n u64, t u64 (microseconds), raw u64 (bit pattern, see rawFormat), flags u32}. Decoded here to {id, t (ms), raw (native value), flags}.
+const HISTORY_MAGIC = 0x54534948, HISTORY_REC = 28;
+function decodeHistoryBinary(buf, rawFormat) {
   const dv = new DataView(buf.buffer ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : buf);
   if (dv.byteLength < 12 || dv.getUint32(0, true) !== HISTORY_MAGIC) throw new Error('not a history chunk (bad magic)');
-  const ver = dv.getUint16(4, true); if (ver !== 1 && ver !== 2) throw new Error('unknown history layout version');
-  const rec = ver === 2 ? 16 : 12, n = dv.getUint32(8, true); if (dv.byteLength < 12 + rec * n) throw new Error('truncated history chunk');
-  const id = new Array(n), t = new Array(n), raw = new Array(n);
-  for (let k = 0; k < n; k++) { const o = 12 + rec * k; id[k] = dv.getUint32(o, true); t[k] = dv.getUint32(o + 4, true); raw[k] = ver === 2 ? dv.getFloat64(o + 8, true) : dv.getInt32(o + 8, true); }
-  return { id, t, raw };
+  if (dv.getUint16(4, true) !== 1) throw new Error('unknown history layout version');
+  const n = dv.getUint32(8, true); if (dv.byteLength < 12 + HISTORY_REC * n) throw new Error('truncated history chunk');
+  const id = new Array(n), t = new Array(n), raw = new Array(n), flags = new Array(n);
+  for (let k = 0; k < n; k++) { const o = 12 + HISTORY_REC * k; id[k] = Number(dv.getBigUint64(o, true)); t[k] = Number(dv.getBigUint64(o + 8, true)) / 1000; raw[k] = decodeRaw(dv.getBigUint64(o + 16, true), rawFormat); flags[k] = dv.getUint32(o + 24, true); }
+  return { id, t, raw, flags, meta: {} };
 }
-function encodeHistoryBinary(ids, ts, raws) {
-  const n = ids.length, buf = new ArrayBuffer(12 + 12 * n), dv = new DataView(buf);
+function encodeHistoryBinary(ids, ts, raws, flags) {   // ts in microseconds, raws as uint64 bit patterns (BigInt or number); used by the test harness
+  const n = ids.length, buf = new ArrayBuffer(12 + HISTORY_REC * n), dv = new DataView(buf);
   dv.setUint32(0, HISTORY_MAGIC, true); dv.setUint16(4, 1, true); dv.setUint16(6, 0, true); dv.setUint32(8, n, true);
-  for (let k = 0; k < n; k++) { const o = 12 + 12 * k; dv.setUint32(o, ids[k], true); dv.setUint32(o + 4, ts[k], true); dv.setInt32(o + 8, raws[k], true); }
+  for (let k = 0; k < n; k++) { const o = 12 + HISTORY_REC * k; dv.setBigUint64(o, BigInt(ids[k]), true); dv.setBigUint64(o + 8, BigInt(ts[k]), true); dv.setBigUint64(o + 16, BigInt(raws[k]), true); dv.setUint32(o + 24, flags ? flags[k] : 0, true); }
   return buf;
 }
-function decodeHistoryJson(msg, float = false) {
-  const rr = v => (float ? Number(v) : Math.round(Number(v)));   // {samples:[{n,t,raw}]} or {ids:[],t:[],raw:[]} or a bare array of {n,t,raw}
-  const out = { id: [], t: [], raw: [] };
-  if (msg && Array.isArray(msg.ids)) { for (let k = 0; k < msg.ids.length; k++) { out.id.push(Number(msg.ids[k])); out.t.push(Number(msg.t[k])); out.raw.push(rr(msg.raw[k])); } return out; }
+// JSON: {sensorId, samples:[{n, t (us), raw (uint64 bit pattern), flags}], returned, firstId, lastId, latestId, oldestId, truncated}
+function decodeHistoryJson(msg, rawFormat) {
+  const out = { id: [], t: [], raw: [], flags: [], meta: {} };
   const arr = Array.isArray(msg) ? msg : (msg && Array.isArray(msg.samples) ? msg.samples : []);
-  for (const s of arr) { out.id.push(Number(s.n)); out.t.push(Number(s.t)); out.raw.push(rr(s.raw)); }
+  for (const s of arr) { out.id.push(Number(toNum(s.n))); out.t.push(Number(toNum(s.t)) / 1000); out.raw.push(decodeRaw(s.raw, rawFormat)); out.flags.push(Number(toNum(s.flags)) || 0); }
+  if (msg && !Array.isArray(msg)) for (const k of ['returned', 'firstId', 'lastId', 'latestId', 'oldestId']) if (msg[k] != null) out.meta[k] = Number(toNum(msg[k]));
+  if (msg && msg.truncated != null) out.meta.truncated = !!msg.truncated;
   return out;
 }
 // ===== END v14 pure block ==============================================================================================
 
 // ===== v14: SAMPLE HISTORY (range requests by the web UI) ==================================================================
 // Design (handout section 7): the live stream and the history are independent. Every live sample carries a monotonic sample id `n` and a device
-// timestamp. The web UI asks the history server for OLDER ids itself (GET <historyUrl>?sensor=<id>&from_id=a&to_id=b; binary chunks preferred,
+// timestamp. The web UI asks the history server for OLDER ids itself (GET /api/history?sensor_id=<id>&from_id=a&to_id=b&limit=n&format=bin; binary chunks preferred,
 // JSON accepted) and MERGES them into the sensor's ring buffer by time, dropping duplicates by id. The server needs no notion of a "new user".
 // Live samples are NOT held back: merging works while the stream continues (so the "buffer live samples, then prepend" order of the handout is
 // replaced by a merge that is valid at any moment; the result is identical). The same merge fills gaps after a reconnect: a jump in the sample
 // ids is requested as a range; ids the server no longer has simply stay what they are, an explicit gap in the timestamps (and in the id counter
 // that the validity checks now compare against).
 // ASSUMED server limits (to be confirmed with the firmware): how many samples it retains, the largest chunk, the binary layout (decodeHistoryBinary).
-const HISTORY_URL = null, HISTORY_CHUNK = 5000, HISTORY_MAX_CHUNKS = 400;
-function historyUrlFor(sensor) { return sensor.historyUrl || HISTORY_URL; }
-function historyRequestUrl(base, sensorId, fromId, toId) { return `${base}${base.includes('?') ? '&' : '?'}sensor=${encodeURIComponent(sensorId)}&from_id=${fromId}&to_id=${toId}`; }
+const HISTORY_MAX_CHUNKS = 400;
+function historyUrlFor(sensor) { return deviceReachable && sensor.sseUrl ? HISTORY_URL : null; }
+let historyMaxChunkSeen = null;   // X-History-Max-Chunk of the latest response
+function historyChunkSize() { return Math.max(1, Math.min(5000, deviceInfo && deviceInfo.maxHistoryChunk > 0 ? deviceInfo.maxHistoryChunk : 5000, historyMaxChunkSeen > 0 ? historyMaxChunkSeen : 5000)); }
+function historyRequestUrl(base, sensorId, fromId, toId, limit) { return `${base}${base.includes('?') ? '&' : '?'}sensor_id=${encodeURIComponent(sensorId)}&from_id=${fromId}&to_id=${toId}&limit=${limit}&format=bin`; }
 function firstKnownId(st) { for (let i = 0; i < st.count; i++) { const v = st.ids[(st.head + i) % st.capacity]; if (Number.isFinite(v)) return v; } return NaN; }
 // Merge a chunk {id:[], t:[] (device ms, absolute), raw:[]} into the sensor. Works on any sensor (shown or hidden). Returns counts.
 function mergeHistory(sensor, chunk) {
@@ -3800,7 +4208,7 @@ function mergeHistory(sensor, chunk) {
     let total = m.t.length, from = 0, dropped = 0;
     if (!st.unlimited && total > st.capacity) { dropped = total - st.capacity; from = dropped; total = st.capacity; }   // the newest `capacity` samples are kept
     const cap = st.unlimited ? Math.max(st.capacity, Math.ceil(total / 100000) * 100000) : st.capacity, D = st.derivedReady, dn = D ? cap : 0;
-    const times = new Float64Array(cap), raw = new Int32Array(cap), ids = new Float64Array(cap).fill(NaN), mass = new Float64Array(dn);
+    const times = new Float64Array(cap), raw = new Float64Array(cap), ids = new Float64Array(cap).fill(NaN), mass = new Float64Array(dn);
     for (let i = 0; i < total; i++) {
       const k = from + i; times[i] = m.t[k]; raw[i] = m.raw[k]; ids[i] = m.id[k];
       if (D) { const known = massOf.get(m.t[k]); mass[i] = known !== undefined ? known : calibrateAbsolute(m.raw[k], (st.calibrations.length ? calibrationAt(m.t[k]).config : st.calPrepared)).valueMg; }
@@ -3819,10 +4227,14 @@ function historyAfterMerge(sensor) {
   scheduleRender();
 }
 async function historyFetchChunk(sensor, fromId, toId) {
-  const base = historyUrlFor(sensor), r = await fetch(historyRequestUrl(base, sensor.id, fromId, toId), { cache: 'no-store' });   // a READ: no Authorization header
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
-  return /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer())) : decodeHistoryJson(await r.json(), sensor.kind === 'temperature' || sensor.kind === 'generic');
+  const size = Math.min(toId - fromId + 1, historyChunkSize()), r = await fetch(historyRequestUrl(HISTORY_URL, sensor.id, fromId, toId, size), { cache: 'no-store' });   // a READ: no Authorization / CSRF header
+  if (!r.ok) throw new Error(await httpErrorText(r));
+  const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '', hv = n => { const v = r.headers && r.headers.get ? r.headers.get(n) : null; return v == null || v === '' ? undefined : Number(v); };
+  const chunk = /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer()), sensor.rawFormat) : decodeHistoryJson(parseWire(await r.text()), sensor.rawFormat);
+  for (const [k, h] of [['returned', 'X-History-Returned'], ['firstId', 'X-History-First-Id'], ['lastId', 'X-History-Last-Id'], ['latestId', 'X-History-Latest-Id'], ['oldestId', 'X-History-Oldest-Id'], ['maxChunk', 'X-History-Max-Chunk']]) { const v = hv(h); if (v !== undefined && Number.isFinite(v)) chunk.meta[k] = v; }
+  if (chunk.meta.maxChunk > 0) historyMaxChunkSeen = chunk.meta.maxChunk;
+  { const tr = r.headers && r.headers.get ? r.headers.get('X-History-Truncated') : null; if (tr != null) chunk.meta.truncated = tr === 'true' || tr === '1'; }
+  return chunk;
 }
 function historyStatusText(sensor) {
   const h = sensor.history; if (!historyUrlFor(sensor)) return 'no history server configured';
@@ -3833,6 +4245,7 @@ async function historyLoadOlder(sensor) {
   const base = historyUrlFor(sensor), h = sensor.history;
   if (!base) { h.status = 'not configured'; return h; }
   if (h.running) return h;
+  if (h.noOlder) { h.status = 'not loaded (a new configuration epoch started)'; return h; }
   h.running = true; h.error = null; h.status = 'loading'; updateSourceNote();
   try {
     for (let guard = 0; guard < HISTORY_MAX_CHUNKS; guard++) {
@@ -3840,12 +4253,13 @@ async function historyLoadOlder(sensor) {
       if (!Number.isFinite(first)) { h.status = 'waiting for the first sample id'; break; }
       if (!st.unlimited && st.count >= st.capacity) { h.status = 'buffer full'; break; }
       const to = first - 1, floor = h.minId == null ? 0 : h.minId; if (to < floor) { h.status = 'complete (server start reached)'; break; }
-      const room = st.unlimited ? Infinity : st.capacity - st.count, size = Math.min(HISTORY_CHUNK, room), from = Math.max(floor, to - size + 1);
+      const room = st.unlimited ? Infinity : st.capacity - st.count, size = Math.min(historyChunkSize(), room), from = Math.max(floor, to - size + 1);
       const chunk = await historyFetchChunk(sensor, from, to);
       if (!chunk.id.length) { h.minId = to + 1; h.status = 'complete (server has nothing older)'; break; }
       const r = mergeHistory(sensor, chunk); h.loaded += r.added; historyAfterMerge(sensor);
       let lo = Infinity; for (const v of chunk.id) if (Number.isFinite(v) && v < lo) lo = v;
       if (lo > from) { h.minId = lo; }           // the server could not go back further
+      if (chunk.meta && Number.isFinite(chunk.meta.oldestId)) h.minId = Math.max(h.minId == null ? 0 : h.minId, chunk.meta.oldestId);
       if (!r.added) { h.status = 'complete (no new samples)'; break; }
       h.status = 'loading';
     }
@@ -3866,7 +4280,7 @@ async function historyFillGaps(sensor) {
     for (const g of sensor.gaps) {
       if (g.status !== 'pending') continue;
       let got = 0;
-      try { for (let a = g.fromId; a <= g.toId; a += HISTORY_CHUNK) { const b = Math.min(g.toId, a + HISTORY_CHUNK - 1), chunk = await historyFetchChunk(sensor, a, b); if (chunk.id.length) { got += mergeHistory(sensor, chunk).added; historyAfterMerge(sensor); } } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
+      try { for (let a = g.fromId; a <= g.toId; a += historyChunkSize()) { const b = Math.min(g.toId, a + historyChunkSize() - 1), chunk = await historyFetchChunk(sensor, a, b); if (chunk.id.length) { got += mergeHistory(sensor, chunk).added; historyAfterMerge(sensor); } } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
       catch (e) { g.status = 'failed: ' + e.message; }
     }
   } finally { sensor.history.fillingGaps = false; updateSourceNote(); }
@@ -3888,7 +4302,6 @@ function updateSourceNote() {
 // CORS: if the UI is not served by the ESP32 itself, the server must answer the preflight and allow the Authorization header.
 // SECURITY: Basic over plain HTTP sends the password readably. Trusted home network or HTTPS only.
 const AUTH_SESSION_KEY = 'massTelemetryWorkbench.auth.session', AUTH_LOCAL_KEY = 'massTelemetryWorkbench.auth.remembered';
-const CALIBRATION_UPLOAD_URL = null;   // PUT of a calibration JSON (a write: password if one is set)
 let authCred = null, authPending = null, authPromptImpl = null;
 function authStorageGet(kind, key) { try { const s = kind === 'session' ? (typeof sessionStorage !== 'undefined' ? sessionStorage : null) : (typeof localStorage !== 'undefined' ? localStorage : null); const t = s && s.getItem(key); const o = t && JSON.parse(t); return o && typeof o.user === 'string' && typeof o.password === 'string' ? o : null; } catch (_) { return null; } }
 function authStorageSet(kind, key, v) { try { const s = kind === 'session' ? sessionStorage : localStorage; if (v) s.setItem(key, JSON.stringify(v)); else s.removeItem(key); } catch (_) {} }
@@ -3913,9 +4326,15 @@ function authAsk(message) {
   if (!authPending) authPending = Promise.resolve((authPromptImpl || authDialogPrompt)(message)).then(r => { authPending = null; return r; }, e => { authPending = null; throw e; });
   return authPending;
 }
-// Every WRITE to the server goes through here. `init` is a normal fetch init (method, headers, body).
+let csrfRefreshing = false;
 async function serverWrite(url, init = {}) {
-  const send = cred => { const headers = { ...(init.headers || {}) }; if (cred) headers['Authorization'] = basicAuthHeader(cred.user, cred.password); return fetch(url, { ...init, headers }); };
+  const send = async cred => {
+    const go = () => { const headers = { ...(init.headers || {}) }; if (csrfToken) headers['X-CSRF-Token'] = csrfToken; if (cred) headers['Authorization'] = basicAuthHeader(cred.user, cred.password); return fetch(url, { ...init, headers }); };
+    let r = await go();
+    if (r.status === 403) { await pollStatus(); r = await go(); }   // CSRF token expired (e.g. after a restart): one refresh and one retry
+    return r;
+  };
+  if (!csrfToken) await pollStatus();
   let r = await send(authCred);
   if (r.status === 401) {
     const got = await authAsk(authCred ? 'The server did not accept the password. Enter it again.' : 'The server asks for a password before it accepts changes.');
@@ -3926,14 +4345,29 @@ async function serverWrite(url, init = {}) {
   }
   return r;
 }
+async function stampedCalibration() {
+  const out = { ...CALIBRATION }; if (out.sensorId == null) { const n = numericSensorId(activeSensor.id); if (n != null) out.sensorId = n; }
+  const fp = out.sensorId === CALIBRATION.sensorId ? { id: state.revisionId, full: state.fullHash } : await fingerprintConfig(out);
+  out.revisionId = fp.id; if (fp.full) out.contentHash = fp.full; else delete out.contentHash;
+  return out;
+}
+// Calibration files are stored compressed on the device: PUT /data/calibration/calibration_<sensorId>_<profileId>.json, Content-Encoding: gzip.
+async function sendCalibrationToDevice(config, sensorId) {
+  const name = calFileName(config, sensorId);
+  if (!/^calibration_\d+_[A-Za-z0-9._-]+\.json$/.test(name)) throw new Error('Only a calibration of a device sensor can be sent (the test signal has no device).');
+  if (!deviceReachable) throw new Error('No device connection.');
+  const gz = await gzipText(JSON.stringify(config)), max = deviceInfo && deviceInfo.maxUploadBytes;
+  if (max && gz.length > max) throw new Error(`The compressed file (${fmtBytes(gz.length)}) is larger than the device accepts (${fmtBytes(max)}).`);
+  const r = await serverWrite(`${CALIBRATION_DIR}/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' }, body: gz });
+  if (!r.ok) throw new Error(await httpErrorText(r));
+  const result = await writeResult(r), e = calLibrary.get(name);
+  if (e) { e.onDevice = true; e.sizeBytes = gz.length; } else calLibraryAdd(config, sensorId);
+  return { name, bytes: gz.length, result };
+}
 async function uploadCalibration() {
-  if (!CALIBRATION_UPLOAD_URL) { showCalibrationMessages([], ['No calibration server is configured (CALIBRATION_UPLOAD_URL is empty).'], ''); return; }
-  try {
-    const out = { ...CALIBRATION, revisionId: state.revisionId }; if (state.fullHash) out.contentHash = state.fullHash;
-    const r = await serverWrite(CALIBRATION_UPLOAD_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out, null, 2) });
-    if (!r.ok) throw new Error(r.status === 401 ? 'HTTP 401 (password needed or not accepted)' : `HTTP ${r.status}`);
-    showCalibrationMessages([], [], 'The active calibration was sent to the server.');
-  } catch (e) { showCalibrationMessages([`Could not send the calibration: ${e.message}`], [], ''); }
+  if (!deviceReachable) { showCalibrationMessages([], ['No device connection.'], ''); return; }
+  try { const r = await sendCalibrationToDevice(await stampedCalibration(), activeSensor.id); showCalibrationMessages([], [], `Sent ${r.name} (${fmtBytes(r.bytes)} compressed): ${writeResultText(r.result)}. To make it the sensor’s default, choose it in Settings Menu → Sensor and apply.`); }
+  catch (e) { showCalibrationMessages([`Could not send the calibration: ${e.message}`], [], ''); }
 }
 
 // ===== v16: AUXILIARY CHANNELS, CHARACTERIZATION, USE CONDITIONS ===================================================
@@ -3943,7 +4377,7 @@ const CREEP_TIMES_S = [30, 60, 120, 300, 600, 900, 1200, 1800], CREEP_AVG_HALF_S
 const DRIFT_MINUTES_DEFAULT = 10, DRIFT_MINUTES_MAX = 60, DRIFT_BLOCKS = 20;
 const TEMP_FIT_MIN_RANGE_K = 2, TEMP_FIT_MIN_POINTS = 5, CHAR_MAX_SAMPLES = 600000;   // rules of thumb; revisit after real measurements
 const ECC_POSITIONS = ['centre', 'front', 'back', 'left', 'right'];
-const USE_COND_DEFAULTS = Object.freeze({ readingDelayS: 30, sessionSinceTareS: 3600, temperatureDeltaK: 3, primaryTemperature: null });
+const USE_COND_DEFAULTS = Object.freeze({ readingDelayS: 30, sessionSinceTareS: 3600, temperatureDeltaK: 3 });   // browser session only: never written to any file
 const AUX_COLORS = ['#4fc3f7', '#81c784', '#ff8a65', '#ba68c8', '#fff176'];
 const isCalObs = o => !o.purpose || o.purpose === 'calibration';
 function wizCalObs(W) { return W.observations.filter(isCalObs); }
@@ -3956,15 +4390,17 @@ function validateAuxConversion(conv) {
   if (conv == null) return [];
   if (typeof conv !== 'object' || Array.isArray(conv)) return ['"conversion" must be an object.'];
   const t = conv.type || 'direct', n = v => typeof v === 'number' && Number.isFinite(v);
+  if (conv.rawScale != null && !(n(conv.rawScale) && conv.rawScale !== 0)) return ['"rawScale" must be a non-zero number.'];
+  if (conv.unit != null && typeof conv.unit !== 'string') return ['"unit" must be a text.'];
   if (t === 'direct') return [];
   if (t === 'polynomial') return Array.isArray(conv.coefficients) && conv.coefficients.length > 0 && conv.coefficients.every(n) ? [] : ['A polynomial conversion needs "coefficients": a list of numbers [c0, c1, …].'];
   if (t === 'steinhart-hart') return n(conv.a) && n(conv.b) && n(conv.c) ? [] : ['A steinhart-hart conversion needs the numbers a, b and c.'];
   if (t === 'beta') return n(conv.beta) && conv.beta > 0 && n(conv.r0) && conv.r0 > 0 && n(conv.t0) && (conv.rSeries == null || (n(conv.rSeries) && conv.rSeries >= 0)) ? [] : ['A beta conversion needs beta > 0, r0 > 0, t0 (°C) and optionally rSeries ≥ 0.'];
   return [`Unknown conversion type “${t}”. Use direct, polynomial, steinhart-hart or beta.`];
 }
-function convertAux(conv, raw) {
-  if (!Number.isFinite(raw)) return NaN;
-  const t = (conv && conv.type) || 'direct';
+function convertAux(conv, raw0) {
+  if (!Number.isFinite(raw0)) return NaN;
+  const t = (conv && conv.type) || 'direct', raw = conv && Number.isFinite(conv.rawScale) ? raw0 * conv.rawScale : raw0;   // x = decoded raw x rawScale (e.g. m°C -> °C, mΩ -> Ω)
   if (t === 'direct') return raw;
   if (t === 'polynomial') { let s = 0; for (let k = conv.coefficients.length - 1; k >= 0; k--) s = s * raw + conv.coefficients[k]; return Number.isFinite(s) ? s : NaN; }
   if (t === 'steinhart-hart') { if (!(raw > 0)) return NaN; const l = Math.log(raw), inv = conv.a + conv.b * l + conv.c * l * l * l, T = 1 / inv; return Number.isFinite(T) && T > 0 ? T - 273.15 : NaN; }
@@ -3982,7 +4418,7 @@ function auxPush(ch, t, raw, id, val) {
 }
 function auxLower(b, t) { let lo = 0, hi = b.count; while (lo < hi) { const mid = (lo + hi) >>> 1; if (b.t[auxP(b, mid)] < t) lo = mid + 1; else hi = mid; } return lo; }
 function auxLastId(ch) { const b = ch.buf; return b.count ? b.id[auxP(b, b.count - 1)] : NaN; }
-function auxConversion(ch) { return ch.userConversion || ch.conversion || { type: 'direct' }; }
+function auxConversion(ch) { return ch.conversion || { type: 'direct' }; }
 // Value of a channel at a load-cell sample time (ms): exact hit, or linear interpolation between the two neighbours; NaN outside the data
 // and across a gap longer than AUX_MAX_GAP_FACTOR x the channel period. NEVER extrapolated. k = first index with time >= t.
 function auxInterp(ch, t, k) {
@@ -4015,7 +4451,7 @@ function auxRateKPerMin(ch, windowS) {   // least-squares slope of the converted
   return sxx > 0 ? sxy / sxx * 60000 : null;
 }
 function claimDeviceOrigin(deviceId, t) { if (!deviceOrigins.has(deviceId)) deviceOrigins.set(deviceId, t); return deviceOrigins.get(deviceId); }
-function deviceIdOf(x) { return x.deviceId || x.sseUrl || x.id; }
+function deviceIdOf(x) { return 'device'; }   // protocol v0.5: one clock for the whole device
 function encodeHistoryBinaryV2(ids, ts, raws) {   // proposal v2 for float channels: 16-byte records (u32 id, u32 ms, f64 raw), version 2
   const n = ids.length, buf = new ArrayBuffer(12 + 16 * n), dv = new DataView(buf);
   dv.setUint32(0, HISTORY_MAGIC, true); dv.setUint16(4, 2, true); dv.setUint16(6, 0, true); dv.setUint32(8, n, true);
@@ -4133,47 +4569,41 @@ function applyUseConditions(sensor, o) {
   const errors = [], out = { ...USE_COND_DEFAULTS }; o = o || {};
   const num = (k, hi, label) => { if (o[k] == null || o[k] === '') return; const v = Number(o[k]); if (!Number.isFinite(v) || v < 0 || v > hi) { errors.push(`${label} must be between 0 and ${hi}.`); return; } out[k] = v; };
   num('readingDelayS', 86400, 'Reading delay'); num('sessionSinceTareS', 31536000, 'Time since tare'); num('temperatureDeltaK', 100, 'Temperature difference');
-  out.primaryTemperature = typeof o.primaryTemperature === 'string' && o.primaryTemperature ? o.primaryTemperature : null;
   if (errors.length) return { errors };
   sensor.settings.useConditions = out; return { errors: [] };
 }
 // ---- registry of auxiliary channels ---------------------------------------------------------------------------------------------
 function makeAux(def) {
-  const ch = { id: String(def.id), name: String(def.name || def.id), kind: def.kind, unit: def.unit, conversion: def.conversion || { type: 'direct' }, userConversion: null, attachedTo: def.attachedTo || [],
-    sseUrl: def.sseUrl || null, historyUrl: def.historyUrl || null, deviceId: def.deviceId || def.sseUrl || String(def.id), rateHz: def.rateHz, paused: false, unlisted: false, unlimited: false,
+  const ch = { id: String(def.id), name: String(def.name || def.id), kind: def.kind, unit: def.unit, rawUnit: def.rawUnit || '', rawFormat: def.rawFormat || null, conversion: def.conversion || { type: 'direct' }, def: def.def || null, attachedTo: def.attachedTo || [], archiveAttach: new Set(), archived: false, disabled: false,
+    sseUrl: def.sseUrl || null, rateHz: def.rateHz, paused: false, unlisted: false, unlimited: false, epochNo: 1, configRev: null, status: null, err: null,
     buf: auxNewBuffer(AUX_CAPACITY), rejected: 0, dropped: 0, invalid: 0, lastWall: null, firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0,
     history: { status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false } };
   auxChannels.set(ch.id, ch); return ch;
 }
-function applyAuxEntry(e, id, result) {
-  const kind = e.kind === 'temperature' ? 'temperature' : e.kind === 'generic' ? 'generic' : null;
-  if (!kind) { result.errors.push(`Entry "${id}": unknown kind “${e.kind}”. Use loadcell, temperature or generic.`); return false; }
-  if (sensors.has(id)) { result.errors.push(`The id "${id}" is already a load cell.`); return false; }
-  const url = String(e.sseUrl ?? e.sse_url ?? '').trim();
-  if (url) { try { const u = new URL(url, typeof location !== 'undefined' ? location.href : 'http://localhost/'); if (!/^https?:$/.test(u.protocol)) throw new Error(); } catch (_) { result.errors.push(`Channel "${id}": invalid SSE URL, skipped.`); return false; } }
+function applyAuxEntry(e, id, result, m) {
+  const kind = m.kind;
+  if (sensors.has(id)) { result.errors.push(`The id ${id} is already a load cell.`); return false; }
   const conv = e.conversion == null ? { type: 'direct' } : e.conversion, ce = validateAuxConversion(conv);
-  if (ce.length) { result.errors.push(`Channel "${id}": ${ce.join(' ')}`); return false; }
-  const unit = typeof e.unit === 'string' ? e.unit : (kind === 'temperature' ? '°C' : '');
-  if (kind === 'temperature' && !/^(°C|C|degC)$/.test(unit)) { result.errors.push(`Channel "${id}": a temperature channel must deliver °C (differences are always in K).`); return false; }
-  if (e.attachedTo != null && !Array.isArray(e.attachedTo)) { result.errors.push(`Channel "${id}": "attachedTo" must be a list of load-cell ids.`); return false; }
-  const attachedTo = (e.attachedTo || []).map(String), rateHz = Number.isFinite(e.rateHz) && e.rateHz > 0 ? e.rateHz : 1, name = typeof e.name === 'string' && e.name.trim() ? e.name.trim() : id;
-  const hist = typeof e.historyUrl === 'string' && e.historyUrl.trim() ? e.historyUrl.trim() : null, dev = typeof e.deviceId === 'string' && e.deviceId.trim() ? e.deviceId.trim() : null;
-  const known = auxChannels.get(id);
-  if (known) {
+  if (ce.length) { result.errors.push(`Channel ${id}: ${ce.join(' ')}`); return false; }
+  const unit = typeof conv.unit === 'string' && conv.unit ? conv.unit : (kind === 'temperature' ? '°C' : '');
+  if (kind === 'temperature' && !/^(°C|C|degC)$/.test(unit)) { result.errors.push(`Channel ${id}: a temperature channel must deliver °C (differences are always in K).`); return false; }
+  if (e.attachedTo != null && (!Array.isArray(e.attachedTo) || !e.attachedTo.every(v => Number.isInteger(v) && v >= 0))) { result.errors.push(`Channel ${id}: "attachedTo" must be a list of load-cell ids (numbers).`); return false; }
+  const attachedTo = (e.attachedTo || []).map(String), name = typeof e.name === 'string' && e.name.trim() ? e.name.trim() : `Sensor ${id}`, known = auxChannels.get(id);
+  if (known && !known.archived) {
     const changed = JSON.stringify(known.conversion) !== JSON.stringify(conv);
-    Object.assign(known, { name, sseUrl: url || null, unit, attachedTo, rateHz, conversion: conv, unlisted: false }); if (hist) known.historyUrl = hist; if (dev) known.deviceId = dev;
+    Object.assign(known, { name, sseUrl: STREAM_URL, unit, rawUnit: e.unit || '', attachedTo, rateHz: m.rate, conversion: conv, rawFormat: m.rf, def: cloneJson(e), disabled: e.enabled === false, unlisted: false });
     if (changed) auxReconvert(known); result.auxUpdated.push(id);
-  } else { makeAux({ id, name, kind, sseUrl: url || null, historyUrl: hist, deviceId: dev, unit, conversion: conv, attachedTo, rateHz }); result.auxAdded.push(id); }
+  } else { makeAux({ id, name, kind, sseUrl: STREAM_URL, rawFormat: m.rf, unit, rawUnit: e.unit || '', conversion: conv, attachedTo, rateHz: m.rate, def: cloneJson(e) }).disabled = e.enabled === false; result.auxAdded.push(id); }
   return true;
 }
 function auxReconvert(ch) { const b = ch.buf, c = auxConversion(ch); ch.invalid = 0; for (let i = 0; i < b.count; i++) { const p = auxP(b, i); b.val[p] = convertAux(c, b.raw[p]); if (!Number.isFinite(b.val[p])) ch.invalid++; } }
-function attachedAux(sensor, kind) { return [...auxChannels.values()].filter(c => c.attachedTo.includes(sensor.id) && (!kind || c.kind === kind)); }
-function primaryTempChannel(sensor) { const list = attachedAux(sensor, 'temperature'), want = useConditionsOf(sensor).primaryTemperature; return list.find(c => c.id === want) || list[0] || null; }
+function attachedAux(sensor, kind) { return [...auxChannels.values()].filter(c => (c.attachedTo.includes(sensor.id) || (c.archiveAttach && c.archiveAttach.has(sensor.id))) && (!kind || c.kind === kind)); }
+function primaryTempChannel(sensor) { const list = attachedAux(sensor, 'temperature'), want = sensor.settings && sensor.settings.primaryTemperatureSensorId; return list.find(c => c.id === want) || list[0] || null; }
 function auxTemperaturesFor(sensor, t0, t1) {
   const out = {}; for (const ch of attachedAux(sensor, 'temperature')) { const s = auxStatsRange(ch, t0, t1); if (s) out[ch.id] = { mean: s.mean, min: s.min, max: s.max, unit: ch.unit }; }
   return Object.keys(out).length ? out : null;
 }
-function ingestAux(ch, raw, timeMs, id) {
+function ingestAux(ch, raw, timeMs, id, forceInvalid) {
   if (ch.paused) { ch.dropped++; return false; }
   ch.lastWall = performance.now();
   const b = ch.buf; if (b.count && timeMs <= b.t[auxP(b, b.count - 1)]) { ch.rejected++; return false; }
@@ -4182,19 +4612,22 @@ function ingestAux(ch, raw, timeMs, id) {
     if (Number.isFinite(last)) { if (id <= last) { ch.rejected++; return false; } if (id > last + 1 && !ch.skipNextGap) auxNoteGap(ch, last + 1, id - 1); }
     ch.skipNextGap = false; if (ch.firstLiveId == null) { ch.firstLiveId = id; auxHistoryScheduleInitial(ch); }
   }
-  const val = convertAux(auxConversion(ch), raw); if (!Number.isFinite(val)) ch.invalid++;
+  const val = forceInvalid ? NaN : convertAux(auxConversion(ch), raw); if (!Number.isFinite(val)) ch.invalid++;
   auxPush(ch, timeMs, raw, id, val); return true;
 }
 function handleAuxSample(ch, it) {
-  const raw = Number(it.raw), t = Number(it.t);
+  const raw = decodeRaw(it.raw, ch.rawFormat), t = toNum(it.t);
   if (!Number.isFinite(raw) || !Number.isFinite(t)) { ch.rejected++; return; }
   if (ch.paused) { ch.dropped++; return; }
-  const origin = claimDeviceOrigin(ch.deviceId, t);
-  ingestAux(ch, raw, t - origin, it.n == null ? undefined : Number(it.n));
+  const origin = claimDeviceOrigin(deviceIdOf(ch), t / 1000), flags = Number(toNum(it.flags)) || 0;
+  ingestAux(ch, raw, t / 1000 - origin, it.n == null ? undefined : toNum(it.n), !!(flags & FLAG_INVALID));   // a flagged-invalid reading is stored as invalid (NaN), never as a value
 }
 function setAuxPaused(ch, paused, quiet = false) { ch.paused = paused; if (!paused) { ch.skipNextGap = true; ch.lastWall = performance.now(); } if (!quiet) { syncConnections(); renderAuxToggles(); updateStatusUI(); } }
 function auxStaleMs(ch, now) { if (ch.paused || ch.unlisted || ch.lastWall == null) return 0; const age = now - ch.lastWall; return age > Math.max(STREAM_TIMEOUT_MIN_MS, STREAM_TIMEOUT_PERIODS * 1000 / ch.rateHz) ? age : 0; }
 function auxLink(ch) {
+  if (ch.archived) return { key: 'archived', text: 'archived epoch' };
+  if (ch.disabled) return { key: 'disabled', text: 'disabled on the device' };
+  if (ch.err) return { key: 'sensorerr', text: `${ch.err.state}: ${ch.err.message || ch.err.code || ''}` };
   if (ch.paused) return { key: 'paused', text: 'paused' };
   if (ch.unlisted) return { key: 'unlisted', text: 'not in the list' };
   if (!ch.sseUrl) return { key: 'idle', text: 'no SSE URL' };
@@ -4207,7 +4640,7 @@ function auxClear(ch) { ch.buf = auxNewBuffer(ch.buf.cap); ch.gaps = []; ch.gapC
 function mergeAuxHistory(ch, chunk) {
   const b = ch.buf, n = chunk.t.length; if (!n) return { added: 0, duplicates: 0, dropped: 0, count: b.count };
   let mn = Infinity; for (const v of chunk.t) if (v < mn) mn = v;
-  const origin = claimDeviceOrigin(ch.deviceId, mn), ex = { t: new Array(b.count), raw: new Array(b.count), id: new Array(b.count) };
+  const origin = claimDeviceOrigin(deviceIdOf(ch), mn), ex = { t: new Array(b.count), raw: new Array(b.count), id: new Array(b.count) };
   for (let i = 0; i < b.count; i++) { const p = auxP(b, i); ex.t[i] = b.t[p]; ex.raw[i] = b.raw[p]; ex.id[i] = b.id[p]; }
   const m = mergeSampleLists(ex, { t: chunk.t.map(v => v - origin), raw: chunk.raw, id: chunk.id });
   if (!m.added) return { added: 0, duplicates: m.duplicates, dropped: 0, count: b.count };
@@ -4227,7 +4660,7 @@ async function auxFillGaps(ch) {
   try {
     for (const g of ch.gaps) {
       if (g.status !== 'pending') continue; let got = 0;
-      try { for (let a = g.fromId; a <= g.toId; a += HISTORY_CHUNK) { const bb = Math.min(g.toId, a + HISTORY_CHUNK - 1), chunk = await historyFetchChunk(ch, a, bb); if (chunk.id.length) got += mergeAuxHistory(ch, chunk).added; } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
+      try { for (let a = g.fromId; a <= g.toId; a += historyChunkSize()) { const bb = Math.min(g.toId, a + historyChunkSize() - 1), chunk = await historyFetchChunk(ch, a, bb); if (chunk.id.length) got += mergeAuxHistory(ch, chunk).added; } g.status = got >= g.toId - g.fromId + 1 ? 'filled' : (got ? 'partly filled' : 'not available: stays a gap'); g.got = got; }
       catch (e) { g.status = 'failed: ' + e.message; }
     }
   } finally { ch.history.fillingGaps = false; }
@@ -4243,7 +4676,7 @@ async function auxHistoryLoadOlder(ch) {
       if (!Number.isFinite(first)) { h.status = 'waiting for the first sample id'; break; }
       if (!ch.unlimited && ch.buf.count >= ch.buf.cap) { h.status = 'buffer full'; break; }
       const to = first - 1, floor = h.minId == null ? 0 : h.minId; if (to < floor) { h.status = 'complete (server start reached)'; break; }
-      const room = ch.unlimited ? Infinity : ch.buf.cap - ch.buf.count, from = Math.max(floor, to - Math.min(HISTORY_CHUNK, room) + 1), chunk = await historyFetchChunk(ch, from, to);
+      const room = ch.unlimited ? Infinity : ch.buf.cap - ch.buf.count, from = Math.max(floor, to - Math.min(historyChunkSize(), room) + 1), chunk = await historyFetchChunk(ch, from, to);
       if (!chunk.id.length) { h.minId = to + 1; h.status = 'complete (server has nothing older)'; break; }
       const r = mergeAuxHistory(ch, chunk); h.loaded += r.added; let lo = Infinity; for (const v of chunk.id) if (Number.isFinite(v) && v < lo) lo = v; if (lo > from) h.minId = lo;
       if (!r.added) { h.status = 'complete (no new samples)'; break; } h.status = 'loading';
@@ -4307,9 +4740,10 @@ function useConditionsNote(sensor) {
   if (ch.temperature && inc.has('temperature')) out.push(`temperature ${uc.temperatureDeltaK} K away from the calibration temperature (only used without a temperature sensor): up to ±${Math.hypot((ch.temperature.zeroMgPerK || 0) * uc.temperatureDeltaK, (ch.temperature.spanPpmPerK || 0) * 1e-6 * mid * uc.temperatureDeltaK).toPrecision(2)} mg at half load`);
   return 'These numbers decide how large the estimated uncertainty is: ' + (out.join('; ') || 'nothing measured applies') + '.';
 }
-function auxSetUserConversion(ch, conv) {
-  if (conv == null) { ch.userConversion = null; auxReconvert(ch); return []; }
-  const errs = validateAuxConversion(conv); if (errs.length) return errs; ch.userConversion = conv; auxReconvert(ch); return [];
+function auxSetConversion(ch, conv) {
+  const c = conv == null ? { type: 'direct' } : conv, errs = validateAuxConversion(c); if (errs.length) return errs;
+  if (ch.kind === 'temperature') { const u = typeof c.unit === 'string' && c.unit ? c.unit : '°C'; if (!/^(°C|C|degC)$/.test(u)) return ['A temperature channel must deliver °C.']; ch.unit = u; } else if (typeof c.unit === 'string') ch.unit = c.unit;
+  ch.conversion = c; auxReconvert(ch); return [];
 }
 // ---- characterization in the wizard (builder, long recordings, panes) ----------------------------------------------------------------
 function wizCharNew() { return { eccLoadId: null, eccPct: '', creepLoadId: null, creepMin: CREEP_MINUTES_DEFAULT, creepSettleS: CREEP_SETTLE_DEFAULT_S, creepPct: '', driftMin: DRIFT_MINUTES_DEFAULT, driftMgH: '', tempMode: 'auto', tempChannelId: null, tempZero10K: '', tempSpanPpm: '', tempRefC: '' }; }
@@ -4470,23 +4904,34 @@ function wizPaneChar(simple) {
 // uPlot is pinned to one exact version (reproducible builds; no surprise breaking changes). To
 // upgrade, change only this constant. 1.6.32 is the newest release verified at build time.
 const UPLOT_VERSION='1.6.32';
+function localUPlotAssets(){
+  if(!deviceFiles||!Array.isArray(deviceFiles.files))return null;
+  const f=deviceFiles.files.filter(x=>x.kind==='asset'&&/uplot/i.test(String(x.path||''))),js=f.find(x=>/\.js$/i.test(x.path)),css=f.find(x=>/\.css$/i.test(x.path));
+  return js?{js:js.path,css:css?css.path:null}:null;
+}
+// The ESP serves uPlot itself (an asset listed by /api/files); the jsDelivr CDN is only the fallback for development and testing.
 function loadUPlotAsync(){return new Promise((resolve,reject)=>{
   if(window.uPlot){resolve();return;}
-  const base=`https://cdn.jsdelivr.net/npm/uplot@${UPLOT_VERSION}/dist/`;
-  const css=document.createElement('link');css.rel='stylesheet';css.href=base+'uPlot.min.css';document.head.appendChild(css);
-  const script=document.createElement('script');script.src=base+'uPlot.iife.min.js';script.async=true;
-  script.onload=()=>resolve();script.onerror=()=>reject(new Error('Unable to load uPlot from jsDelivr.'));document.head.appendChild(script);
+  const add=(js,cssHref,onFail)=>{
+    if(cssHref){const css=document.createElement('link');css.rel='stylesheet';css.href=cssHref;document.head.appendChild(css);}
+    const script=document.createElement('script');script.src=js;script.async=true;script.onload=()=>resolve();script.onerror=onFail;document.head.appendChild(script);
+  };
+  const cdn=()=>{const base=`https://cdn.jsdelivr.net/npm/uplot@${UPLOT_VERSION}/dist/`;add(base+'uPlot.iife.min.js',base+'uPlot.min.css',()=>reject(new Error('Unable to load uPlot from the device or from jsDelivr.')));};
+  const loc=localUPlotAssets();if(loc)add(loc.js,loc.css,cdn);else cdn();
 });}
+let uplotStarted=false;
+function startUPlot(){
+  if(uplotStarted)return;uplotStarted=true;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{chartsPending=false;createCharts();updateStatusUI();scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded (not served by the device, and the CDN is not reachable). Reload the page.</p>';console.error(error);})));
+}
 async function boot(){
-  populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=!SENSOR_LIST_URL;setSensorListInfo(SENSOR_LIST_URL?'Sensor list not loaded yet.':'No sensor server configured (SENSOR_LIST_URL is empty). Only the test signal is available.');
-  // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped
-  // with the placeholder revision id.
+  populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=true;setSensorListInfo('Looking for the device…');
+  // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped with the placeholder revision id.
   embeddedFp=await fingerprintConfig(EMBEDDED_CALIBRATION);
   initSensorCalibration(testSensor.state,embeddedFp);
   updateCalibrationInfo();updateEstimatorFields();syncMeasurementInputs('samples');updateMeasurementUI();updateStatusUI();
-  tickTimer=setInterval(tick,PERIOD_MS);setInterval(housekeeping,500);
-  if(SENSOR_LIST_URL)loadSensorList();
-  // Display the shell and start acquisition before the chart library download completes.
-  requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{chartsPending=false;createCharts();updateStatusUI();scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded. Check the internet connection and reload the file.</p>';console.error(error);})));
+  tickTimer=setInterval(tick,PERIOD_MS);setInterval(housekeeping,500);setInterval(statusTimer,3000);
+  // Display the shell and start acquisition first; the device is asked in the background (protocol startup order), uPlot is loaded as soon as /api/files told where it lives.
+  deviceStartup().catch(error=>{console.error(error);startupHold=false;}).finally(()=>{if(typeof fetch==='undefined'||!deviceReachable){const el=$('sensorListInfo');if(el&&/Looking/.test(el.textContent))setSensorListInfo('No device reachable. Only the test signal is available.');}startUPlot();});
 }
 boot();
