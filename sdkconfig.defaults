@@ -12,6 +12,6 @@ CONFIG_HTTPD_MAX_URI_LEN=256
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 
-# ESP-IDF v5.5.6 already enables the mbedTLS PKCS#5, Base64 and SHA-256
-# modules used by the PBKDF2-HMAC-SHA256 password verifier.
+# Keep the mbedTLS PKCS#5, Base64 and SHA-256 modules enabled for the
+# PBKDF2-HMAC-SHA256 password verifier on the selected ESP-IDF 6.1.x patch.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y

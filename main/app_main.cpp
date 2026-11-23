@@ -13,6 +13,7 @@
 #include "sensor_manager.hpp"
 #include "serial_console.hpp"
 #include "wifi_manager.hpp"
+#include "version.hpp"
 
 namespace {
 constexpr char kTag[] = "app";
@@ -43,10 +44,19 @@ void install_recovery_sensor_config() {
 }  // namespace
 
 extern "C" void app_main(void) {
-    ESP_LOGI(kTag, "Starting ESP32 Sensor Node");
+    ESP_LOGI(kTag, "Starting OpenScale firmware v%s (WebUI v%s)", app::version::firmware, app::version::webui);
     initialize_nvs();
 
-    ESP_ERROR_CHECK(app::config_store::init_filesystem());
+    // Keep UART available even when storage cannot be mounted.
+    const esp_err_t console_error = app::start_serial_console(&g_settings);
+    if (console_error != ESP_OK) ESP_LOGE(kTag, "Serial console could not start: %s", esp_err_to_name(console_error));
+
+    const esp_err_t filesystem_error = app::config_store::init_filesystem();
+    if (filesystem_error != ESP_OK) {
+        ESP_LOGE(kTag, "Storage initialization failed: %s. Network services remain disabled; UART stays available.",
+                 esp_err_to_name(filesystem_error));
+        while (true) vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 
     char error[192]{};
     const bool settings_valid = app::config_store::load_settings(g_settings, error, sizeof(error));
@@ -59,10 +69,6 @@ extern "C" void app_main(void) {
         ESP_LOGE(kTag, "Sensor configuration could not be loaded: %s. Sensor acquisition disabled until repaired.", error);
         install_recovery_sensor_config();
     }
-
-    // The UART console remains available even when Wi-Fi or HTTP is disabled.
-    const esp_err_t console_error = app::start_serial_console(&g_settings);
-    if (console_error != ESP_OK) ESP_LOGE(kTag, "Serial console could not start: %s", esp_err_to_name(console_error));
 
     if (g_sensors.initialize(g_sensor_config, g_settings.max_ring_buffer_bytes)) {
         if (!g_sensors.start()) ESP_LOGE(kTag, "Sensor manager could not start");

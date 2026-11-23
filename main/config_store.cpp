@@ -1,10 +1,8 @@
 #include "config_store.hpp"
 
 extern "C" {
-extern const unsigned char _binary_www_default_html_gz_start[];
-extern const unsigned char _binary_www_default_html_gz_end[];
-extern const unsigned char _binary_www_default_js_gz_start[];
-extern const unsigned char _binary_www_default_js_gz_end[];
+extern const unsigned char web_assets_start[];
+extern const unsigned char web_assets_end[];
 }
 
 #include <cerrno>
@@ -12,6 +10,7 @@ extern const unsigned char _binary_www_default_js_gz_end[];
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <strings.h>
@@ -154,22 +153,30 @@ bool get_gpio(cJSON* parent, const char* key, int* value, bool allow_null) {
 }
 
 bool valid_web_path(const char* web_path) {
-    if (web_path == nullptr || web_path[0] == '\0' || web_path[0] == '/') return false;
-    if (std::strlen(web_path) > 120U || std::strstr(web_path, "..") != nullptr ||
-        std::strchr(web_path, '\\') != nullptr || std::strchr(web_path, '%') != nullptr) return false;
-    if (web_path[0] == '.' || std::strchr(web_path, '/') != nullptr) return false;
-    for (const char* p = web_path; *p != '\0'; ++p) {
+    if (web_path == nullptr || web_path[0] == '\0' || web_path[0] == '/' ||
+        std::strlen(web_path) > 120U || std::strchr(web_path, '\\') != nullptr ||
+        std::strchr(web_path, '%') != nullptr || std::strstr(web_path, "//") != nullptr ||
+        std::strcmp(web_path, "api") == 0 || std::strcmp(web_path, "data") == 0 ||
+        std::strcmp(web_path, "stream") == 0 || std::strncmp(web_path, "api/", 4U) == 0 ||
+        std::strncmp(web_path, "data/", 5U) == 0) return false;
+
+    // Preserve arbitrary static filenames and nested paths while rejecting
+    // hidden segments, empty segments, and path traversal components.
+    const char* segment = web_path;
+    for (const char* p = web_path; ; ++p) {
         const unsigned char ch = static_cast<unsigned char>(*p);
-        if (!(std::isalnum(ch) || ch == '/' || ch == '.' || ch == '_' || ch == '-')) return false;
+        if (*p != '\0' && ch != '/') {
+            if (!(std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-')) return false;
+            continue;
+        }
+        const std::size_t segment_length = static_cast<std::size_t>(p - segment);
+        if (segment_length == 0U || segment[0] == '.' ||
+            (segment_length == 1U && segment[0] == '.') ||
+            (segment_length == 2U && segment[0] == '.' && segment[1] == '.')) return false;
+        if (*p == '\0') break;
+        segment = p + 1;
     }
-    const char* extension = std::strrchr(web_path, '.');
-    if (extension == nullptr) return false;
-    static constexpr const char* kAllowed[] = {
-        ".html", ".htm", ".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".webp",
-        ".ico", ".woff", ".woff2", ".ttf", ".txt", ".map"
-    };
-    for (const char* allowed : kAllowed) if (strcasecmp(extension, allowed) == 0) return true;
-    return false;
+    return true;
 }
 
 bool ensure_directory(const char* path) {
@@ -178,11 +185,84 @@ bool ensure_directory(const char* path) {
     return false;
 }
 
-bool ensure_embedded_file(const char* path, const unsigned char* begin, const unsigned char* end) {
-    struct stat st {};
-    if (stat(path, &st) == 0 && st.st_size > 0) return true;
-    const std::size_t length = static_cast<std::size_t>(end - begin);
-    return write_file_atomic(path, begin, length);
+bool ensure_asset_parent_directories(const char* web_path) {
+    char absolute_path[256]{};
+    if (!make_asset_storage_path(web_path, absolute_path, sizeof(absolute_path))) return false;
+    constexpr char kAssetRoot[] = "/data/www/";
+    char* cursor = absolute_path + sizeof(kAssetRoot) - 1U;
+    for (; *cursor != '\0'; ++cursor) {
+        if (*cursor != '/') continue;
+        *cursor = '\0';
+        const bool ok = ensure_directory(absolute_path);
+        *cursor = '/';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+std::uint16_t read_le16(const unsigned char* p) {
+    return static_cast<std::uint16_t>(p[0]) |
+           static_cast<std::uint16_t>(static_cast<std::uint16_t>(p[1]) << 8U);
+}
+
+std::uint32_t read_le32(const unsigned char* p) {
+    return static_cast<std::uint32_t>(p[0]) |
+           (static_cast<std::uint32_t>(p[1]) << 8U) |
+           (static_cast<std::uint32_t>(p[2]) << 16U) |
+           (static_cast<std::uint32_t>(p[3]) << 24U);
+}
+
+bool seed_embedded_assets() {
+    const std::size_t pack_size = static_cast<std::size_t>(web_assets_end - web_assets_start);
+    constexpr std::size_t kHeaderSize = 12U;
+    constexpr std::size_t kEntryHeaderSize = 8U;
+    if (pack_size < kHeaderSize || std::memcmp(web_assets_start, "OSWA", 4U) != 0 ||
+        read_le16(web_assets_start + 4U) != 1U || read_le32(web_assets_start + 8U) != pack_size) {
+        ESP_LOGE(kTag, "Embedded web asset pack has an invalid header");
+        return false;
+    }
+
+    const std::uint16_t count = read_le16(web_assets_start + 6U);
+    const unsigned char* cursor = web_assets_start + kHeaderSize;
+    const unsigned char* end = web_assets_end;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        if (static_cast<std::size_t>(end - cursor) < kEntryHeaderSize) return false;
+        const std::uint16_t path_length = read_le16(cursor);
+        const std::uint16_t flags = read_le16(cursor + 2U);
+        const std::uint32_t gzip_length = read_le32(cursor + 4U);
+        cursor += kEntryHeaderSize;
+        if (flags != 0U || path_length == 0U || path_length > 120U || gzip_length < 18U ||
+            static_cast<std::size_t>(end - cursor) < static_cast<std::size_t>(path_length) + gzip_length) {
+            ESP_LOGE(kTag, "Embedded web asset pack entry %u is malformed", static_cast<unsigned>(i));
+            return false;
+        }
+
+        char web_path[121]{};
+        std::memcpy(web_path, cursor, path_length);
+        cursor += path_length;
+        const unsigned char* gzip_data = cursor;
+        cursor += gzip_length;
+        if (!valid_web_path(web_path) || gzip_data[0] != 0x1fU || gzip_data[1] != 0x8bU ||
+            !ensure_asset_parent_directories(web_path)) {
+            ESP_LOGE(kTag, "Embedded web asset path or gzip stream is invalid: %s", web_path);
+            return false;
+        }
+
+        char destination[256]{};
+        if (!make_asset_storage_path(web_path, destination, sizeof(destination))) return false;
+        struct stat st {};
+        if (stat(destination, &st) == 0 && st.st_size > 0) continue;  // Preserve user-managed overrides.
+        if (!write_file_atomic(destination, gzip_data, gzip_length)) {
+            ESP_LOGE(kTag, "Could not seed embedded web asset %s", web_path);
+            return false;
+        }
+    }
+    if (cursor != end) {
+        ESP_LOGE(kTag, "Embedded web asset pack contains trailing bytes");
+        return false;
+    }
+    ESP_LOGI(kTag, "Seeded %u embedded web asset(s)", static_cast<unsigned>(count));
+    return true;
 }
 
 bool parse_settings_internal(const char* json, std::size_t length, Settings* parsed,
@@ -376,7 +456,7 @@ bool write_default_if_missing(const char* path, const char* contents, std::size_
 }
 
 bool recover_backup_if_target_missing(const char* path) {
-    char backup[192]{};
+    char backup[256]{};
     if (std::snprintf(backup, sizeof(backup), "%s.bak", path) >= static_cast<int>(sizeof(backup))) return false;
     if (access(path, F_OK) == 0) {
         // A completed replacement may leave a stale backup after sudden power loss.
@@ -395,7 +475,9 @@ bool recover_backup_if_target_missing(const char* path) {
 
 esp_err_t init_filesystem() {
     esp_vfs_fat_mount_config_t mount_config{};
-    mount_config.format_if_mount_failed = true;  // Needed for a brand-new storage partition.
+    // Never auto-format on mount failure: user settings and assets may be present.
+    // Provision a blank or damaged partition through an explicit service action.
+    mount_config.format_if_mount_failed = false;
     mount_config.max_files = 12;
     mount_config.allocation_unit_size = 4096;
 
@@ -415,8 +497,7 @@ esp_err_t init_filesystem() {
     if (!write_default_if_missing(kSettingsPath, kDefaultSettings, sizeof(kDefaultSettings) - 1U) ||
         !write_default_if_missing(kSensorsPath, kDefaultSensors, sizeof(kDefaultSensors) - 1U) ||
         !write_default_if_missing(kWebUiSettingsPath, kDefaultWebUiSettings, sizeof(kDefaultWebUiSettings) - 1U) ||
-        !ensure_embedded_file("/data/www/default.html.gz", _binary_www_default_html_gz_start, _binary_www_default_html_gz_end) ||
-        !ensure_embedded_file("/data/www/default.js.gz", _binary_www_default_js_gz_start, _binary_www_default_js_gz_end)) {
+        !seed_embedded_assets()) {
         ESP_LOGE(kTag, "Could not initialize default files");
         return ESP_FAIL;
     }
@@ -446,8 +527,8 @@ bool read_file(const char* absolute_path, char** data, std::size_t* length) {
 
 bool write_file_atomic(const char* absolute_path, const void* data, std::size_t length) {
     if (absolute_path == nullptr || (data == nullptr && length != 0U)) return false;
-    char temp_path[192]{};
-    char backup_path[192]{};
+    char temp_path[256]{};
+    char backup_path[256]{};
     if (std::snprintf(temp_path, sizeof(temp_path), "%s.tmp", absolute_path) >= static_cast<int>(sizeof(temp_path)) ||
         std::snprintf(backup_path, sizeof(backup_path), "%s.bak", absolute_path) >= static_cast<int>(sizeof(backup_path))) return false;
 
@@ -599,12 +680,18 @@ bool set_index_path(const char* web_path) {
 
 bool make_asset_storage_path(const char* web_path, char* output, std::size_t output_size) {
     if (!valid_web_path(web_path) || output == nullptr) return false;
-    return std::snprintf(output, output_size, "/data/www/%s.gz", web_path) < static_cast<int>(output_size);
+    const int written = std::snprintf(output, output_size, "/data/www/%s.gz", web_path);
+    return written >= 0 && static_cast<std::size_t>(written) < output_size;
+}
+
+bool ensure_asset_parent_directory(const char* web_path) {
+    return ensure_asset_parent_directories(web_path);
 }
 
 bool save_asset_gzip(const char* web_path, const void* data, std::size_t length) {
-    char path[192]{};
-    return make_asset_storage_path(web_path, path, sizeof(path)) && write_file_atomic(path, data, length);
+    char path[256]{};
+    return ensure_asset_parent_directories(web_path) && make_asset_storage_path(web_path, path, sizeof(path)) &&
+           write_file_atomic(path, data, length);
 }
 
 bool is_protected_default_asset(const char* web_path) {
@@ -619,17 +706,18 @@ bool delete_asset(const char* web_path) {
     char requested_index[132]{};
     std::snprintf(requested_index, sizeof(requested_index), "/%s", web_path != nullptr ? web_path : "");
     if (get_index_path(selected_index, sizeof(selected_index)) && std::strcmp(selected_index, requested_index) == 0) return false;
-    char path[192]{};
+    char path[256]{};
     if (!make_asset_storage_path(web_path, path, sizeof(path))) return false;
     return unlink(path) == 0;
 }
 
 bool rename_asset(const char* from_web_path, const char* to_web_path) {
     if (is_protected_default_asset(from_web_path) || is_protected_default_asset(to_web_path)) return false;
-    char from[192]{};
-    char to[192]{};
+    char from[256]{};
+    char to[256]{};
     if (!make_asset_storage_path(from_web_path, from, sizeof(from)) ||
-        !make_asset_storage_path(to_web_path, to, sizeof(to)) || access(from, F_OK) != 0 || access(to, F_OK) == 0) return false;
+        !make_asset_storage_path(to_web_path, to, sizeof(to)) || access(from, F_OK) != 0 || access(to, F_OK) == 0 ||
+        !ensure_asset_parent_directories(to_web_path)) return false;
     char selected_index[128]{};
     char from_index[132]{};
     std::snprintf(from_index, sizeof(from_index), "/%s", from_web_path);

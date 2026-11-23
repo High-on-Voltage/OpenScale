@@ -27,6 +27,7 @@ bool write_file_atomic(const char* absolute_path, const void* data, std::size_t 
 bool get_index_path(char* output, std::size_t output_size);
 bool set_index_path(const char* web_path);
 bool make_asset_storage_path(const char* web_path, char* output, std::size_t output_size);
+bool ensure_asset_parent_directory(const char* web_path);
 bool save_asset_gzip(const char* web_path, const void* data, std::size_t length);
 bool delete_asset(const char* web_path);
 bool rename_asset(const char* from_web_path, const char* to_web_path);

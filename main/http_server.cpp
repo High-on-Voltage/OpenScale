@@ -23,6 +23,7 @@
 #include "mbedtls/base64.h"
 #include "security.hpp"
 #include "sensor_manager.hpp"
+#include "version.hpp"
 #include "freertos/task.h"
 
 namespace app {
@@ -185,18 +186,23 @@ const char* mime_type_for(const char* path) {
     const char* ext = std::strrchr(path, '.');
     if (ext == nullptr) return "application/octet-stream";
     if (strcasecmp(ext, ".html") == 0 || strcasecmp(ext, ".htm") == 0) return "text/html; charset=utf-8";
-    if (strcasecmp(ext, ".js") == 0) return "text/javascript; charset=utf-8";
+    if (strcasecmp(ext, ".js") == 0 || strcasecmp(ext, ".mjs") == 0) return "text/javascript; charset=utf-8";
     if (strcasecmp(ext, ".css") == 0) return "text/css; charset=utf-8";
-    if (strcasecmp(ext, ".json") == 0) return "application/json; charset=utf-8";
+    if (strcasecmp(ext, ".json") == 0 || strcasecmp(ext, ".webmanifest") == 0) return "application/json; charset=utf-8";
     if (strcasecmp(ext, ".svg") == 0) return "image/svg+xml";
     if (strcasecmp(ext, ".png") == 0) return "image/png";
     if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0) return "image/jpeg";
     if (strcasecmp(ext, ".webp") == 0) return "image/webp";
+    if (strcasecmp(ext, ".gif") == 0) return "image/gif";
     if (strcasecmp(ext, ".ico") == 0) return "image/x-icon";
+    if (strcasecmp(ext, ".wasm") == 0) return "application/wasm";
+    if (strcasecmp(ext, ".xml") == 0) return "application/xml";
+    if (strcasecmp(ext, ".pdf") == 0) return "application/pdf";
     if (strcasecmp(ext, ".woff2") == 0) return "font/woff2";
     if (strcasecmp(ext, ".woff") == 0) return "font/woff";
     if (strcasecmp(ext, ".ttf") == 0) return "font/ttf";
-    if (strcasecmp(ext, ".txt") == 0 || strcasecmp(ext, ".map") == 0) return "text/plain; charset=utf-8";
+    if (strcasecmp(ext, ".txt") == 0 || strcasecmp(ext, ".map") == 0 ||
+        strcasecmp(ext, ".md") == 0 || strcasecmp(ext, ".ts") == 0) return "text/plain; charset=utf-8";
     return "application/octet-stream";
 }
 
@@ -216,7 +222,7 @@ bool safe_web_path_from_uri(const char* uri, const char* prefix, char* output, s
 }
 
 esp_err_t serve_compressed_asset(httpd_req_t* request, const char* web_path) {
-    char absolute_path[192]{};
+    char absolute_path[256]{};
     if (!config_store::make_asset_storage_path(web_path, absolute_path, sizeof(absolute_path))) {
         return send_error(request, "400 Bad Request", "Invalid web path");
     }
@@ -249,7 +255,7 @@ esp_err_t static_file_handler(httpd_req_t* request) {
     if (std::strncmp(request->uri, "/api/", 5U) == 0 || std::strncmp(request->uri, "/data/", 6U) == 0 ||
         request_path_equals(request, "/stream")) return send_error(request, "404 Not Found", "Unknown endpoint");
 
-    char web_path[128]{};
+    char web_path[160]{};
     if (request_path_equals(request, "/")) {
         if (!config_store::get_index_path(web_path, sizeof(web_path))) std::snprintf(web_path, sizeof(web_path), "/default.html");
         if (web_path[0] == '/') std::memmove(web_path, web_path + 1, std::strlen(web_path));
@@ -323,6 +329,12 @@ esp_err_t calibration_file_handler(httpd_req_t* request) {
 esp_err_t device_handler(httpd_req_t* request) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "productName", "OpenScale");
+    cJSON_AddStringToObject(root, "firmwareVersion", version::firmware);
+    cJSON_AddStringToObject(root, "webuiVersion", version::webui);
+    cJSON_AddStringToObject(root, "buildId", version::build_id);
+    cJSON_AddStringToObject(root, "gitCommit", version::git_commit);
+    cJSON_AddStringToObject(root, "espIdfVersion", esp_get_idf_version());
     cJSON_AddNumberToObject(root, "runtime_ms", static_cast<double>(esp_timer_get_time() / 1000));
     cJSON_AddNumberToObject(root, "heap_total_bytes", static_cast<double>(heap_caps_get_total_size(MALLOC_CAP_DEFAULT)));
     cJSON_AddNumberToObject(root, "heap_free_bytes", static_cast<double>(esp_get_free_heap_size()));
@@ -423,37 +435,58 @@ esp_err_t history_handler(httpd_req_t* request) {
     return err;
 }
 
-esp_err_t files_list_handler(httpd_req_t* request) {
-    DIR* directory = opendir("/data/www");
-    if (directory == nullptr) return send_error(request, "500 Internal Server Error", "Cannot open web asset directory");
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", true);
-    cJSON* files = cJSON_AddArrayToObject(root, "files");
-    char index_path[128]{};
-    config_store::get_index_path(index_path, sizeof(index_path));
+void append_web_assets_recursive(const char* absolute_directory, const char* relative_directory,
+                                cJSON* files, const char* index_path) {
+    DIR* directory = opendir(absolute_directory);
+    if (directory == nullptr) return;
     dirent* entry = nullptr;
     while ((entry = readdir(directory)) != nullptr) {
-        const std::size_t length = std::strlen(entry->d_name);
-        if (length <= 3U || std::strcmp(entry->d_name + length - 3U, ".gz") != 0) continue;
-        char web_path[128]{};
-        const std::size_t web_length = length - 3U;
-        if (web_length >= sizeof(web_path)) continue;
-        std::memcpy(web_path, entry->d_name, web_length);
-        web_path[web_length] = '\0';
+        if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0) continue;
+
+        char absolute_path[256]{};
+        char relative_path[160]{};
+        const int absolute_length = std::snprintf(absolute_path, sizeof(absolute_path), "%s/%s",
+                                                  absolute_directory, entry->d_name);
+        const int relative_length = relative_directory[0] == '\0'
+            ? std::snprintf(relative_path, sizeof(relative_path), "%s", entry->d_name)
+            : std::snprintf(relative_path, sizeof(relative_path), "%s/%s", relative_directory, entry->d_name);
+        if (absolute_length < 0 || static_cast<std::size_t>(absolute_length) >= sizeof(absolute_path) ||
+            relative_length < 0 || static_cast<std::size_t>(relative_length) >= sizeof(relative_path)) continue;
+
+        struct stat stats {};
+        if (stat(absolute_path, &stats) != 0) continue;
+        if (S_ISDIR(stats.st_mode)) {
+            append_web_assets_recursive(absolute_path, relative_path, files, index_path);
+            continue;
+        }
+        const std::size_t name_length = std::strlen(relative_path);
+        if (!S_ISREG(stats.st_mode) || name_length <= 3U ||
+            std::strcmp(relative_path + name_length - 3U, ".gz") != 0) continue;
+
+        relative_path[name_length - 3U] = '\0';
         cJSON* item = cJSON_CreateObject();
-        char absolute[192]{};
-        std::snprintf(absolute, sizeof(absolute), "/data/www/%s", entry->d_name);
-        struct stat st {};
-        stat(absolute, &st);
-        cJSON_AddStringToObject(item, "path", web_path);
-        cJSON_AddNumberToObject(item, "size_compressed", static_cast<double>(st.st_size));
-        cJSON_AddBoolToObject(item, "immutable", config_store::is_protected_default_asset(web_path));
-        char full_web_path[132]{};
-        std::snprintf(full_web_path, sizeof(full_web_path), "/%s", web_path);
+        cJSON_AddStringToObject(item, "path", relative_path);
+        cJSON_AddNumberToObject(item, "size_compressed", static_cast<double>(stats.st_size));
+        cJSON_AddBoolToObject(item, "immutable", config_store::is_protected_default_asset(relative_path));
+        char full_web_path[164]{};
+        std::snprintf(full_web_path, sizeof(full_web_path), "/%s", relative_path);
         cJSON_AddBoolToObject(item, "index", std::strcmp(index_path, full_web_path) == 0);
         cJSON_AddItemToArray(files, item);
     }
     closedir(directory);
+}
+
+esp_err_t files_list_handler(httpd_req_t* request) {
+    struct stat root_stats {};
+    if (stat("/data/www", &root_stats) != 0 || !S_ISDIR(root_stats.st_mode)) {
+        return send_error(request, "500 Internal Server Error", "Cannot open web asset directory");
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON* files = cJSON_AddArrayToObject(root, "files");
+    char index_path[160]{};
+    config_store::get_index_path(index_path, sizeof(index_path));
+    append_web_assets_recursive("/data/www", "", files, index_path);
     const esp_err_t err = send_json(request, root);
     cJSON_Delete(root);
     return err;
@@ -524,8 +557,8 @@ esp_err_t json_config_handler(httpd_req_t* request) {
 bool write_uploaded_file(httpd_req_t* request, const char* final_path, std::size_t max_length) {
     // A gzip stream has a fixed two-byte magic prefix and is at least 18 bytes.
     if (request->content_len < 18U || request->content_len > max_length) return false;
-    char temporary_path[224]{};
-    char backup_path[224]{};
+    char temporary_path[320]{};
+    char backup_path[320]{};
     if (std::snprintf(temporary_path, sizeof(temporary_path), "%s.upload", final_path) >= static_cast<int>(sizeof(temporary_path)) ||
         std::snprintf(backup_path, sizeof(backup_path), "%s.bak", final_path) >= static_cast<int>(sizeof(backup_path))) return false;
 
@@ -570,7 +603,7 @@ bool write_uploaded_file(httpd_req_t* request, const char* final_path, std::size
 
 esp_err_t asset_upload_handler(httpd_req_t* request) {
     if (!request_is_admin(request)) return ESP_OK;
-    char web_path[128]{};
+    char web_path[160]{};
     if (!safe_web_path_from_uri(request->uri, "/api/files/", web_path, sizeof(web_path)) ||
         config_store::is_protected_default_asset(web_path)) {
         return send_error(request, "400 Bad Request", "Invalid or immutable asset path");
@@ -580,8 +613,9 @@ esp_err_t asset_upload_handler(httpd_req_t* request) {
         strcasecmp(encoding, "gzip") != 0) {
         return send_error(request, "415 Unsupported Media Type", "Upload assets with Content-Encoding: gzip");
     }
-    char final_path[192]{};
-    if (!config_store::make_asset_storage_path(web_path, final_path, sizeof(final_path))) {
+    char final_path[256]{};
+    if (!config_store::ensure_asset_parent_directory(web_path) ||
+        !config_store::make_asset_storage_path(web_path, final_path, sizeof(final_path))) {
         return send_error(request, "400 Bad Request", "Invalid asset path");
     }
     if (!write_uploaded_file(request, final_path, s_server.settings.max_upload_bytes)) {
@@ -598,7 +632,7 @@ esp_err_t asset_upload_handler(httpd_req_t* request) {
 
 esp_err_t asset_delete_handler(httpd_req_t* request) {
     if (!request_is_admin(request)) return ESP_OK;
-    char web_path[128]{};
+    char web_path[160]{};
     if (!safe_web_path_from_uri(request->uri, "/api/files/", web_path, sizeof(web_path)) ||
         config_store::is_protected_default_asset(web_path)) return send_error(request, "400 Bad Request", "Invalid or immutable asset path");
     if (!config_store::delete_asset(web_path)) return send_error(request, "404 Not Found", "Asset not found");

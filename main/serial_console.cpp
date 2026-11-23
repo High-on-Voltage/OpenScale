@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "security.hpp"
+#include "version.hpp"
 
 namespace app {
 namespace {
@@ -19,6 +20,8 @@ Settings* s_settings = nullptr;
 
 int command_status(int, char**) {
     if (s_settings == nullptr) return 1;
+    std::printf("Firmware: v%s\n", version::firmware);
+    std::printf("WebUI: v%s\n", version::webui);
     std::printf("Hostname: %s\n", s_settings->hostname);
     std::printf("Wi-Fi SSID: %s\n", s_settings->wifi_ssid[0] != '\0' ? s_settings->wifi_ssid : "<not configured>");
     std::printf("HTTP enabled: %s\n", s_settings->http_enabled ? "yes" : "no");
@@ -131,7 +134,7 @@ esp_err_t start_serial_console(Settings* settings) {
 
     esp_console_repl_t* repl = nullptr;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    repl_config.prompt = "sensor-node> ";
+    repl_config.prompt = "openscale> ";
     repl_config.max_cmdline_length = 256;
     esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_console_new_repl_uart(&uart_config, &repl_config, &repl), kTag, "create UART console");
