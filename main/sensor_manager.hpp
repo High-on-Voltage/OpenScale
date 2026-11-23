@@ -11,6 +11,12 @@
 
 namespace app {
 
+struct HistoryInfo {
+    std::uint64_t oldest_id = 0;
+    std::uint64_t latest_id = 0;
+    std::size_t retained = 0;
+};
+
 struct SensorStats {
     SensorConfig config{};
     bool task_active = false;
@@ -18,6 +24,7 @@ struct SensorStats {
     std::size_t capacity = 0;
     std::uint64_t oldest_sequence = 0;
     std::uint64_t newest_sequence = 0;
+    std::uint64_t sensor_uptime_us = 0;
     std::uint32_t queue_drops = 0;
     std::uint32_t read_errors = 0;
 };
@@ -39,8 +46,11 @@ public:
     std::size_t get_latest_sequences(std::uint64_t* output, std::size_t capacity);
     std::size_t copy_new_samples(std::uint64_t* cursors, Sample* output,
                                  std::size_t output_capacity);
-    std::size_t copy_history(std::uint16_t sensor_id, std::size_t limit,
-                             Sample* output, std::size_t output_capacity);
+    std::size_t copy_history(std::uint16_t sensor_id, bool has_range,
+                             std::uint64_t from_id, std::uint64_t to_id,
+                             std::size_t limit, Sample* output,
+                             std::size_t output_capacity, bool* limit_truncated,
+                             HistoryInfo* info);
 
 private:
     struct SensorState {
@@ -50,6 +60,7 @@ private:
         std::size_t count = 0;
         std::size_t write_index = 0;
         std::uint64_t next_sequence = 0;
+        std::uint64_t started_at_us = 0;  // Accessed while ring_mutex_ is held.
         std::atomic<std::uint32_t> queue_drops{0};
         std::atomic<std::uint32_t> read_errors{0};
         std::atomic<bool> task_active{false};

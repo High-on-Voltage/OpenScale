@@ -10,15 +10,23 @@ namespace app::config_store {
 
 esp_err_t init_filesystem();
 bool load_settings(Settings& out, char* error, std::size_t error_size);
+bool load_wifi(WifiConfig& out, char* error, std::size_t error_size);
 bool load_sensors(SensorConfigList& out, char* error, std::size_t error_size);
 bool validate_settings_json(const char* json, std::size_t length, Settings* parsed,
                             char* error, std::size_t error_size);
+bool validate_wifi_json(const char* json, std::size_t length, WifiConfig* parsed,
+                        char* error, std::size_t error_size);
 bool validate_sensors_json(const char* json, std::size_t length, SensorConfigList* parsed,
                            char* error, std::size_t error_size);
+bool validate_units_json(const char* json, std::size_t length);
+bool validate_webui_settings_json(const char* json, std::size_t length);
 
 bool save_settings_json(const char* json, std::size_t length);
 bool save_settings_struct(const Settings& settings);
+bool save_wifi_json(const char* json, std::size_t length);
+bool save_wifi_struct(const WifiConfig& wifi);
 bool save_sensors_json(const char* json, std::size_t length);
+bool save_units_json(const char* json, std::size_t length);
 bool save_webui_settings_json(const char* json, std::size_t length);
 
 bool read_file(const char* absolute_path, char** data, std::size_t* length);

@@ -97,14 +97,14 @@ SensorManager::~SensorManager() {
 }
 
 bool SensorManager::initialize(const SensorConfigList& config, std::size_t max_ring_bytes) {
-    if (config.count == 0U || config.count > kMaxSensors || config.queue_capacity < 64U) return false;
+    if (config.count > kMaxSensors || config.queue_capacity == 0U) return false;
     sensor_count_ = config.count;
     queue_capacity_ = config.queue_capacity;
     ring_bytes_used_ = 0;
 
     for (std::size_t i = 0; i < sensor_count_; ++i) {
         states_[i].config = config.items[i];
-        states_[i].capacity = config.items[i].ring_buffer_samples;
+        states_[i].capacity = config.items[i].ringbuffer_size_samples;
         const std::size_t bytes = states_[i].capacity * sizeof(RingEntry);
         if (bytes > max_ring_bytes || ring_bytes_used_ > max_ring_bytes - bytes) {
             ESP_LOGE(kTag, "Ring buffer budget exceeded at sensor ID %u", config.items[i].id);
@@ -213,7 +213,11 @@ void SensorManager::sensor_task(std::size_t index) {
         return;
     }
 
-    state.task_active.store(true, std::memory_order_release);
+    if (xSemaphoreTake(ring_mutex_, portMAX_DELAY) == pdTRUE) {
+        state.started_at_us = static_cast<std::uint64_t>(esp_timer_get_time());
+        state.task_active.store(true, std::memory_order_release);
+        xSemaphoreGive(ring_mutex_);
+    }
     ESP_LOGI(kTag, "HX711 sensor %u ready (rate setting %u Hz; gain %s)", config.id, config.rate_hz, config.gain);
     while (true) {
         // DOUT falling edge signals that the next conversion is ready. First
@@ -239,7 +243,9 @@ void SensorManager::sensor_task(std::size_t index) {
         sample.sensor_id = config.id;
         sample.sequence = ++state.next_sequence;
         sample.timestamp_us = esp_timer_get_time();
-        sample.raw_value = raw;
+        // The wire contract always transports an unsigned 64-bit raw value.
+        // For HX711 int24, retain only its low 24-bit two's-complement pattern.
+        sample.raw_value = static_cast<std::uint64_t>(static_cast<std::uint32_t>(raw) & 0x00ffffffU);
         if (xQueueSend(sample_queue_, &sample, 0) != pdTRUE) {
             state.queue_drops.fetch_add(1, std::memory_order_relaxed);
         }
@@ -263,6 +269,8 @@ std::size_t SensorManager::get_stats(SensorStats* output, std::size_t capacity) 
         stats.capacity = state.capacity;
         stats.queue_drops = state.queue_drops.load(std::memory_order_relaxed);
         stats.read_errors = state.read_errors.load(std::memory_order_relaxed);
+        stats.sensor_uptime_us = state.started_at_us == 0U ? 0U :
+            static_cast<std::uint64_t>(esp_timer_get_time()) - state.started_at_us;
         if (state.count > 0U) {
             const std::size_t oldest_index = (state.write_index + state.capacity - state.count) % state.capacity;
             stats.oldest_sequence = state.ring[oldest_index].sequence;
@@ -288,7 +296,7 @@ std::size_t SensorManager::get_latest_sequences(std::uint64_t* output, std::size
 
 std::size_t SensorManager::copy_new_samples(std::uint64_t* cursors, Sample* output,
                                            std::size_t output_capacity) {
-    if (cursors == nullptr || output == nullptr || output_capacity == 0U || ring_mutex_ == nullptr) return 0U;
+    if (cursors == nullptr || output == nullptr || output_capacity == 0U || ring_mutex_ == nullptr || sensor_count_ == 0U) return 0U;
     if (xSemaphoreTake(ring_mutex_, portMAX_DELAY) != pdTRUE) return 0U;
     std::size_t copied = 0;
     const std::size_t per_sensor_quota = std::max<std::size_t>(1U, output_capacity / sensor_count_);
@@ -326,19 +334,42 @@ std::size_t SensorManager::copy_new_samples(std::uint64_t* cursors, Sample* outp
     return copied;
 }
 
-std::size_t SensorManager::copy_history(std::uint16_t sensor_id, std::size_t limit,
-                                       Sample* output, std::size_t output_capacity) {
+std::size_t SensorManager::copy_history(std::uint16_t sensor_id, bool has_range,
+                                       std::uint64_t from_id, std::uint64_t to_id,
+                                       std::size_t limit, Sample* output,
+                                       std::size_t output_capacity, bool* limit_truncated,
+                                       HistoryInfo* info) {
+    if (limit_truncated != nullptr) *limit_truncated = false;
+    if (info != nullptr) *info = HistoryInfo{};
     if (output == nullptr || output_capacity == 0U || limit == 0U || ring_mutex_ == nullptr) return 0U;
     if (xSemaphoreTake(ring_mutex_, portMAX_DELAY) != pdTRUE) return 0U;
     std::size_t copied = 0;
     for (std::size_t i = 0; i < sensor_count_; ++i) {
         const SensorState& state = states_[i];
         if (state.config.id != sensor_id) continue;
-        const std::size_t take = std::min({state.count, limit, output_capacity});
         const std::size_t oldest = (state.write_index + state.capacity - state.count) % state.capacity;
-        const std::size_t skip = state.count - take;
-        for (std::size_t j = skip; j < state.count && copied < output_capacity; ++j) {
+        if (info != nullptr) {
+            info->retained = state.count;
+            if (state.count > 0U) {
+                info->oldest_id = state.ring[oldest].sequence;
+                info->latest_id = state.ring[(state.write_index + state.capacity - 1U) % state.capacity].sequence;
+            }
+        }
+        const auto in_range = [has_range, from_id, to_id](std::uint64_t id) {
+            return !has_range || (id >= from_id && id <= to_id);
+        };
+        std::size_t matching = 0;
+        for (std::size_t j = 0; j < state.count; ++j) {
+            if (in_range(state.ring[(oldest + j) % state.capacity].sequence)) ++matching;
+        }
+        const std::size_t take = std::min({matching, limit, output_capacity});
+        const std::size_t skip = matching - take;
+        if (limit_truncated != nullptr && matching > take) *limit_truncated = true;
+        std::size_t matching_index = 0;
+        for (std::size_t j = 0; j < state.count && copied < output_capacity; ++j) {
             const RingEntry& entry = state.ring[(oldest + j) % state.capacity];
+            if (!in_range(entry.sequence)) continue;
+            if (matching_index++ < skip) continue;
             output[copied++] = {state.config.id, 0, 0, entry.sequence, entry.timestamp_us, entry.raw_value};
         }
         break;

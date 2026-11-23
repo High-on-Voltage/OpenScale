@@ -11,6 +11,8 @@ extern const unsigned char web_assets_end[];
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
+#include <climits>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <strings.h>
@@ -26,75 +28,61 @@ namespace {
 constexpr char kTag[] = "config_store";
 constexpr char kMountPath[] = "/data";
 constexpr char kSettingsPath[] = "/data/settings/settings.json";
+constexpr char kWifiPath[] = "/data/settings/wifi.json";
 constexpr char kSensorsPath[] = "/data/settings/sensors.json";
+constexpr char kUnitsPath[] = "/data/settings/units.json";
 constexpr char kWebUiSettingsPath[] = "/data/settings/webui-settings.json";
 constexpr char kStoragePartition[] = "storage";
 wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
 constexpr char kDefaultSettings[] = R"json({
-  "schema_version": 1,
-  "device": { "hostname": "esp32-sensor" },
-  "wifi": {
-    "ssid": "",
-    "password": "",
-    "connect_timeout_ms": 12000,
-    "ap_ssid_prefix": "ESP32-Sensor"
+  "schemaVersion": 1,
+  "hostname": "",
+  "redirectToHostname": true,
+  "http_indexpath": "/default.html",
+  "buffer": {
+    "ringbuffer_max_total_size_bytes": 262144,
+    "queue_capacity": 64
   },
-  "http": { "enabled": true, "port": 80 },
   "https": { "enabled": false },
-  "security": {
-    "admin": {
-      "username": "admin",
-      "password_salt": "",
-      "password_hash": "",
-      "pbkdf2_iterations": 100000
-    }
-  },
-  "storage": {
-    "max_ring_buffer_bytes": 262144,
-    "max_upload_bytes": 524288
+  "security": {}
+})json";
+
+constexpr char kDefaultWifi[] = R"json({
+  "schemaVersion": 1,
+  "networks": [],
+  "ap": {
+    "enabled": true,
+    "ssidPrefix": "OpenScale",
+    "channel": 1,
+    "maxStations": 4,
+    "keepApWhenConnected": false
   }
 })json";
 
 constexpr char kDefaultSensors[] = R"json({
-  "schema_version": 1,
-  "queue_capacity": 1024,
-  "sensors": [
-    {
-      "id": 0,
-      "name": "Scale 1",
-      "type": "hx711",
-      "enabled": true,
-      "rate_hz": 80,
-      "ring_buffer_samples": 1600,
-      "hx711": { "dout_gpio": 16, "sck_gpio": 4, "rate_gpio": null, "gain": "A128" }
-    },
-    {
-      "id": 1,
-      "name": "Scale 2",
-      "type": "hx711",
-      "enabled": false,
-      "rate_hz": 80,
-      "ring_buffer_samples": 1600,
-      "hx711": { "dout_gpio": null, "sck_gpio": null, "rate_gpio": null, "gain": "A128" }
-    },
-    {
-      "id": 2,
-      "name": "Scale 3 (10 Hz)",
-      "type": "hx711",
-      "enabled": false,
-      "rate_hz": 10,
-      "ring_buffer_samples": 600,
-      "hx711": { "dout_gpio": null, "sck_gpio": null, "rate_gpio": null, "gain": "A128" },
-      "details": { "note": "Further sensor details can be added here." }
-    }
+  "schemaVersion": 1,
+  "sensors": []
+})json";
+
+constexpr char kDefaultUnits[] = R"json({
+  "schemaVersion": 1,
+  "baseUnit": "mg",
+  "defaultUnit": "g",
+  "units": [
+    {"id":"ug","name":"Micrograms","symbol":"µg","factor":0.001,"decimals":0,"group":"Metric"},
+    {"id":"mg","name":"Milligrams","symbol":"mg","factor":1,"decimals":1,"group":"Metric"},
+    {"id":"g","name":"Grams","symbol":"g","factor":1000,"decimals":3,"group":"Metric"},
+    {"id":"kg","name":"Kilograms","symbol":"kg","factor":1000000,"decimals":3,"group":"Metric"},
+    {"id":"oz_av","name":"Ounces (avoirdupois)","symbol":"oz","factor":28349.523125,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"lb_av","name":"Pounds (avoirdupois)","symbol":"lb","factor":453592.37,"decimals":5,"group":"Imperial / US customary"},
+    {"id":"oz_troy","name":"Troy ounces","symbol":"oz t","factor":31103.4768,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"st","name":"Stone","symbol":"st","factor":6350293.18,"decimals":4,"group":"Imperial / US customary"},
+    {"id":"raw","name":"Raw sensor counts (diagnostic)","symbol":"counts","factor":null,"decimals":0,"group":"Diagnostic"}
   ]
 })json";
 
-constexpr char kDefaultWebUiSettings[] = R"json({
-  "schema_version": 1,
-  "index": "/default.html"
-})json";
+constexpr char kDefaultWebUiSettings[] = R"json({ "schemaVersion": 1 })json";
 
 void set_error(char* output, std::size_t size, const char* message) {
     if (output != nullptr && size > 0) std::snprintf(output, size, "%s", message != nullptr ? message : "Unknown error");
@@ -265,6 +253,14 @@ bool seed_embedded_assets() {
     return true;
 }
 
+bool get_number(cJSON* parent, const char* key, double* value, bool required = false) {
+    cJSON* item = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (item == nullptr) return !required;
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)) return false;
+    *value = item->valuedouble;
+    return true;
+}
+
 bool parse_settings_internal(const char* json, std::size_t length, Settings* parsed,
                              char* error, std::size_t error_size) {
     set_error(error, error_size, "");
@@ -280,75 +276,162 @@ bool parse_settings_internal(const char* json, std::size_t length, Settings* par
     }
 
     Settings value{};
-    cJSON* device = cJSON_GetObjectItemCaseSensitive(root, "device");
-    cJSON* wifi = cJSON_GetObjectItemCaseSensitive(root, "wifi");
-    cJSON* http = cJSON_GetObjectItemCaseSensitive(root, "http");
+    cJSON* buffer = cJSON_GetObjectItemCaseSensitive(root, "buffer");
     cJSON* https = cJSON_GetObjectItemCaseSensitive(root, "https");
     cJSON* security = cJSON_GetObjectItemCaseSensitive(root, "security");
-    cJSON* admin = cJSON_IsObject(security) ? cJSON_GetObjectItemCaseSensitive(security, "admin") : nullptr;
-    cJSON* storage = cJSON_GetObjectItemCaseSensitive(root, "storage");
-    std::uint32_t number = 0;
     std::uint32_t schema_version = 0;
-    bool ok = get_uint(root, "schema_version", &schema_version, 1U, 1U, true) &&
-              cJSON_IsObject(device) && cJSON_IsObject(wifi) && cJSON_IsObject(http) &&
-              cJSON_IsObject(https) && cJSON_IsObject(admin) && cJSON_IsObject(storage);
+    std::uint32_t number = 0;
+    bool ok = get_uint(root, "schemaVersion", &schema_version, 1U, 1U, true) &&
+              cJSON_IsObject(buffer) && cJSON_IsObject(https) && cJSON_IsObject(security);
 
-    if (ok) ok = copy_json_string(device, "hostname", value.hostname, sizeof(value.hostname));
-    if (ok) ok = copy_json_string(wifi, "ssid", value.wifi_ssid, sizeof(value.wifi_ssid));
-    if (ok) ok = copy_json_string(wifi, "password", value.wifi_password, sizeof(value.wifi_password));
-    if (ok) ok = copy_json_string(wifi, "ap_ssid_prefix", value.ap_ssid_prefix, sizeof(value.ap_ssid_prefix));
+    if (ok) ok = copy_json_string(root, "hostname", value.hostname, sizeof(value.hostname));
+    if (ok) ok = get_bool(root, "redirectToHostname", &value.redirect_to_hostname, true);
+    if (ok) ok = copy_json_string(root, "http_indexpath", value.http_indexpath, sizeof(value.http_indexpath), true);
     if (ok) {
-        number = value.sta_timeout_ms;
-        ok = get_uint(wifi, "connect_timeout_ms", &number, 1000U, 120000U);
-        value.sta_timeout_ms = number;
+        number = static_cast<std::uint32_t>(value.ringbuffer_max_total_size_bytes);
+        ok = get_uint(buffer, "ringbuffer_max_total_size_bytes", &number, 4096U, 2097152U, true);
+        value.ringbuffer_max_total_size_bytes = number;
     }
-    if (ok) ok = get_bool(http, "enabled", &value.http_enabled, true);
     if (ok) {
-        number = value.http_port;
-        ok = get_uint(http, "port", &number, 1U, 65534U);
-        value.http_port = static_cast<std::uint16_t>(number);
+        number = static_cast<std::uint32_t>(value.queue_capacity);
+        ok = get_uint(buffer, "queue_capacity", &number, 1U, 8192U, true);
+        value.queue_capacity = number;
     }
     if (ok) ok = get_bool(https, "enabled", &value.https_enabled, true);
-    if (ok) ok = copy_json_string(admin, "username", value.admin_username, sizeof(value.admin_username));
-    if (ok) ok = copy_json_string(admin, "password_salt", value.admin_salt_hex, sizeof(value.admin_salt_hex));
-    if (ok) ok = copy_json_string(admin, "password_hash", value.admin_hash_hex, sizeof(value.admin_hash_hex));
+
+    // The public API uses security.password (write-only) / passwordSet (read-only).
+    // The on-device file stores only a verifier object and never plaintext password material.
     if (ok) {
-        number = value.pbkdf2_iterations;
-        ok = get_uint(admin, "pbkdf2_iterations", &number, 10000U, 2000000U);
-        value.pbkdf2_iterations = number;
-    }
-    if (ok) {
-        number = static_cast<std::uint32_t>(value.max_ring_buffer_bytes);
-        ok = get_uint(storage, "max_ring_buffer_bytes", &number, 4096U, 2097152U);
-        value.max_ring_buffer_bytes = number;
-    }
-    if (ok) {
-        number = static_cast<std::uint32_t>(value.max_upload_bytes);
-        ok = get_uint(storage, "max_upload_bytes", &number, 1024U, 2097152U);
-        value.max_upload_bytes = number;
+        cJSON* verifier = cJSON_GetObjectItemCaseSensitive(security, "passwordVerifier");
+        cJSON* password = cJSON_GetObjectItemCaseSensitive(security, "password");
+        if (verifier != nullptr) {
+            char algorithm[40]{};
+            ok = cJSON_IsObject(verifier) &&
+                 copy_json_string(verifier, "algorithm", algorithm, sizeof(algorithm), true) &&
+                 std::strcmp(algorithm, "PBKDF2-HMAC-SHA256") == 0 &&
+                 copy_json_string(verifier, "salt", value.admin_salt_hex, sizeof(value.admin_salt_hex), true) &&
+                 copy_json_string(verifier, "verifier", value.admin_hash_hex, sizeof(value.admin_hash_hex), true);
+            if (ok) {
+                number = value.pbkdf2_iterations;
+                ok = get_uint(verifier, "iterations", &number, 10000U, 2000000U, true);
+                value.pbkdf2_iterations = number;
+            }
+            if (ok) ok = is_hex_string(value.admin_salt_hex, 32U) && is_hex_string(value.admin_hash_hex, 64U);
+        } else if (password != nullptr && !cJSON_IsNull(password)) {
+            ok = cJSON_IsString(password) && password->valuestring != nullptr &&
+                 std::strlen(password->valuestring) >= 8U && std::strlen(password->valuestring) <= 128U;
+        }
+        // passwordSet is informational only and is deliberately ignored on input.
     }
 
-    if (ok && value.wifi_ssid[0] != '\0' && value.wifi_password[0] != '\0' &&
-        std::strlen(value.wifi_password) < 8U) ok = false;
-    if (ok && value.wifi_ssid[0] == '\0' && value.wifi_password[0] != '\0') ok = false;
-    if (ok && ((value.admin_hash_hex[0] == '\0') != (value.admin_salt_hex[0] == '\0'))) ok = false;
-    if (ok && value.admin_hash_hex[0] != '\0' &&
-        (value.admin_username[0] == '\0' || !is_hex_string(value.admin_salt_hex, 32U) ||
-         !is_hex_string(value.admin_hash_hex, 64U))) ok = false;
+    if (ok && (value.http_indexpath[0] != '/' || !valid_web_path(value.http_indexpath + 1))) ok = false;
     if (ok && value.https_enabled) {
-        set_error(error, error_size, "https.enabled cannot be true yet; HTTPS is reserved for a later milestone");
+        set_error(error, error_size, "https.enabled cannot be true until HTTPS/TLS is operational");
         ok = false;
     }
 
     cJSON_Delete(root);
     if (!ok) {
-        if (error != nullptr && error_size > 0 && error[0] == '\0') {
+        if (error != nullptr && error_size > 0 && error[0] == '\0')
             set_error(error, error_size, "Invalid settings field, value, or password verifier");
-        }
         return false;
     }
     if (parsed != nullptr) *parsed = value;
+    return true;
+}
+
+bool parse_wifi_internal(const char* json, std::size_t length, WifiConfig* parsed,
+                         char* error, std::size_t error_size) {
     set_error(error, error_size, "");
+    if (json == nullptr || length == 0U || length > 65536U) {
+        set_error(error, error_size, "Wi-Fi JSON is empty or too large");
+        return false;
+    }
+    cJSON* root = cJSON_ParseWithLength(json, length);
+    cJSON* networks = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "networks") : nullptr;
+    cJSON* ap = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "ap") : nullptr;
+    std::uint32_t schema_version = 0;
+    WifiConfig value{};
+    bool ok = get_uint(root, "schemaVersion", &schema_version, 1U, 1U, true) &&
+              cJSON_IsArray(networks) && cJSON_IsObject(ap);
+    std::uint16_t next_id = 1;
+    for (cJSON* item = ok ? networks->child : nullptr; item != nullptr; item = item->next) {
+        if (!cJSON_IsObject(item) || value.network_count >= kMaxWifiNetworks) { ok = false; break; }
+        WifiNetwork& network = value.networks[value.network_count];
+        std::uint32_t id = 0;
+        cJSON* id_item = cJSON_GetObjectItemCaseSensitive(item, "id");
+        if (id_item == nullptr) {
+            // Assign the lowest free ID while reserving all explicit IDs in the
+            // complete submitted list, including entries that appear later.
+            bool used = true;
+            while (used && next_id <= 65535U) {
+                used = false;
+                for (std::size_t i = 0; i < value.network_count; ++i)
+                    if (value.networks[i].id == next_id) used = true;
+                for (cJSON* scan = networks->child; !used && scan != nullptr; scan = scan->next) {
+                    cJSON* candidate_item = cJSON_GetObjectItemCaseSensitive(scan, "id");
+                    if (candidate_item == nullptr) continue;
+                    std::uint32_t candidate_id = 0;
+                    if (get_uint(scan, "id", &candidate_id, 1U, 65535U, true) && candidate_id == next_id)
+                        used = true;
+                }
+                if (used) ++next_id;
+            }
+            if (next_id > 65535U) { ok = false; break; }
+            id = next_id++;
+        } else if (!get_uint(item, "id", &id, 1U, 65535U, true)) {
+            ok = false; break;
+        }
+        cJSON* priority_item = cJSON_GetObjectItemCaseSensitive(item, "priority");
+        if (!cJSON_IsNumber(priority_item) || priority_item->valuedouble < INT32_MIN ||
+            priority_item->valuedouble > INT32_MAX || priority_item->valuedouble != static_cast<double>(priority_item->valueint)) {
+            ok = false; break;
+        }
+        const std::int32_t priority = static_cast<std::int32_t>(priority_item->valueint);
+        if (!copy_json_string(item, "ssid", network.ssid, sizeof(network.ssid), true) || network.ssid[0] == '\0') {
+            ok = false; break;
+        }
+        cJSON* password = cJSON_GetObjectItemCaseSensitive(item, "password");
+        if (password != nullptr && !cJSON_IsNull(password) &&
+            (!cJSON_IsString(password) || password->valuestring == nullptr ||
+             std::strlen(password->valuestring) > kMaxWifiPassword)) { ok = false; break; }
+        if (cJSON_IsString(password)) std::snprintf(network.password, sizeof(network.password), "%s", password->valuestring);
+        network.id = static_cast<std::uint16_t>(id);
+        network.priority = static_cast<std::int32_t>(priority);
+        for (std::size_t i = 0; i < value.network_count; ++i) {
+            if (value.networks[i].id == network.id) ok = false;
+        }
+        if (!ok) break;
+        if (network.password[0] != '\0' && std::strlen(network.password) < 8U) { ok = false; break; }
+        ++value.network_count;
+    }
+    std::uint32_t number = 0;
+    if (ok) ok = get_bool(ap, "enabled", &value.ap_enabled, true) &&
+                 copy_json_string(ap, "ssidPrefix", value.ap_ssid_prefix, sizeof(value.ap_ssid_prefix), true);
+    if (ok) {
+        number = value.ap_channel;
+        ok = get_uint(ap, "channel", &number, 1U, 13U, true);
+        value.ap_channel = static_cast<std::uint8_t>(number);
+    }
+    if (ok) {
+        number = value.ap_max_stations;
+        ok = get_uint(ap, "maxStations", &number, 1U, 10U, true);
+        value.ap_max_stations = static_cast<std::uint8_t>(number);
+    }
+    if (ok) ok = get_bool(ap, "keepApWhenConnected", &value.keep_ap_when_connected, true);
+    cJSON* ap_password = cJSON_IsObject(ap) ? cJSON_GetObjectItemCaseSensitive(ap, "password") : nullptr;
+    if (ok && ap_password != nullptr && !cJSON_IsNull(ap_password)) {
+        ok = cJSON_IsString(ap_password) && ap_password->valuestring != nullptr &&
+             std::strlen(ap_password->valuestring) >= 8U && std::strlen(ap_password->valuestring) <= kMaxWifiPassword;
+        if (ok) std::snprintf(value.ap_password, sizeof(value.ap_password), "%s", ap_password->valuestring);
+    }
+    if (ok && value.ap_enabled && value.ap_password[0] != '\0' && std::strlen(value.ap_password) < 8U) ok = false;
+    cJSON_Delete(root);
+    if (!ok) {
+        set_error(error, error_size, "Invalid Wi-Fi network list or access-point settings");
+        return false;
+    }
+    if (parsed != nullptr) *parsed = value;
     return true;
 }
 
@@ -361,70 +444,79 @@ bool parse_sensors_internal(const char* json, std::size_t length, SensorConfigLi
     }
     cJSON* root = cJSON_ParseWithLength(json, length);
     cJSON* sensors = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "sensors") : nullptr;
-    if (!cJSON_IsArray(sensors)) {
+    std::uint32_t schema_version = 0;
+    if (!cJSON_IsArray(sensors) || !get_uint(root, "schemaVersion", &schema_version, 1U, 1U, true)) {
         cJSON_Delete(root);
-        set_error(error, error_size, "sensors must be an array");
+        set_error(error, error_size, "Expected schemaVersion: 1 and a sensors array");
         return false;
     }
 
     SensorConfigList list{};
-    std::uint32_t schema_version = 0;
-    std::uint32_t queue_capacity = 1024;
-    if (!get_uint(root, "schema_version", &schema_version, 1U, 1U, true) ||
-        !get_uint(root, "queue_capacity", &queue_capacity, 64U, 8192U)) {
-        cJSON_Delete(root);
-        set_error(error, error_size, "queue_capacity must be between 64 and 8192");
-        return false;
-    }
-    list.queue_capacity = queue_capacity;
-
     bool ok = true;
     for (cJSON* item = sensors->child; item != nullptr; item = item->next) {
         if (!cJSON_IsObject(item) || list.count >= kMaxSensors) { ok = false; break; }
         SensorConfig cfg{};
-        std::uint32_t id = 0;
-        std::uint32_t rate = 0;
-        std::uint32_t ring_samples = 0;
+        std::uint32_t id = 0, rate = 0, ring_samples = 0;
         if (!get_uint(item, "id", &id, 0U, 65535U, true) ||
             !copy_json_string(item, "name", cfg.name, sizeof(cfg.name), true) ||
             !copy_json_string(item, "type", cfg.type, sizeof(cfg.type), true) ||
+            !copy_json_string(item, "unit", cfg.unit, sizeof(cfg.unit), true) ||
+            !copy_json_string(item, "rawFormat", cfg.raw_format, sizeof(cfg.raw_format), true) ||
             !get_bool(item, "enabled", &cfg.enabled, true) ||
             !get_uint(item, "rate_hz", &rate, 1U, 1000U, true) ||
-            !get_uint(item, "ring_buffer_samples", &ring_samples, 1U, 100000U, true)) {
-            ok = false;
-            break;
+            !get_uint(item, "ringbuffer_size_samples", &ring_samples, 1U, 100000U, true)) {
+            ok = false; break;
         }
+        static constexpr const char* formats[] = {"uint32", "uint64", "int24", "int32", "int64", "float32", "float64"};
+        bool known_format = false;
+        for (const char* format : formats) if (std::strcmp(cfg.raw_format, format) == 0) known_format = true;
+        if (!known_format) { ok = false; break; }
         cfg.id = static_cast<std::uint16_t>(id);
         cfg.rate_hz = rate;
-        cfg.ring_buffer_samples = ring_samples;
-        for (std::size_t i = 0; i < list.count; ++i) {
-            if (list.items[i].id == cfg.id) ok = false;
-        }
+        cfg.ringbuffer_size_samples = ring_samples;
+        for (std::size_t i = 0; i < list.count; ++i) if (list.items[i].id == cfg.id) ok = false;
         if (!ok) break;
 
+        cJSON* warnings = cJSON_GetObjectItemCaseSensitive(item, "warnings");
+        if (warnings != nullptr) {
+            if (!cJSON_IsObject(warnings)) { ok = false; break; }
+            auto parse_warning = [&](const char* key, WarningThreshold* warning) {
+                cJSON* node = cJSON_GetObjectItemCaseSensitive(warnings, key);
+                if (node == nullptr) return true;
+                if (!cJSON_IsObject(node) || !get_bool(node, "enabled", &warning->enabled, true)) return false;
+                if (!warning->enabled) return true;
+                return get_number(node, "threshold", &warning->threshold, true) &&
+                       get_number(node, "hysteresis", &warning->hysteresis, true) && warning->hysteresis >= 0.0;
+            };
+            if (!parse_warning("overload", &cfg.overload) || !parse_warning("underload", &cfg.underload)) {
+                ok = false; break;
+            }
+        }
+
         if (strcasecmp(cfg.type, "hx711") == 0) {
+            if (std::strcmp(cfg.raw_format, "int24") != 0) { ok = false; break; }
             cJSON* hx = cJSON_GetObjectItemCaseSensitive(item, "hx711");
             if (!cJSON_IsObject(hx) || !copy_json_string(hx, "gain", cfg.gain, sizeof(cfg.gain))) {
-                ok = false;
-                break;
+                ok = false; break;
             }
-            if (cfg.enabled) {
-                if (!get_gpio(hx, "dout_gpio", &cfg.dout_gpio, false) ||
+            // The documented null gain means the driver/default selection (A128).
+            if (strcasecmp(cfg.gain, "A128") != 0 && strcasecmp(cfg.gain, "A64") != 0 &&
+                strcasecmp(cfg.gain, "B32") != 0) {
+                ok = false; break;
+            }
+            if (cfg.enabled && (!get_gpio(hx, "dout_gpio", &cfg.dout_gpio, false) ||
                     !get_gpio(hx, "sck_gpio", &cfg.sck_gpio, false) ||
                     !get_gpio(hx, "rate_gpio", &cfg.rate_gpio, true) ||
                     (cfg.rate_hz != 10U && cfg.rate_hz != 80U) ||
                     (strcasecmp(cfg.gain, "A128") != 0 && strcasecmp(cfg.gain, "A64") != 0 &&
                      strcasecmp(cfg.gain, "B32") != 0) || cfg.dout_gpio == cfg.sck_gpio ||
-                    (cfg.rate_gpio >= 0 && (cfg.rate_gpio == cfg.dout_gpio || cfg.rate_gpio == cfg.sck_gpio))) {
-                    ok = false;
-                    break;
-                }
+                    (cfg.rate_gpio >= 0 && (cfg.rate_gpio == cfg.dout_gpio || cfg.rate_gpio == cfg.sck_gpio)))) {
+                ok = false; break;
             }
         }
         list.items[list.count++] = cfg;
     }
 
-    // Refuse duplicate GPIO assignments across enabled HX711 sensors.
     if (ok) {
         for (std::size_t i = 0; i < list.count; ++i) {
             const auto& a = list.items[i];
@@ -440,13 +532,22 @@ bool parse_sensors_internal(const char* json, std::size_t length, SensorConfigLi
     }
 
     cJSON_Delete(root);
-    if (!ok || list.count == 0U) {
+    if (!ok) {
         set_error(error, error_size, "Invalid sensor entry, duplicate ID/GPIO, or too many sensors");
         return false;
     }
     if (parsed != nullptr) *parsed = list;
-    set_error(error, error_size, "");
     return true;
+}
+
+bool validate_structured_json(const char* json, std::size_t length, const char* required_key = nullptr) {
+    if (json == nullptr || length == 0U || length > 65536U) return false;
+    cJSON* root = cJSON_ParseWithLength(json, length);
+    std::uint32_t schema_version = 0;
+    bool valid = cJSON_IsObject(root) && get_uint(root, "schemaVersion", &schema_version, 1U, 1U, true);
+    if (valid && required_key != nullptr) valid = cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(root, required_key));
+    cJSON_Delete(root);
+    return valid;
 }
 
 bool write_default_if_missing(const char* path, const char* contents, std::size_t length) {
@@ -471,6 +572,44 @@ bool recover_backup_if_target_missing(const char* path) {
     ESP_LOGW(kTag, "Recovered %s from its atomic-write backup", path);
     return true;
 }
+
+// Load an existing structured file before changing firmware-owned fields. This
+// keeps keys owned by future firmware/WebUI revisions intact during serial
+// maintenance operations such as hostname/password/network updates.
+cJSON* load_object_for_update(const char* path) {
+    char* bytes = nullptr;
+    std::size_t length = 0;
+    if (!read_file(path, &bytes, &length)) return nullptr;
+    cJSON* root = cJSON_ParseWithLength(bytes, length);
+    std::free(bytes);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return nullptr;
+    }
+    return root;
+}
+
+cJSON* ensure_object(cJSON* parent, const char* key) {
+    cJSON* value = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (cJSON_IsObject(value)) return value;
+    cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+    return cJSON_AddObjectToObject(parent, key);
+}
+
+void replace_string(cJSON* parent, const char* key, const char* value) {
+    cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+    cJSON_AddStringToObject(parent, key, value != nullptr ? value : "");
+}
+
+void replace_number(cJSON* parent, const char* key, double value) {
+    cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+    cJSON_AddNumberToObject(parent, key, value);
+}
+
+void replace_boolean(cJSON* parent, const char* key, bool value) {
+    cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+    cJSON_AddBoolToObject(parent, key, value);
+}
 }  // namespace
 
 esp_err_t init_filesystem() {
@@ -491,11 +630,15 @@ esp_err_t init_filesystem() {
         !ensure_directory("/data/www")) return ESP_FAIL;
 
     if (!recover_backup_if_target_missing(kSettingsPath) ||
+        !recover_backup_if_target_missing(kWifiPath) ||
         !recover_backup_if_target_missing(kSensorsPath) ||
+        !recover_backup_if_target_missing(kUnitsPath) ||
         !recover_backup_if_target_missing(kWebUiSettingsPath)) return ESP_FAIL;
 
     if (!write_default_if_missing(kSettingsPath, kDefaultSettings, sizeof(kDefaultSettings) - 1U) ||
+        !write_default_if_missing(kWifiPath, kDefaultWifi, sizeof(kDefaultWifi) - 1U) ||
         !write_default_if_missing(kSensorsPath, kDefaultSensors, sizeof(kDefaultSensors) - 1U) ||
+        !write_default_if_missing(kUnitsPath, kDefaultUnits, sizeof(kDefaultUnits) - 1U) ||
         !write_default_if_missing(kWebUiSettingsPath, kDefaultWebUiSettings, sizeof(kDefaultWebUiSettings) - 1U) ||
         !seed_embedded_assets()) {
         ESP_LOGE(kTag, "Could not initialize default files");
@@ -560,6 +703,15 @@ bool load_settings(Settings& out, char* error, std::size_t error_size) {
     return ok;
 }
 
+bool load_wifi(WifiConfig& out, char* error, std::size_t error_size) {
+    char* json = nullptr;
+    std::size_t length = 0;
+    if (!read_file(kWifiPath, &json, &length)) { set_error(error, error_size, "Cannot read wifi.json"); return false; }
+    const bool ok = parse_wifi_internal(json, length, &out, error, error_size);
+    std::free(json);
+    return ok;
+}
+
 bool load_sensors(SensorConfigList& out, char* error, std::size_t error_size) {
     char* json = nullptr;
     std::size_t length = 0;
@@ -574,9 +726,47 @@ bool validate_settings_json(const char* json, std::size_t length, Settings* pars
     return parse_settings_internal(json, length, parsed, error, error_size);
 }
 
+bool validate_wifi_json(const char* json, std::size_t length, WifiConfig* parsed,
+                         char* error, std::size_t error_size) {
+    return parse_wifi_internal(json, length, parsed, error, error_size);
+}
+
 bool validate_sensors_json(const char* json, std::size_t length, SensorConfigList* parsed,
                            char* error, std::size_t error_size) {
     return parse_sensors_internal(json, length, parsed, error, error_size);
+}
+
+bool validate_units_json(const char* json, std::size_t length) {
+    if (json == nullptr || length == 0U || length > 65536U) return false;
+    cJSON* root = cJSON_ParseWithLength(json, length);
+    std::uint32_t schema = 0;
+    cJSON* units = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "units") : nullptr;
+    bool ok = get_uint(root, "schemaVersion", &schema, 1U, 1U, true);
+    // Validate the documented structural contract without interpreting conversion factors.
+    char base[32]{}, def[32]{};
+    if (ok) ok = copy_json_string(root, "baseUnit", base, sizeof(base), true) &&
+                 copy_json_string(root, "defaultUnit", def, sizeof(def), true) && cJSON_IsArray(units);
+    if (ok) {
+        for (cJSON* item = units->child; item != nullptr; item = item->next) {
+            char id[32]{}, name[64]{}, symbol[24]{}, group[48]{};
+            cJSON* factor = cJSON_GetObjectItemCaseSensitive(item, "factor");
+            std::uint32_t decimals = 0;
+            if (!cJSON_IsObject(item) || !copy_json_string(item, "id", id, sizeof(id), true) ||
+                !copy_json_string(item, "name", name, sizeof(name), true) ||
+                !copy_json_string(item, "symbol", symbol, sizeof(symbol), true) ||
+                !copy_json_string(item, "group", group, sizeof(group), true) ||
+                !get_uint(item, "decimals", &decimals, 0U, 12U, true) ||
+                !(cJSON_IsNull(factor) || (cJSON_IsNumber(factor) && factor->valuedouble > 0.0))) {
+                ok = false; break;
+            }
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool validate_webui_settings_json(const char* json, std::size_t length) {
+    return validate_structured_json(json, length);
 }
 
 bool save_settings_json(const char* json, std::size_t length) {
@@ -590,32 +780,109 @@ bool save_settings_json(const char* json, std::size_t length) {
 }
 
 bool save_settings_struct(const Settings& settings) {
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "schema_version", 1);
-    cJSON* device = cJSON_AddObjectToObject(root, "device");
-    cJSON_AddStringToObject(device, "hostname", settings.hostname);
-    cJSON* wifi = cJSON_AddObjectToObject(root, "wifi");
-    cJSON_AddStringToObject(wifi, "ssid", settings.wifi_ssid);
-    cJSON_AddStringToObject(wifi, "password", settings.wifi_password);
-    cJSON_AddNumberToObject(wifi, "connect_timeout_ms", settings.sta_timeout_ms);
-    cJSON_AddStringToObject(wifi, "ap_ssid_prefix", settings.ap_ssid_prefix);
-    cJSON* http = cJSON_AddObjectToObject(root, "http");
-    cJSON_AddBoolToObject(http, "enabled", settings.http_enabled);
-    cJSON_AddNumberToObject(http, "port", settings.http_port);
-    cJSON* https = cJSON_AddObjectToObject(root, "https");
-    cJSON_AddBoolToObject(https, "enabled", settings.https_enabled);
-    cJSON* security = cJSON_AddObjectToObject(root, "security");
-    cJSON* admin = cJSON_AddObjectToObject(security, "admin");
-    cJSON_AddStringToObject(admin, "username", settings.admin_username);
-    cJSON_AddStringToObject(admin, "password_salt", settings.admin_salt_hex);
-    cJSON_AddStringToObject(admin, "password_hash", settings.admin_hash_hex);
-    cJSON_AddNumberToObject(admin, "pbkdf2_iterations", settings.pbkdf2_iterations);
-    cJSON* storage = cJSON_AddObjectToObject(root, "storage");
-    cJSON_AddNumberToObject(storage, "max_ring_buffer_bytes", static_cast<double>(settings.max_ring_buffer_bytes));
-    cJSON_AddNumberToObject(storage, "max_upload_bytes", static_cast<double>(settings.max_upload_bytes));
+    cJSON* root = load_object_for_update(kSettingsPath);
+    if (root == nullptr) {
+        ESP_LOGE(kTag, "Refusing to rewrite invalid/missing settings.json during a serial update");
+        return false;
+    }
+    replace_number(root, "schemaVersion", 1);
+    replace_string(root, "hostname", settings.hostname);
+    replace_boolean(root, "redirectToHostname", settings.redirect_to_hostname);
+    replace_string(root, "http_indexpath", settings.http_indexpath);
 
-    char* printed = cJSON_PrintUnformatted(root);
-    const bool ok = printed != nullptr && save_settings_json(printed, std::strlen(printed));
+    cJSON* buffer = ensure_object(root, "buffer");
+    cJSON* https = ensure_object(root, "https");
+    cJSON* security = ensure_object(root, "security");
+    bool structure_ok = buffer != nullptr && https != nullptr && security != nullptr;
+    if (structure_ok) {
+        replace_number(buffer, "ringbuffer_max_total_size_bytes", static_cast<double>(settings.ringbuffer_max_total_size_bytes));
+        replace_number(buffer, "queue_capacity", static_cast<double>(settings.queue_capacity));
+        replace_boolean(https, "enabled", settings.https_enabled);
+        cJSON_DeleteItemFromObjectCaseSensitive(security, "password");
+        cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordSet");
+        cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordVerifier");
+        if (settings.admin_hash_hex[0] != '\0') {
+            cJSON* verifier = cJSON_AddObjectToObject(security, "passwordVerifier");
+            structure_ok = verifier != nullptr;
+            if (structure_ok) {
+                cJSON_AddStringToObject(verifier, "algorithm", "PBKDF2-HMAC-SHA256");
+                cJSON_AddStringToObject(verifier, "salt", settings.admin_salt_hex);
+                cJSON_AddNumberToObject(verifier, "iterations", settings.pbkdf2_iterations);
+                cJSON_AddStringToObject(verifier, "verifier", settings.admin_hash_hex);
+            }
+        }
+    }
+    char* printed = structure_ok ? cJSON_PrintUnformatted(root) : nullptr;
+    const bool ok = printed != nullptr && write_file_atomic(kSettingsPath, printed, std::strlen(printed));
+    cJSON_free(printed);
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool save_wifi_json(const char* json, std::size_t length) {
+    WifiConfig parsed{};
+    char error[160]{};
+    if (!parse_wifi_internal(json, length, &parsed, error, sizeof(error))) {
+        ESP_LOGW(kTag, "Rejected Wi-Fi upload: %s", error);
+        return false;
+    }
+    return write_file_atomic(kWifiPath, json, length);
+}
+
+bool save_wifi_struct(const WifiConfig& wifi) {
+    if (wifi.network_count > kMaxWifiNetworks) return false;
+    cJSON* root = load_object_for_update(kWifiPath);
+    if (root == nullptr) {
+        ESP_LOGE(kTag, "Refusing to rewrite invalid/missing wifi.json during a serial update");
+        return false;
+    }
+    replace_number(root, "schemaVersion", 1);
+    cJSON* previous_networks = cJSON_GetObjectItemCaseSensitive(root, "networks");
+    cJSON* networks = cJSON_CreateArray();
+    cJSON* ap = ensure_object(root, "ap");
+    bool structure_ok = networks != nullptr && ap != nullptr;
+    for (std::size_t i = 0; structure_ok && i < wifi.network_count; ++i) {
+        const WifiNetwork& network = wifi.networks[i];
+        cJSON* item = nullptr;
+        // Preserve WebUI/future-owned properties on a network when its stable ID
+        // survives a serial-side update.
+        for (cJSON* old = cJSON_IsArray(previous_networks) ? previous_networks->child : nullptr;
+             old != nullptr; old = old->next) {
+            std::uint32_t old_id = 0;
+            if (get_uint(old, "id", &old_id, 1U, 65535U, true) && old_id == network.id) {
+                item = cJSON_Duplicate(old, 1);
+                break;
+            }
+        }
+        if (item == nullptr) item = cJSON_CreateObject();
+        structure_ok = item != nullptr;
+        if (!structure_ok) break;
+        replace_number(item, "id", network.id);
+        replace_string(item, "ssid", network.ssid);
+        cJSON_DeleteItemFromObjectCaseSensitive(item, "password");
+        cJSON_DeleteItemFromObjectCaseSensitive(item, "passwordSet");
+        if (network.password[0] != '\0') cJSON_AddStringToObject(item, "password", network.password);
+        replace_number(item, "priority", network.priority);
+        cJSON_AddItemToArray(networks, item);
+    }
+    if (structure_ok) {
+        cJSON_DeleteItemFromObjectCaseSensitive(root, "networks");
+        cJSON_AddItemToObject(root, "networks", networks);
+    } else {
+        cJSON_Delete(networks);
+    }
+    if (structure_ok) {
+        replace_boolean(ap, "enabled", wifi.ap_enabled);
+        replace_string(ap, "ssidPrefix", wifi.ap_ssid_prefix);
+        replace_number(ap, "channel", wifi.ap_channel);
+        replace_number(ap, "maxStations", wifi.ap_max_stations);
+        replace_boolean(ap, "keepApWhenConnected", wifi.keep_ap_when_connected);
+        cJSON_DeleteItemFromObjectCaseSensitive(ap, "passwordSet");
+        cJSON_DeleteItemFromObjectCaseSensitive(ap, "password");
+        if (wifi.ap_password[0] != '\0') cJSON_AddStringToObject(ap, "password", wifi.ap_password);
+    }
+    char* printed = structure_ok ? cJSON_PrintUnformatted(root) : nullptr;
+    const bool ok = printed != nullptr && write_file_atomic(kWifiPath, printed, std::strlen(printed));
     cJSON_free(printed);
     cJSON_Delete(root);
     return ok;
@@ -631,51 +898,36 @@ bool save_sensors_json(const char* json, std::size_t length) {
     return write_file_atomic(kSensorsPath, json, length);
 }
 
+bool save_units_json(const char* json, std::size_t length) {
+    if (!validate_units_json(json, length)) return false;
+    return write_file_atomic("/data/settings/units.json", json, length);
+}
+
 bool save_webui_settings_json(const char* json, std::size_t length) {
-    if (json == nullptr || length == 0U || length > 65536U) return false;
-    cJSON* root = cJSON_ParseWithLength(json, length);
-    cJSON* index = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "index") : nullptr;
-    bool valid = cJSON_IsObject(root);
-    if (valid && index != nullptr) {
-        char asset_path[192]{};
-        valid = cJSON_IsString(index) && index->valuestring != nullptr &&
-                index->valuestring[0] == '/' && valid_web_path(index->valuestring + 1) &&
-                make_asset_storage_path(index->valuestring + 1, asset_path, sizeof(asset_path)) &&
-                access(asset_path, F_OK) == 0;
-    }
-    cJSON_Delete(root);
-    if (!valid) return false;
+    if (!validate_webui_settings_json(json, length)) return false;
     return write_file_atomic(kWebUiSettingsPath, json, length);
 }
 
 bool get_index_path(char* output, std::size_t output_size) {
     if (output == nullptr || output_size == 0U) return false;
-    char* json = nullptr;
-    std::size_t length = 0;
-    if (!read_file(kWebUiSettingsPath, &json, &length)) return false;
-    cJSON* root = cJSON_ParseWithLength(json, length);
-    cJSON* item = cJSON_IsObject(root) ? cJSON_GetObjectItemCaseSensitive(root, "index") : nullptr;
-    bool ok = cJSON_IsString(item) && item->valuestring != nullptr &&
-              std::strlen(item->valuestring) < output_size && item->valuestring[0] == '/' &&
-              valid_web_path(item->valuestring + 1);
-    if (ok) std::snprintf(output, output_size, "%s", item->valuestring);
-    cJSON_Delete(root);
-    std::free(json);
-    return ok;
+    Settings settings{};
+    char error[80]{};
+    if (!load_settings(settings, error, sizeof(error))) return false;
+    if (std::strlen(settings.http_indexpath) >= output_size) return false;
+    std::snprintf(output, output_size, "%s", settings.http_indexpath);
+    return true;
 }
 
 bool set_index_path(const char* web_path) {
     if (web_path == nullptr || web_path[0] != '/' || !valid_web_path(web_path + 1)) return false;
     char asset_path[192]{};
     if (!make_asset_storage_path(web_path + 1, asset_path, sizeof(asset_path)) || access(asset_path, F_OK) != 0) return false;
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "schema_version", 1);
-    cJSON_AddStringToObject(root, "index", web_path);
-    char* printed = cJSON_PrintUnformatted(root);
-    const bool ok = printed != nullptr && save_webui_settings_json(printed, std::strlen(printed));
-    cJSON_free(printed);
-    cJSON_Delete(root);
-    return ok;
+    Settings settings{};
+    char error[80]{};
+    if (!load_settings(settings, error, sizeof(error))) return false;
+    if (std::strlen(web_path) >= sizeof(settings.http_indexpath)) return false;
+    std::snprintf(settings.http_indexpath, sizeof(settings.http_indexpath), "%s", web_path);
+    return save_settings_struct(settings);
 }
 
 bool make_asset_storage_path(const char* web_path, char* output, std::size_t output_size) {
@@ -735,15 +987,29 @@ bool rename_asset(const char* from_web_path, const char* to_web_path) {
 }
 
 bool make_calibration_storage_path(const char* filename, char* output, std::size_t output_size) {
-    if (filename == nullptr || output == nullptr || std::strlen(filename) < 6U || std::strlen(filename) > 64U) return false;
-    const std::size_t n = std::strlen(filename);
-    if (strcasecmp(filename + n - 5U, ".json") != 0) return false;
-    for (std::size_t i = 0; i < n; ++i) {
-        const unsigned char c = static_cast<unsigned char>(filename[i]);
+    if (filename == nullptr || output == nullptr) return false;
+    const std::size_t length = std::strlen(filename);
+    constexpr char kPrefix[] = "calibration_";
+    constexpr char kExtension[] = ".json";
+    if (length <= sizeof(kPrefix) - 1U + 1U + sizeof(kExtension) - 1U || length > 64U ||
+        std::strncmp(filename, kPrefix, sizeof(kPrefix) - 1U) != 0 ||
+        strcasecmp(filename + length - (sizeof(kExtension) - 1U), kExtension) != 0) return false;
+
+    const char* sensor_id = filename + sizeof(kPrefix) - 1U;
+    const char* separator = std::strchr(sensor_id, '_');
+    if (separator == nullptr || separator == sensor_id) return false;
+    for (const char* p = sensor_id; p < separator; ++p)
+        if (!std::isdigit(static_cast<unsigned char>(*p))) return false;
+
+    const char* profile = separator + 1;
+    const std::size_t profile_length = static_cast<std::size_t>((filename + length - (sizeof(kExtension) - 1U)) - profile);
+    if (profile_length == 0U) return false;
+    for (std::size_t i = 0; i < profile_length; ++i) {
+        const unsigned char c = static_cast<unsigned char>(profile[i]);
         if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
     }
-    if (std::strstr(filename, "..") != nullptr) return false;
-    return std::snprintf(output, output_size, "/data/calibration/%s", filename) < static_cast<int>(output_size);
+    const int written = std::snprintf(output, output_size, "/data/calibration/%s", filename);
+    return written >= 0 && static_cast<std::size_t>(written) < output_size;
 }
 
 }  // namespace app::config_store

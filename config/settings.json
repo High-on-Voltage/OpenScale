@@ -1,24 +1,14 @@
 {
-  "schema_version": 1,
-  "device": { "hostname": "esp32-sensor" },
-  "wifi": {
-    "ssid": "",
-    "password": "",
-    "connect_timeout_ms": 12000,
-    "ap_ssid_prefix": "ESP32-Sensor"
+  "schemaVersion": 1,
+  "hostname": "",
+  "redirectToHostname": true,
+  "http_indexpath": "/default.html",
+  "buffer": {
+    "ringbuffer_max_total_size_bytes": 262144,
+    "queue_capacity": 64
   },
-  "http": { "enabled": true, "port": 80 },
-  "https": { "enabled": false },
-  "security": {
-    "admin": {
-      "username": "admin",
-      "password_salt": "",
-      "password_hash": "",
-      "pbkdf2_iterations": 100000
-    }
+  "https": {
+    "enabled": false
   },
-  "storage": {
-    "max_ring_buffer_bytes": 262144,
-    "max_upload_bytes": 524288
-  }
+  "security": {}
 }

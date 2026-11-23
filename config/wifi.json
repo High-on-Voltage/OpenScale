@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "networks": [],
+  "ap": {
+    "enabled": true,
+    "ssidPrefix": "OpenScale",
+    "channel": 1,
+    "maxStations": 4,
+    "keepApWhenConnected": false
+  }
+}
