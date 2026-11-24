@@ -1,8 +1,8 @@
 # OpenScale — HTTP, SSE and Data Protocol
 
-**Version:** 0.5  
+**Version:** 0.5.1  
 **Purpose:** Authoritative firmware/WebUI communication contract  
-**Companion documents:** `project-requirements_v0.5.md`, `json-file-formats_v0.5.md`
+**Companion documents:** `Project Requirements.md`, `JSON File Formats.md`
 
 ## 1. Status terminology and conventions
 

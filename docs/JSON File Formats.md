@@ -1,8 +1,8 @@
 # OpenScale — JSON File Formats and Examples
 
-**Version:** 0.5  
+**Version:** 0.5.1  
 **Purpose:** Configuration, WebUI-owned files, calibration files and JSON payload reference  
-**Companion documents:** `project-requirements_v0.5.md`, `api-protocol_v0.5.md`
+**Companion documents:** `Project Requirements.md`, `API Protocol.md`
 
 ## 1. General rules
 
@@ -38,15 +38,19 @@ The structured JSON files use GET/PUT/DELETE on the same resource URL. Authentic
 ```json
 {
   "schemaVersion": 1,
-  "hostname": "openscale_a1b2c3",
-  "redirectToHostname": true,
-  "http_indexpath": "/default.html",
+  "network": {
+    "hostname": "openscale_a1b2c3",
+  },
+  "webserver": {
+    "redirectToHostname": true,
+    "http_indexpath": "/default.html",
+    "https": { "enabled": false },
+    "security": { "passwordSet": true },
+  },
   "buffer": {
     "ringbuffer_max_total_size_bytes": 262144,
     "queue_capacity": 64
-  },
-  "https": { "enabled": false },
-  "security": { "passwordSet": true }
+  }
 }
 ```
 
@@ -58,10 +62,10 @@ Fields:
 | `hostname` | Device hostname without `.local`; generated on first boot if empty using `openscale_` plus the final three base-MAC bytes in hex |
 | `redirectToHostname` | Redirect requests addressed by IP to the mDNS hostname when resolvable |
 | `http_indexpath` | Static asset served for `/`; default `/default.html` |
-| `buffer.ringbuffer_max_total_size_bytes` | Aggregate memory budget for all per-sensor ring buffers |
-| `buffer.queue_capacity` | Shared acquisition queue capacity |
 | `https.enabled` | HTTPS request; reject true while TLS is unavailable/not operational. HTTP itself cannot be disabled |
 | `security.passwordSet` | GET-only indicator; true if an administrator password exists |
+| `buffer.ringbuffer_max_total_size_bytes` | Aggregate memory budget for all per-sensor ring buffers |
+| `buffer.queue_capacity` | Shared acquisition queue capacity |
 
 ### 3.2 Administrator password handling
 
@@ -83,13 +87,13 @@ Factory defaults include no administrator password, `https.enabled: false`, and 
 {
   "schemaVersion": 1,
   "networks": [
-    { "id": 1, "ssid": "Home", "passwordSet": true, "priority": 100 },
-    { "id": 2, "ssid": "Workshop", "passwordSet": true, "priority": 80 }
+    { "id": 1, "ssid": "Home", "passwordSet": true, "priority": 100, "ip": null, "subnet": null },
+    { "id": 2, "ssid": "Workshop", "passwordSet": true, "priority": 80, "ip": "192.168.0.123", "subnet": "255.255.255.0" }
   ],
   "ap": {
     "enabled": true,
     "ssidPrefix": "OpenScale",
-    "channel": 1,
+    "channel": null,
     "maxStations": 4,
     "keepApWhenConnected": false,
     "passwordSet": true
@@ -105,8 +109,9 @@ Factory defaults include no administrator password, `https.enabled: false`, and 
 - AP `password` follows the same GET-redaction/PUT semantics; its read-only `passwordSet` indicator is ignored on PUT. Factory AP credentials are generated per device and printed to the serial console; do not return them in JSON.
 - `keepApWhenConnected` defaults false. A fallback AP starts when station connection attempts fail; stop it after successful STA connection unless configured to remain active.
 - AP+STA operation is supported where the chip/driver allows it; the interfaces share one radio/channel.
+- If `ip` is `null` or missing DHCP will be used (default). If `ip` and `subnet` is set a static IP will be used.
 
-Factory default is an empty `networks` list with the fallback AP enabled, SSID prefix `OpenScale`, channel 1, four client slots and `keepApWhenConnected:false`; its SSID is `<ssidPrefix>-<last-two-MAC-bytes>`, and its password is generated per device and printed to serial. ESP startup decision: try networks in descending priority order, with original array order for ties; allow 15 seconds per candidate; retry a complete pass every 30 seconds if no STA connection is established. Start the fallback AP when no saved network connects.
+Factory default is an empty `networks` list with the fallback AP enabled, SSID prefix `OpenScale`, four client slots and `keepApWhenConnected:false`; its SSID is `<ssidPrefix>-<last-two-MAC-bytes>`, and its default password is `OpenScale0123`. ESP startup decision: try networks in descending priority order, with original array order for ties; allow 15 seconds per candidate; retry a complete pass every 30 seconds if no STA connection is established. Start the fallback AP when no saved network connects.
 
 If `wifi.json` cannot be loaded at startup, use in-memory factory defaults without modifying the saved file and log a `config_fallback` entry.
 
@@ -188,7 +193,7 @@ One document contains all sensor instances. Factory default is `{"schemaVersion"
 | `type` | ESP | Hardware/driver type (`hx711`, `temperature`, etc.) |
 | `enabled` | ESP | Whether the sensor is active |
 | `unit` | ESP | Unit/meaning of the raw value, e.g. `ADC count`, `m°C`, `mΩ` |
-| `rawFormat` | ESP | Native value encoding in uint64 `raw`; see §5.2 |
+| `rawFormat` | ESP | Encoding of uint64 `raw`; see §5.2 |
 | `rate_hz` | ESP | Required nominal/effective sampling rate for every sensor; HX711 allows 10 or 80 |
 | `ringbuffer_size_samples` | ESP | Retained sample capacity for this sensor |
 | driver block (`hx711`, etc.) | ESP | Driver configuration |

@@ -1,8 +1,8 @@
-# OpenScale ESP32 — Project Requirements and Architecture
+# OpenScale — Project Requirements and Architecture
 
-**Version:** 0.5  
+**Version:** 0.5.1  
 **Purpose:** Firmware requirements and architecture baseline  
-**Companion documents:** `json-file-formats_v0.5.md`, `api-protocol_v0.5.md`
+**Companion documents:** `JSON File Formats.md`, `API Protocol.md`
 
 ## 1. Status terminology
 
@@ -31,7 +31,7 @@ The initial networking target is Wi-Fi. Ethernet-capable variants are not exclud
 | Licence | AGPL-3.0-or-later | Implicit |
 | Versioning | Semantic firmware versioning; initial proposed version `0.1.0` | Implicit |
 
-Use ESP-IDF CMake, native HTTP server/Wi-Fi/timer/FreeRTOS facilities, cJSON and FATFS with flash wear levelling. A root `Makefile` may wrap common build operations. A suitable monorepo layout separates `firmware/`, `webui/`, `docs/` and `tools/`. Validate GPIO availability and peripheral support on each target; ESP-IDF build support alone does not mean that a board configuration has been tested.
+Use ESP-IDF CMake, native HTTP server/Wi-Fi/timer/FreeRTOS facilities, cJSON and FATFS with flash wear levelling. A root `Makefile` may wrap common build operations. A suitable monorepo layout separates the firmware from `WebUI/`, `docs/` and `tools/`. Validate GPIO availability and peripheral support on each target; ESP-IDF build support alone does not mean that a board configuration has been tested.
 
 ## 4. Sensor acquisition architecture
 
@@ -60,18 +60,20 @@ Every sensor has a numeric ID, independent monotonically increasing sample ID, a
 | `sensorId` | unsigned integer | Numeric sensor ID |
 | `n` | unsigned 64-bit | Per-sensor sample sequence |
 | `t` | unsigned 64-bit | Microseconds since boot, from one ESP-wide monotonic clock |
-| `raw` | unsigned 64-bit | Zero-extended native value bit pattern; interpretation is defined by `rawFormat` |
+| `raw` | driver dependend | interpretation is defined by `rawFormat` |
 | `flags` | unsigned 32-bit | Quality/threshold flags; computed as specified in the protocol document |
 
 `t` must never be wall-clock time. Wall-clock correction or time synchronisation must not alter sample timestamps. A future `unixtimestamp` status field may report current UTC time independently.
 
-`raw` is always unsigned on the wire. `rawFormat` describes how the WebUI decodes its bit pattern: `uint32`, `uint64`, `int24`, `int32`, `int64`, `float32` or `float64`. Signed values and floating-point values are zero-extended bit patterns, not numerically converted to unsigned. A lossless JSON parser is required for 64-bit JSON integer tokens because JavaScript `Number` cannot represent all uint64 values exactly.
+The format of `raw` on the ESP32 is driver dependend. For the HX711 this will be 24-bit and the ESP32 will store these as int32.
+`raw` on the wire is always unsigned, zero-extended native value 64-bit pattern.
+`rawFormat` describes how the WebUI decodes its bit pattern: `uint32`, `uint64`, `int24`, `int32`, `int64`, `float32` or `float64`. Signed values and floating-point values are zero-extended bit patterns, not numerically converted to unsigned. A lossless JSON parser is required for 64-bit JSON integer tokens because JavaScript `Number` cannot represent all uint64 values exactly.
 
 ### 4.3 HX711 baseline
 
 The initial HX711 example uses sensor ID `0`, DOUT GPIO 16 and SCK GPIO 4. These are board-specific example pins, not universal defaults. `rate_hz` is 10 or 80. If `rate_gpio` is configured, the firmware drives it low for 10 Hz and high for 80 Hz; if null, the physical RATE pin must be strapped appropriately. `gain` accepts `A128`, `A64`, `B32` or `null` (driver/default selection).
 
-The HX711's native value is signed 24-bit; it is carried as the low 24-bit two's-complement pattern in the uint64 `raw` field (`rawFormat: "int24"`). No offset, scale conversion, filtering or calibration is applied by the HX711 driver unless a later firmware feature explicitly adds it.
+The HX711's native value is signed 24-bit; it is carried over the wire as the low 24-bit two's-complement pattern in the uint64 `raw` field (`rawFormat: "int24"`). No offset, scale conversion, filtering or calibration is applied by the HX711 driver unless a later firmware feature explicitly adds it.
 
 ### 4.4 Sensor ownership and WebUI fields
 
@@ -103,7 +105,7 @@ Do not reserve enough memory for both buffers when executing `clear` mode.
 
 Per-sample flags are **not stored in ring-buffer entries**. This avoids increasing RAM usage per sample. Firmware overload/underload flags are calculated on demand from each raw value and the current sensor thresholds when producing history or live sample responses. Consequently, historical overload/underload flags reflect the currently configured thresholds, not necessarily the thresholds that were active when the sample was acquired.
 
-The 32-bit flag layout is defined in `api-protocol_v0.5.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
+The 32-bit flag layout is defined in `API Protocol.md`: bit 0 overload, bit 1 underload, bit 2 sensor disconnection, bit 3 sensor error, bit 4 invalid measurement, bits 5–31 reserved. Since flags are not stored historically, disconnection/error events and sample ranges are represented in the device log; historical bit 2–4 values may be zero unless a future implementation adds retained quality metadata.
 
 ### 5.3 Warning hysteresis
 
@@ -139,13 +141,13 @@ Critical ESP-owned configuration is validated before replacement. A failed check
 
 Support multiple saved station networks with stable numeric IDs and user-defined priority. Try highest priority first; preserve array order to break ties. New network entries without an ID receive one from the ESP; entries omitted from a complete PUT are deleted. Credentials are stored in recoverable form for reconnect but never returned by GET.
 
-ESP decision: attempt each candidate for 15 seconds, then proceed to the next; retry a full pass every 30 seconds when no station is connected. Start a WPA2 fallback AP when no station network connects. Its SSID is `<ap_ssid_prefix>-<last-two-MAC-bytes>`; the default prefix is `OpenScale`. The AP defaults to a generated device-specific password printed to the serial console. `keepApWhenConnected` defaults false: stop the fallback AP after STA successfully connects unless configured otherwise. AP+STA is supported where the chip/driver permits it; both interfaces share one radio/channel.
+ESP decision: attempt each candidate for 15 seconds, then proceed to the next; retry a full pass every 30 seconds when no station is connected. Start a WPA2 fallback AP when no station network connects. Its SSID is `<ap_ssid_prefix>-<last-three-MAC-bytes>`; the default prefix is `OpenScale`. The AP defaults to a generated device-specific password printed to the serial console. `keepApWhenConnected` defaults false: stop the fallback AP after STA successfully connects unless configured otherwise. AP+STA is supported where the chip/driver permits it; both interfaces share one radio/channel.
 
 ### 7.2 Startup file failures
 
 If `settings.json` or `wifi.json` cannot be loaded or parsed, use the corresponding in-memory factory defaults for this boot. **Do not overwrite or repair the saved file automatically.** Add a `config_fallback` entry to the device network log, retrievable by `GET /api/device-log` and emitted through SSE as `device_log` after the stream is available.
 
-Security note: defaults may not contain an administrator password. In fallback mode, use the fallback AP with a generated WPA2 password and report the condition clearly in the log/serial output. Set an administrator password after recovery. The device must not silently rewrite the corrupt file.
+Security note: defaults may not contain an administrator password. In fallback mode, use the fallback AP with the default WPA2 password and report the condition clearly in the log/serial output. Set an administrator password after recovery. The device must not silently rewrite the corrupt file.
 
 ### 7.3 Hostname and HTTP/HTTPS
 
