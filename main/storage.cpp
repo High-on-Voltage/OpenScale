@@ -94,6 +94,7 @@ esp_err_t read_file(const std::string &path, std::vector<uint8_t> &out, size_t m
     const bool ok = read == out.size() && !ferror(file);
     fclose(file);
     if (!ok) { out.clear(); return ESP_FAIL; }
+    ESP_LOGD(TAG, "Read %s (%u bytes)", path.c_str(), static_cast<unsigned>(out.size()));
     return ESP_OK;
 }
 

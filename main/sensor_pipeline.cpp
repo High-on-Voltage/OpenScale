@@ -93,6 +93,10 @@ void read_warning(const cJSON *sensor_json, const char *key, WarningConfig &out)
 void read_settings() {
     std::vector<uint8_t> file_bytes;
     const esp_err_t read_result = storage::read_file("/data/settings/settings.json", file_bytes, 32768);
+    if (read_result == ESP_OK)
+        ESP_LOGI(TAG, "Loaded /data/settings/settings.json (%u bytes)", static_cast<unsigned>(file_bytes.size()));
+    else if (read_result == ESP_ERR_NOT_FOUND)
+        ESP_LOGI(TAG, "/data/settings/settings.json missing; using embedded factory defaults");
     cJSON *settings = read_result == ESP_OK && !file_bytes.empty()
         ? cJSON_ParseWithLength(reinterpret_cast<const char *>(file_bytes.data()), file_bytes.size()) : nullptr;
     const char *defaults = factory_defaults::get("settings.json");
@@ -101,6 +105,7 @@ void read_settings() {
             "/data/settings/settings.json", reinterpret_cast<const uint8_t *>(defaults), std::strlen(defaults));
         settings = defaults ? cJSON_Parse(defaults) : nullptr;
     } else if (!settings) {
+        ESP_LOGW(TAG, "Could not load settings.json; using embedded defaults and preserving the saved file");
         device_log_add("config_fallback", "Could not load settings.json; in-memory defaults are active",
                        "{\"file\":\"settings.json\",\"reason\":\"parse_error\",\"savedFileModified\":false}");
         settings = defaults ? cJSON_Parse(defaults) : nullptr; // Never overwrite a corrupt saved file.
@@ -123,6 +128,10 @@ void create_default_sensor_file() {
 void load_sensor_configs() {
     std::vector<uint8_t> file_bytes;
     const esp_err_t read_result = storage::read_file("/data/settings/sensors.json", file_bytes, 128 * 1024);
+    if (read_result == ESP_OK)
+        ESP_LOGI(TAG, "Loaded /data/settings/sensors.json (%u bytes)", static_cast<unsigned>(file_bytes.size()));
+    else if (read_result == ESP_ERR_NOT_FOUND)
+        ESP_LOGI(TAG, "/data/settings/sensors.json missing; using embedded factory defaults");
     cJSON *root = read_result == ESP_OK && !file_bytes.empty()
         ? cJSON_ParseWithLength(reinterpret_cast<const char *>(file_bytes.data()), file_bytes.size()) : nullptr;
     const char *defaults = factory_defaults::get("sensors.json");
@@ -130,6 +139,7 @@ void load_sensor_configs() {
         if (storage::ready()) create_default_sensor_file();
         root = defaults ? cJSON_Parse(defaults) : nullptr;
     } else if (!root) {
+        ESP_LOGW(TAG, "Could not load sensors.json; using embedded defaults and preserving the saved file");
         device_log_add("config_fallback", "Could not load sensors.json; no sensor definitions are active",
                        "{\"file\":\"sensors.json\",\"reason\":\"parse_error\",\"savedFileModified\":false}");
         root = defaults ? cJSON_Parse(defaults) : nullptr; // Never repair a corrupt file automatically.

@@ -15,6 +15,10 @@ This is the first clean firmware rewrite based on the v0.5.1 project, JSON-forma
 - FATFS partition image generation and runtime FATFS mounting through flash wear levelling. Failed mounts do not trigger automatic formatting.
 - HX711 acquisition tasks, shared non-blocking FreeRTOS queue, per-sensor RAM ring buffers, per-sensor sample IDs, monotonic timestamps, queue-drop counters and threshold-warning transitions.
 - Basic JSON/binary history, SSE sample/event transport, bounded per-boot device log, metadata/status endpoints, config/calibration/static-resource handlers and serial recovery commands.
+- Wi-Fi event callbacks now perform only state updates and non-blocking enqueueing; a dedicated worker records Wi-Fi diagnostics.
+- Fallback AP captive portal support: DHCP DNS/captive-portal hints, DNS A-record redirection to the AP, and root-page redirects for unknown HTTP paths from AP clients.
+- Startup configuration loads and static asset responses are identified in serial logs; generic storage reads are additionally available at DEBUG level.
+- Routine firmware development updates use `make flash-app`, which leaves the separate FATFS data partition untouched; `make flash` remains the provisioning path that also flashes the filesystem image.
 
 ## Known implementation gaps
 
@@ -40,5 +44,5 @@ The API protocol requires the Wi-Fi PUT response to return the canonical redacte
 
 - The user-provided ESP-IDF 6.1.1 compile logs were reviewed. The configure/dependency stage completed; the listed source failures were addressed: Mbed TLS PBKDF2 API migration, raw-string collision removed with external defaults, fixed-array URI checks, format argument types, bounded Wi-Fi SSID copy and device-log output sizing.
 - Python build-tool syntax, factory-default generation, generated C++ compilation with a host compiler, and staged gzip/virtual-root content can be tested locally without ESP-IDF.
-- No ESP-IDF installation is available in the current build environment; no firmware compile, flash, runtime, or hardware test is claimed for this artifact. The patched project must be rebuilt in the user's ESP-IDF 6.1.1 environment to reveal any subsequent diagnostics.
+- The Wi-Fi event-stack/captive-portal and serial file-diagnostic changes are source-level updates only. No ESP-IDF installation is available in the current build environment; no firmware compile, flash, runtime, or hardware test is claimed. Rebuild and verify on the user's ESP-IDF 6.1.1 target before treating these changes as validated.
 - The supplied WebUI folder is empty, so the compiled WebUI version fallback is `not-provided` until a version override, `WebUI/version.txt`, or `WebUI/package.json` is supplied.

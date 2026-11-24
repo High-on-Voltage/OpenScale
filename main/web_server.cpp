@@ -14,6 +14,8 @@
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "lwip/sockets.h"
+#include "lwip/ip4_addr.h"
 #include "esp_timer.h"
 #include "esp_vfs.h"
 #include "freertos/FreeRTOS.h"
@@ -329,6 +331,12 @@ const char *mime_type(const std::string &path) {
 std::string configured_index_path() {
     std::vector<uint8_t> bytes;
     if (storage::read_file("/data/settings/settings.json", bytes, 32768) == ESP_OK) {
+        static bool logged_settings_load = false;
+        if (!logged_settings_load) {
+            ESP_LOGI(TAG, "Loaded /data/settings/settings.json (%u bytes)",
+                     static_cast<unsigned>(bytes.size()));
+            logged_settings_load = true;
+        }
         cJSON *root = cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         const cJSON *webserver = cJSON_GetObjectItemCaseSensitive(root, "webserver");
         const cJSON *index = cJSON_GetObjectItemCaseSensitive(webserver, "http_indexpath");
@@ -341,7 +349,34 @@ std::string configured_index_path() {
     return "/default.html";
 }
 
+bool request_received_on_fallback_ap(httpd_req_t *req) {
+    if (!wifi_manager_ap_is_running()) return false;
+    const uint32_t ap_ip = wifi_manager_ap_ip();
+    if (!ap_ip) return false;
+
+    const int socket_fd = httpd_req_to_sockfd(req);
+    if (socket_fd < 0) return false;
+    sockaddr_in local{};
+    socklen_t local_length = sizeof(local);
+    if (getsockname(socket_fd, reinterpret_cast<sockaddr *>(&local), &local_length) != 0)
+        return false;
+    return local.sin_addr.s_addr == ap_ip;
+}
+
+esp_err_t redirect_ap_client_to_root(httpd_req_t *req) {
+    const uint32_t ap_ip = wifi_manager_ap_ip();
+    ip4_addr_t address{};
+    address.addr = ap_ip;
+    char location[64]{};
+    std::snprintf(location, sizeof(location), "http://" IPSTR "/", IP2STR(&address));
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, nullptr, 0);
+}
+
 esp_err_t static_get(httpd_req_t *req) {
+    const bool ap_request = request_received_on_fallback_ap(req);
     const char *uri = req->uri;
     const char *query = std::strchr(uri, '?');
     std::string path(uri, query ? static_cast<size_t>(query - uri) : std::strlen(uri));
@@ -353,9 +388,12 @@ esp_err_t static_get(httpd_req_t *req) {
     std::vector<uint8_t> data;
     const esp_err_t err = storage::read_file(path, data, 2 * 1024 * 1024);
     if (err != ESP_OK) {
+        if (ap_request && !reserved_path(path)) return redirect_ap_client_to_root(req);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Asset not found");
         return ESP_OK;
     }
+    ESP_LOGI(TAG, "Serving %s (%u bytes, gzip)%s", path.c_str(),
+             static_cast<unsigned>(data.size()), ap_request ? " via fallback AP" : "");
     httpd_resp_set_type(req, mime_type(path));
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", path == "/default.html" || path == "/default.js" ? "no-store" : "public, max-age=3600");
