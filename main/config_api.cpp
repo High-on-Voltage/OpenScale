@@ -3,6 +3,7 @@
 #include "webui_build_info.h"
 #include "device_log.hpp"
 #include "event_bus.hpp"
+#include "factory_defaults.hpp"
 #include "security.hpp"
 #include "storage.hpp"
 #include "system_state.hpp"
@@ -26,7 +27,7 @@ namespace {
 constexpr char TAG[] = "config_api";
 
 std::string request_path(httpd_req_t *req) {
-    const char *uri = req->uri ? req->uri : "/";
+    const char *uri = req->uri;
     const char *query = std::strchr(uri, '?');
     return std::string(uri, query ? static_cast<size_t>(query - uri) : std::strlen(uri));
 }
@@ -37,18 +38,43 @@ bool json_integer(const cJSON *value, int minimum, int maximum) {
            value->valuedouble >= minimum && value->valuedouble <= maximum;
 }
 
-esp_err_t send_error(httpd_req_t *req, int status, const char *code, const char *message) {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *error = cJSON_CreateObject();
-    if (root && error) cJSON_AddItemToObject(root, "error", error);
-    if (root && error) {
-        cJSON_AddStringToObject(error, "code", code ? code : "internal_error");
-        cJSON_AddStringToObject(error, "message", message ? message : "Unexpected error");
+std::string json_escape(const char *value) {
+    std::string escaped;
+    const char *input = value ? value : "";
+    escaped.reserve(std::strlen(input) + 8);
+    static constexpr char HEX[] = "0123456789abcdef";
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(input); *p; ++p) {
+        switch (*p) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (*p < 0x20) {
+                    escaped += "\\u00";
+                    escaped += HEX[*p >> 4];
+                    escaped += HEX[*p & 0x0f];
+                } else {
+                    escaped += static_cast<char>(*p);
+                }
+        }
     }
-    char *printed = root ? cJSON_PrintUnformatted(root) : nullptr;
-    const std::string body = printed ? printed : "{\"error\":{\"code\":\"internal_error\",\"message\":\"Unexpected error\"}}";
-    if (printed) cJSON_free(printed);
-    cJSON_Delete(root);
+    return escaped;
+}
+
+void replace_marker(std::string &text, const char *marker, const std::string &value) {
+    const size_t position = text.find(marker);
+    if (position != std::string::npos) text.replace(position, std::strlen(marker), value);
+}
+
+esp_err_t send_error(httpd_req_t *req, int status, const char *code, const char *message) {
+    // Keep the response shape static; escape only the values inserted into it.
+    std::string body = R"json({"error":{"code":"__CODE__","message":"__MESSAGE__"}})json";
+    replace_marker(body, "__CODE__", json_escape(code ? code : "internal_error"));
+    replace_marker(body, "__MESSAGE__", json_escape(message ? message : "Unexpected error"));
     const char *http_status = "400 Bad Request";
     switch (status) {
         case 401: http_status = "401 Unauthorized"; break;
@@ -89,7 +115,7 @@ bool read_request_body(httpd_req_t *req, std::vector<uint8_t> &body, size_t maxi
 }
 
 std::string json_string(cJSON *json) {
-    char *printed = cJSON_PrintUnformatted(json);
+    char *printed = cJSON_Print(json);
     std::string result = printed ? printed : "{}";
     if (printed) cJSON_free(printed);
     return result;
@@ -104,15 +130,6 @@ cJSON *parse_file(const std::string &path) {
     std::vector<uint8_t> data;
     if (storage::read_file(path, data, OPEN_SCALE_MAX_UPLOAD_BYTES) != ESP_OK || data.empty()) return nullptr;
     return cJSON_ParseWithLength(reinterpret_cast<const char *>(data.data()), data.size());
-}
-
-const char *factory_json(const std::string &name) {
-    if (name == "settings.json") return R"({"schemaVersion":1,"network":{"hostname":""},"webserver":{"redirectToHostname":true,"http_indexpath":"/default.html","https":{"enabled":false},"security":{}},"buffer":{"ringbuffer_max_total_size_bytes":262144,"queue_capacity":64}})";
-    if (name == "wifi.json") return R"({"schemaVersion":1,"networks":[],"ap":{"enabled":true,"ssidPrefix":"OpenScale","channel":null,"maxStations":4,"keepApWhenConnected":false}})";
-    if (name == "sensors.json") return R"({"schemaVersion":1,"sensors":[]})";
-    if (name == "units.json") return R"({"schemaVersion":1,"baseUnit":"mg","defaultUnit":"g","units":[{"id":"ug","name":"Micrograms","symbol":"µg","factor":0.001,"decimals":0,"group":"Metric"},{"id":"mg","name":"Milligrams","symbol":"mg","factor":1,"decimals":1,"group":"Metric"},{"id":"g","name":"Grams","symbol":"g","factor":1000,"decimals":3,"group":"Metric"},{"id":"kg","name":"Kilograms","symbol":"kg","factor":1000000,"decimals":3,"group":"Metric"},{"id":"oz_av","name":"Ounces (avoirdupois)","symbol":"oz","factor":28349.523125,"decimals":4,"group":"Imperial / US customary"},{"id":"lb_av","name":"Pounds (avoirdupois)","symbol":"lb","factor":453592.37,"decimals":5,"group":"Imperial / US customary"},{"id":"oz_troy","name":"Troy ounces","symbol":"oz t","factor":31103.4768,"decimals":4,"group":"Imperial / US customary"},{"id":"st","name":"Stone","symbol":"st","factor":6350293.18,"decimals":4,"group":"Imperial / US customary"},{"id":"raw","name":"Raw sensor counts (diagnostic)","symbol":"counts","factor":null,"decimals":0,"group":"Diagnostic"}]})";
-    if (name == "webui-settings.json") return R"({"schemaVersion":1})";
-    return nullptr;
 }
 
 bool auth_for_config_get(const std::string &name) {
@@ -356,11 +373,13 @@ bool calibration_name_valid(const std::string &path) {
 bool is_gzip(const std::vector<uint8_t> &body) { return body.size() >= 2 && body[0] == 0x1f && body[1] == 0x8b; }
 
 esp_err_t write_result(httpd_req_t *req, const char *status, const char *saved_path = nullptr) {
-    char json[512]{};
-    if (saved_path) std::snprintf(json, sizeof(json), "{\"status\":\"%s\",\"saved\":true,\"errors\":[],\"warnings\":[],\"pendingChanges\":[\"%s\"]}", status, saved_path);
-    else std::snprintf(json, sizeof(json), "{\"status\":\"%s\",\"saved\":true,\"errors\":[],\"warnings\":[],\"pendingChanges\":[]}", status);
+    std::string body = R"json({"status":"__STATUS__","saved":true,"errors":[],"warnings":[],"pendingChanges":__PENDING__})json";
+    replace_marker(body, "__STATUS__", json_escape(status ? status : "applied"));
+    replace_marker(body, "__PENDING__", saved_path
+        ? (std::string("[\"") + json_escape(saved_path) + "\"]")
+        : "[]");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, body.c_str(), body.size());
 }
 
 esp_err_t write_wifi_result(httpd_req_t *req, const cJSON *canonical) {
@@ -369,7 +388,8 @@ esp_err_t write_wifi_result(httpd_req_t *req, const cJSON *canonical) {
     security::redact_wifi(redacted);
     const std::string config = json_string(redacted);
     cJSON_Delete(redacted);
-    const std::string body = "{\"status\":\"needs-restart\",\"saved\":true,\"errors\":[],\"warnings\":[],\"pendingChanges\":[\"wifi.json\"],\"configuration\":" + config + "}";
+    std::string body = R"json({"status":"needs-restart","saved":true,"errors":[],"warnings":[],"pendingChanges":["wifi.json"],"configuration":__CONFIG__})json";
+    replace_marker(body, "__CONFIG__", config);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body.c_str(), body.size());
 }
@@ -386,7 +406,7 @@ esp_err_t config_resource_handler(httpd_req_t *req) {
             return send_error(req, 401, "authentication_required", "Administrator credentials required");
         cJSON *root = parse_file(path);
         if (!root) {
-            const char *defaults = factory_json(name);
+            const char *defaults = factory_defaults::get(name.c_str());
             root = defaults ? cJSON_Parse(defaults) : nullptr;
         }
         if (!root) return send_error(req, 500, "config_unavailable", "Could not load configuration resource");
@@ -400,7 +420,9 @@ esp_err_t config_resource_handler(httpd_req_t *req) {
     }
     if (!check_mutation(req)) return ESP_OK;
     if (req->method == HTTP_DELETE) {
-        cJSON *defaults = cJSON_Parse(factory_json(name));
+        const char *default_text = factory_defaults::get(name.c_str());
+        if (!default_text) return send_error(req, 500, "factory_default_unavailable", "Factory default is not embedded");
+        cJSON *defaults = cJSON_Parse(default_text);
         if (!defaults || !save_json(path, defaults)) { cJSON_Delete(defaults); return send_error(req, 507, "storage_failed", "Could not restore factory defaults"); }
         cJSON_Delete(defaults);
         if (name == "settings.json" || name == "wifi.json" || name == "sensors.json") {

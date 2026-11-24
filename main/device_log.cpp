@@ -54,7 +54,7 @@ void device_log_add(const char *type, const char *message, const char *details_j
     if (s_mutex) xSemaphoreGive(s_mutex);
 
     char escaped[320]{};
-    char json[640]{};
+    char json[768]{};
     json_escape(copy.message, escaped, sizeof(escaped));
     std::snprintf(json, sizeof(json),
                   "{\"logEntryId\":%llu,\"t\":%llu,\"type\":\"%s\",\"message\":\"%s\",\"details\":%s}",

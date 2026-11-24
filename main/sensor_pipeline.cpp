@@ -2,6 +2,7 @@
 #include "device_log.hpp"
 #include "event_bus.hpp"
 #include "storage.hpp"
+#include "factory_defaults.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -71,12 +72,6 @@ std::atomic<bool> s_stop{false};
 uint32_t s_queue_capacity = DEFAULT_QUEUE_CAPACITY;
 size_t s_history_budget = DEFAULT_HISTORY_BUDGET;
 
-cJSON *load_json(const char *path) {
-    std::vector<uint8_t> bytes;
-    if (storage::read_file(path, bytes, 128 * 1024) != ESP_OK || bytes.empty()) return nullptr;
-    return cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-}
-
 bool json_number(const cJSON *object, const char *key, double &value) {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
     if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)) return false;
@@ -100,18 +95,15 @@ void read_settings() {
     const esp_err_t read_result = storage::read_file("/data/settings/settings.json", file_bytes, 32768);
     cJSON *settings = read_result == ESP_OK && !file_bytes.empty()
         ? cJSON_ParseWithLength(reinterpret_cast<const char *>(file_bytes.data()), file_bytes.size()) : nullptr;
+    const char *defaults = factory_defaults::get("settings.json");
     if (read_result == ESP_ERR_NOT_FOUND) {
-        static constexpr char defaults[] =
-            "{\"schemaVersion\":1,\"network\":{\"hostname\":\"\"},\"webserver\":{\"redirectToHostname\":true,\"http_indexpath\":\"/default.html\",\"https\":{\"enabled\":false},\"security\":{}},\"buffer\":{\"ringbuffer_max_total_size_bytes\":262144,\"queue_capacity\":64}}";
-        std::vector<uint8_t> bytes(defaults, defaults + sizeof(defaults) - 1);
-        if (storage::ready()) (void)storage::write_file_atomic("/data/settings/settings.json", bytes.data(), bytes.size());
-        settings = cJSON_Parse(defaults);
+        if (defaults && storage::ready()) (void)storage::write_file_atomic(
+            "/data/settings/settings.json", reinterpret_cast<const uint8_t *>(defaults), std::strlen(defaults));
+        settings = defaults ? cJSON_Parse(defaults) : nullptr;
     } else if (!settings) {
         device_log_add("config_fallback", "Could not load settings.json; in-memory defaults are active",
                        "{\"file\":\"settings.json\",\"reason\":\"parse_error\",\"savedFileModified\":false}");
-        static constexpr char defaults[] =
-            "{\"schemaVersion\":1,\"network\":{\"hostname\":\"\"},\"webserver\":{\"redirectToHostname\":true,\"http_indexpath\":\"/default.html\",\"https\":{\"enabled\":false},\"security\":{}},\"buffer\":{\"ringbuffer_max_total_size_bytes\":262144,\"queue_capacity\":64}}";
-        settings = cJSON_Parse(defaults); // Do not overwrite the corrupt saved file.
+        settings = defaults ? cJSON_Parse(defaults) : nullptr; // Never overwrite a corrupt saved file.
     }
     const cJSON *buffer = cJSON_GetObjectItemCaseSensitive(settings, "buffer");
     double number = 0;
@@ -123,9 +115,9 @@ void read_settings() {
 }
 
 void create_default_sensor_file() {
-    static constexpr char defaults[] = "{\"schemaVersion\":1,\"sensors\":[]}";
-    std::vector<uint8_t> bytes(defaults, defaults + sizeof(defaults) - 1);
-    (void)storage::write_file_atomic("/data/settings/sensors.json", bytes.data(), bytes.size());
+    const char *defaults = factory_defaults::get("sensors.json");
+    if (defaults) (void)storage::write_file_atomic("/data/settings/sensors.json",
+        reinterpret_cast<const uint8_t *>(defaults), std::strlen(defaults));
 }
 
 void load_sensor_configs() {
@@ -133,13 +125,14 @@ void load_sensor_configs() {
     const esp_err_t read_result = storage::read_file("/data/settings/sensors.json", file_bytes, 128 * 1024);
     cJSON *root = read_result == ESP_OK && !file_bytes.empty()
         ? cJSON_ParseWithLength(reinterpret_cast<const char *>(file_bytes.data()), file_bytes.size()) : nullptr;
+    const char *defaults = factory_defaults::get("sensors.json");
     if (read_result == ESP_ERR_NOT_FOUND) {
         if (storage::ready()) create_default_sensor_file();
-        root = cJSON_Parse("{\"schemaVersion\":1,\"sensors\":[]}");
+        root = defaults ? cJSON_Parse(defaults) : nullptr;
     } else if (!root) {
         device_log_add("config_fallback", "Could not load sensors.json; no sensor definitions are active",
                        "{\"file\":\"sensors.json\",\"reason\":\"parse_error\",\"savedFileModified\":false}");
-        root = cJSON_Parse("{\"schemaVersion\":1,\"sensors\":[]}"); // Never repair a corrupt file automatically.
+        root = defaults ? cJSON_Parse(defaults) : nullptr; // Never repair a corrupt file automatically.
     }
     const cJSON *array = cJSON_GetObjectItemCaseSensitive(root, "sensors");
     if (cJSON_IsArray(array)) {
@@ -229,7 +222,7 @@ void process_warning(Sensor &sensor, const SampleRecord &sample) {
             code, next ? "true" : "false", sensor.id, warning.threshold,
             static_cast<unsigned long long>(sample.n),
             static_cast<unsigned long long>(sample.t_us),
-            static_cast<unsigned long long>(sample.raw), flags_for(sensor, sample.raw));
+            static_cast<unsigned long long>(sample.raw), static_cast<unsigned>(flags_for(sensor, sample.raw)));
         event_publish("warning", json);
         char details[160]{};
         std::snprintf(details, sizeof(details), "{\"sensorId\":%d,\"code\":\"%s\",\"active\":%s,\"n\":%llu,\"threshold\":%.17g}",
@@ -247,7 +240,7 @@ void publish_sample(const Sensor &sensor, const SampleRecord &sample) {
         "{\"sensorId\":%d,\"n\":%llu,\"t\":%llu,\"raw\":%llu,\"flags\":%u}",
         sensor.id, static_cast<unsigned long long>(sample.n),
         static_cast<unsigned long long>(sample.t_us),
-        static_cast<unsigned long long>(sample.raw), flags_for(sensor, sample.raw));
+        static_cast<unsigned long long>(sample.raw), static_cast<unsigned>(flags_for(sensor, sample.raw)));
     event_publish("sample", json);
 }
 

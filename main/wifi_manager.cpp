@@ -1,6 +1,7 @@
 #include "wifi_manager.hpp"
 #include "lwip/ip4_addr.h"
 #include "device_log.hpp"
+#include "factory_defaults.hpp"
 #include "storage.hpp"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -73,18 +74,31 @@ void load_wifi_config() {
     const esp_err_t read_err = storage::read_file("/data/settings/wifi.json", bytes, 64 * 1024);
     cJSON *root = nullptr;
     if (read_err == ESP_ERR_NOT_FOUND) {
-        static constexpr char defaults[] = "{\"schemaVersion\":1,\"networks\":[],\"ap\":{\"enabled\":true,\"ssidPrefix\":\"OpenScale\",\"channel\":null,\"maxStations\":4,\"keepApWhenConnected\":false}}";
-        std::vector<uint8_t> data(defaults, defaults + sizeof(defaults) - 1);
-        if (storage::ready()) (void)storage::write_file_atomic("/data/settings/wifi.json", data.data(), data.size());
-        root = cJSON_Parse(defaults);
+        const char *defaults = factory_defaults::get("wifi.json");
+        if (defaults) {
+            const size_t size = std::strlen(defaults);
+            if (storage::ready()) (void)storage::write_file_atomic(
+                "/data/settings/wifi.json", reinterpret_cast<const uint8_t *>(defaults), size);
+            root = cJSON_Parse(defaults);
+        }
     } else if (read_err == ESP_OK) {
         root = cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
     }
     if (!root) {
-        device_log_add("config_fallback", "Could not load wifi.json; in-memory defaults are active",
-                       "{\"file\":\"wifi.json\",\"reason\":\"parse_error\",\"savedFileModified\":false}");
-        s_networks.clear();
-        return;
+        const char *reason = read_err == ESP_OK ? "parse_error" : "read_error";
+        char details[128]{};
+        std::snprintf(details, sizeof(details),
+                      "{\"file\":\"wifi.json\",\"reason\":\"%s\",\"savedFileModified\":false}",
+                      reason);
+        device_log_add("config_fallback", "Could not load wifi.json; in-memory factory defaults are active", details);
+        // Factory defaults are immutable firmware data. Use them only in memory
+        // for a corrupt/unreadable saved file; never repair or overwrite it here.
+        const char *defaults = factory_defaults::get("wifi.json");
+        root = defaults ? cJSON_Parse(defaults) : nullptr;
+        if (!root) {
+            s_networks.clear();
+            return;
+        }
     }
     const cJSON *networks = cJSON_GetObjectItemCaseSensitive(root, "networks");
     if (cJSON_IsArray(networks)) {
@@ -94,10 +108,11 @@ void load_wifi_config() {
             const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(entry, "ssid");
             const cJSON *password = cJSON_GetObjectItemCaseSensitive(entry, "password");
             const cJSON *priority = cJSON_GetObjectItemCaseSensitive(entry, "priority");
-            if (!cJSON_IsString(ssid) || !ssid->valuestring[0]) continue;
+            if (!cJSON_IsString(ssid) || !ssid->valuestring[0] || std::strlen(ssid->valuestring) > 32) continue;
             Network network{};
             network.ssid = ssid->valuestring;
             if (cJSON_IsString(password)) network.password = password->valuestring;
+            if (network.password.size() > 63) continue;
             if (cJSON_IsNumber(priority)) network.priority = priority->valueint;
             network.original_order = i;
             const cJSON *ip = cJSON_GetObjectItemCaseSensitive(entry, "ip");
@@ -137,16 +152,18 @@ void start_fallback_ap() {
     uint8_t mac[6]{};
     (void)esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     char ssid[33]{};
-    std::snprintf(ssid, sizeof(ssid), "%s-%02X%02X%02X", s_ap_prefix.c_str(), mac[3], mac[4], mac[5]);
+    std::snprintf(ssid, sizeof(ssid), "%.25s-%02X%02X%02X", s_ap_prefix.c_str(), mac[3], mac[4], mac[5]);
     // Use an explicit configured password, otherwise generate a per-device recovery secret.
     char password[64]{};
     const bool generated_password = !s_ap_password_explicit;
     if (generated_password) std::snprintf(password, sizeof(password), "OS-%02X%02X-%02X%02X", mac[2], mac[3], mac[4], mac[5]);
     else std::snprintf(password, sizeof(password), "%s", s_ap_password.c_str());
     wifi_config_t ap_config{};
-    std::snprintf(reinterpret_cast<char *>(ap_config.ap.ssid), sizeof(ap_config.ap.ssid), "%s", ssid);
-    std::snprintf(reinterpret_cast<char *>(ap_config.ap.password), sizeof(ap_config.ap.password), "%s", password);
-    ap_config.ap.ssid_len = std::strlen(ssid);
+    const size_t ssid_length = std::min(std::strlen(ssid), sizeof(ap_config.ap.ssid));
+    std::memcpy(ap_config.ap.ssid, ssid, ssid_length);
+    const size_t password_length = std::min(std::strlen(password), sizeof(ap_config.ap.password) - 1);
+    std::memcpy(ap_config.ap.password, password, password_length);
+    ap_config.ap.ssid_len = static_cast<uint8_t>(ssid_length);
     ap_config.ap.channel = s_ap_channel;
     ap_config.ap.max_connection = s_max_stations;
     ap_config.ap.authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
@@ -164,8 +181,10 @@ void connect_worker(void *) {
         bool connected = false;
         for (const auto &network : s_networks) {
             wifi_config_t sta{};
-            std::snprintf(reinterpret_cast<char *>(sta.sta.ssid), sizeof(sta.sta.ssid), "%s", network.ssid.c_str());
-            std::snprintf(reinterpret_cast<char *>(sta.sta.password), sizeof(sta.sta.password), "%s", network.password.c_str());
+            const size_t ssid_length = std::min(network.ssid.size(), sizeof(sta.sta.ssid));
+            std::memcpy(sta.sta.ssid, network.ssid.data(), ssid_length);
+            const size_t password_length = std::min(network.password.size(), sizeof(sta.sta.password) - 1);
+            std::memcpy(sta.sta.password, network.password.data(), password_length);
             sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
             sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
             (void)esp_wifi_disconnect();

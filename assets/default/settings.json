@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "network": {
+    "hostname": ""
+  },
+  "webserver": {
+    "redirectToHostname": true,
+    "http_indexpath": "/default.html",
+    "https": {
+      "enabled": false
+    },
+    "security": {}
+  },
+  "buffer": {
+    "ringbuffer_max_total_size_bytes": 262144,
+    "queue_capacity": 64
+  }
+}

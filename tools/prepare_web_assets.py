@@ -32,21 +32,20 @@ def read_webui_version(project_root: Path) -> str:
     return "not-provided"
 
 
-def copy_source_files(
-    source_roots: list[tuple[Path, str]],
-    staged_plain: Path,
-    excluded_files: set[Path] | None = None,
-) -> None:
-    # Exclusions are exact source paths, so a same-named file in /www is unaffected.
-    excluded = {path.resolve() for path in (excluded_files or set())}
+def copy_source_files(source_roots: list[tuple[Path, str]], staged_plain: Path) -> None:
     seen: dict[str, bytes] = {}
     for root, prefix in source_roots:
         if not root.is_dir():
             continue
         for file in sorted(root.rglob("*")):
-            if not file.is_file() or file.resolve() in excluded:
+            if not file.is_file():
                 continue
             rel = file.relative_to(root)
+            # This is an internal QA helper, not part of the shipped WebUI.
+            # Exclude only the root-level /WebUI/audit_harness.js; a same-named
+            # asset in /www remains a normal user-supplied file.
+            if root.name == "WebUI" and rel.as_posix() == "audit_harness.js":
+                continue
             if ".git" in rel.parts or file.name in {".gitkeep", ".gitignore", ".DS_Store"}:
                 continue
             virtual = (Path(prefix) / rel).as_posix().lstrip("/")
@@ -112,17 +111,20 @@ def main() -> int:
         uplot_root = fetch(root, force=False)
         shutil.rmtree(plain, ignore_errors=True)
         plain.mkdir(parents=True, exist_ok=True)
-        copy_source_files(
-            [(root / "WebUI", ""), (root / "www", "")],
-            plain,
-            excluded_files={root / "WebUI" / "audit_harness.js"},
-        )
+        copy_source_files([(root / "WebUI", ""), (root / "www", "")], plain)
 
         # Built-in recovery assets are firmware-owned and cannot be overridden by WebUI files.
-        #for reserved in ("default.html", "default.js"):
-        #    if (plain / reserved).exists():
-        #        raise RuntimeError(f"/{reserved} is reserved by firmware and cannot be supplied by WebUI/www")
-        #copy_source_files([(root / "assets" / "default", "")], plain)
+        for reserved in ("recovery.html", "recovery.js"):
+            if (plain / reserved).exists():
+                raise RuntimeError(f"/{reserved} is reserved by firmware and cannot be supplied by WebUI/www")
+        # Only the immutable recovery UI is a web asset. Factory configuration
+        # JSON files in assets/default are embedded in firmware separately and
+        # must never be published through the virtual /www root.
+        for recovery_asset in ("recovery.html", "recovery.js"):
+            source = root / "assets" / "default" / recovery_asset
+            if not source.is_file():
+                raise RuntimeError(f"Missing firmware recovery asset: {source}")
+            shutil.copy2(source, plain / recovery_asset)
         add_uplot(uplot_root, plain)
 
         shutil.rmtree(virtual_root, ignore_errors=True)

@@ -25,6 +25,14 @@ Only `dist/uPlot.iife.min.js` and `dist/uPlot.min.css` are added to the virtual 
 
 Built-in `/default.html` and `/default.js` are reserved diagnostic assets and cannot be overridden by `/WebUI` or `/www`.
 
+## Factory defaults and runtime configuration
+
+Human-readable factory JSON documents live in `assets/default/` (`settings.json`, `wifi.json`, `sensors.json`, `units.json`, `webui-settings.json`). The build validates their schema version and generates immutable `const` byte arrays in the build directory; those arrays are linked into firmware read-only application data. They are not copied into the virtual web root and cannot be changed through HTTP, serial commands, or runtime code. Updating a factory default requires changing the source file and rebuilding firmware.
+
+Mutable runtime configuration is separate and stored on FATFS under `/data/settings/`. A missing runtime file is initialized from its embedded factory default. `DELETE` restores that file from the immutable default. If a saved file is corrupt/unreadable, firmware uses the embedded default in memory and does not overwrite or repair the saved file automatically.
+
+API responses use fixed JSON templates, escaped string insertion and decimal formatting for 64-bit values where practical. Variable-length arrays are appended as JSON fragments. cJSON is retained for parsing incoming configuration and preserving/modifying its keys; it is not used to build high-frequency sample/history payloads.
+
 ## Project documents
 
 The v0.5.1 contract documents are preserved in `docs/`: `Project Requirements.md`, `JSON File Formats.md` and `API Protocol.md`. The v0.3 implementation boundary and known gaps are tracked in `docs/v0.3-implementation-status.md`.
@@ -34,7 +42,7 @@ The v0.5.1 contract documents are preserved in `docs/`: `Project Requirements.md
 - `main/` — firmware components
 - `WebUI/` — separately developed WebUI (currently empty)
 - `www/` — additional static assets (currently empty)
-- `assets/default/` — firmware-owned diagnostic/recovery page
+- `assets/default/` — readable immutable factory JSON defaults plus firmware-owned diagnostic/recovery page
 - `tools/` — hidden prebuild and gzip generation
 - `.prebuild/` — generated, ignored cache (never edit manually)
 

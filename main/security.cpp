@@ -3,8 +3,7 @@
 #include "storage.hpp"
 #include "esp_random.h"
 #include "mbedtls/base64.h"
-#include "mbedtls/md.h"
-#include "mbedtls/pkcs5.h"
+#include <psa/crypto.h>
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -43,18 +42,32 @@ bool constant_time_equal(const uint8_t *a, const uint8_t *b, size_t n) {
 
 bool derive(const char *password, size_t password_len, const uint8_t *salt,
             size_t salt_len, uint32_t iterations, uint8_t *output) {
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) return false;
-    mbedtls_md_context_t context;
-    mbedtls_md_init(&context);
-    int rc = mbedtls_md_setup(&context, info, 1);
-    if (rc == 0) {
-        rc = mbedtls_pkcs5_pbkdf2_hmac(&context,
-            reinterpret_cast<const unsigned char *>(password), password_len,
-            salt, salt_len, iterations, DERIVED_BYTES, output);
+    // ESP-IDF 6 uses Mbed TLS 4 / PSA Crypto for cryptographic primitives.
+    if (psa_crypto_init() != PSA_SUCCESS) return false;
+
+    psa_key_derivation_operation_t operation = PSA_KEY_DERIVATION_OPERATION_INIT;
+    psa_status_t status = psa_key_derivation_setup(
+        &operation, PSA_ALG_PBKDF2_HMAC(PSA_ALG_SHA_256));
+    if (status != PSA_SUCCESS) return false;
+
+    status = psa_key_derivation_input_integer(
+        &operation, PSA_KEY_DERIVATION_INPUT_COST, iterations);
+    if (status == PSA_SUCCESS) {
+        status = psa_key_derivation_input_bytes(
+            &operation, PSA_KEY_DERIVATION_INPUT_SALT, salt, salt_len);
     }
-    mbedtls_md_free(&context);
-    return rc == 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_key_derivation_input_bytes(
+            &operation, PSA_KEY_DERIVATION_INPUT_PASSWORD,
+            reinterpret_cast<const uint8_t *>(password), password_len);
+    }
+    if (status == PSA_SUCCESS) {
+        status = psa_key_derivation_output_bytes(&operation, output, DERIVED_BYTES);
+    }
+
+    // Always release the operation after setup, including failed input/output steps.
+    const psa_status_t cleanup_status = psa_key_derivation_abort(&operation);
+    return status == PSA_SUCCESS && cleanup_status == PSA_SUCCESS;
 }
 
 cJSON *read_settings() {

@@ -6,6 +6,9 @@ This is the first clean firmware rewrite based on the v0.5.1 project, JSON-forma
 
 - ESP-IDF C++ application structure; HX711 component dependency pinned through the IDF component manager.
 - Firmware version, build ID, Git revision, WebUI version, protocol version and file-format versions compiled into the firmware and exposed by `/api/device`.
+- Human-readable factory JSON source files under `assets/default/`; build-time validation and generation into immutable `const` application-image data. These JSON files are not published into `/www` and are not runtime-editable.
+- Runtime JSON configuration kept separately under `/data/settings/`; missing files are initialized from embedded defaults, DELETE restores from those defaults, and corrupt/unreadable files use in-memory defaults without automatic overwrite.
+- API response generation primarily uses fixed templates, JSON string escaping and exact decimal formatting for uint64 values. cJSON remains for parsing and controlled modification of configuration documents, including unknown-key preservation.
 - Hidden `.prebuild/` staging for immutable `/WebUI` + `/www` inputs, gzip outputs, virtual root and downloaded uPlot source.
 - uPlot source pinned to commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012`; first configure/build downloads it, following builds reuse the cache. `make fetch-uplot` forces a fresh fetch.
 - Only `dist/uPlot.iife.min.js` and `dist/uPlot.min.css` are copied to virtual `/www/libs/` and gzip-compressed without changing their filenames or URL paths. All other downloaded uPlot files, including its MIT license, remain in the hidden `.prebuild/uplot/` cache.
@@ -24,7 +27,7 @@ This is the first clean firmware rewrite based on the v0.5.1 project, JSON-forma
 - History range/truncation handling is implemented at a basic level but needs exhaustive testing for evicted boundaries, sparse IDs and all pagination cases. `maxHistoryChunk` is currently fixed at 5000.
 - Firmware warning flags 0–1 are generated from current HX711 thresholds. Historical disconnection/error/invalid-measurement flags (bits 2–4) are not reconstructed; the HX711 path does not yet emit all such quality states.
 - Static gzip upload currently checks the gzip signature; full stream integrity validation is not implemented. Calibration upload remains intentionally opaque and is stored unchanged as required.
-- Password storage uses PBKDF2-HMAC-SHA256, but its iteration/cost choice and recovery workflow require target-hardware benchmarking and security review. Plain HTTP Basic authentication is not encrypted; use only on a trusted network.
+- Password storage uses PBKDF2-HMAC-SHA256 through PSA Crypto for the ESP-IDF 6 / Mbed TLS 4 API surface. The iteration/cost choice and recovery workflow require target-hardware benchmarking and security review. Plain HTTP Basic authentication is not encrypted; use only on a trusted network.
 - The starter partition table is for a 4 MiB ESP32 build only. Other targets/flash layouts require a matching partition table and target-specific GPIO/peripheral checks.
 
 ## Source-document conflict recorded for this build
@@ -35,6 +38,7 @@ The API protocol requires the Wi-Fi PUT response to return the canonical redacte
 
 ## Validation status
 
-- Python build-tool syntax and the staged gzip/virtual-root pipeline can be tested locally without ESP-IDF.
-- No ESP-IDF installation is available in the current build environment; no firmware compile, flash, runtime, or hardware test is claimed for this artifact.
+- The user-provided ESP-IDF 6.1.1 compile logs were reviewed. The configure/dependency stage completed; the listed source failures were addressed: Mbed TLS PBKDF2 API migration, raw-string collision removed with external defaults, fixed-array URI checks, format argument types, bounded Wi-Fi SSID copy and device-log output sizing.
+- Python build-tool syntax, factory-default generation, generated C++ compilation with a host compiler, and staged gzip/virtual-root content can be tested locally without ESP-IDF.
+- No ESP-IDF installation is available in the current build environment; no firmware compile, flash, runtime, or hardware test is claimed for this artifact. The patched project must be rebuilt in the user's ESP-IDF 6.1.1 environment to reveal any subsequent diagnostics.
 - The supplied WebUI folder is empty, so the compiled WebUI version fallback is `not-provided` until a version override, `WebUI/version.txt`, or `WebUI/package.json` is supplied.

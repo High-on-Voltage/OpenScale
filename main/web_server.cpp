@@ -42,8 +42,36 @@ esp_err_t send_json(httpd_req_t *req, const std::string &body) {
     return httpd_resp_send(req, body.c_str(), body.size());
 }
 
+std::string json_quote(const std::string &value) {
+    std::string result;
+    result.reserve(value.size() + 2);
+    static constexpr char HEX[] = "0123456789abcdef";
+    result += '"';
+    for (const unsigned char ch : value) {
+        switch (ch) {
+            case '"': result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:
+                if (ch < 0x20) {
+                    result += "\\u00";
+                    result += HEX[ch >> 4];
+                    result += HEX[ch & 0x0f];
+                } else {
+                    result += static_cast<char>(ch);
+                }
+        }
+    }
+    result += '"';
+    return result;
+}
+
 bool get_query_value(httpd_req_t *req, const char *key, char *out, size_t out_size) {
-    if (!req->uri || !std::strchr(req->uri, '?')) return false;
+    if (!std::strchr(req->uri, '?')) return false;
     char query[256]{};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return false;
     return httpd_query_key_value(query, key, out, out_size) == ESP_OK;
@@ -103,7 +131,7 @@ esp_err_t api_device(httpd_req_t *req) {
         "\"maxUploadBytes\":%u,\"maxHistoryChunk\":%u}",
         OPEN_SCALE_FIRMWARE_VERSION, OPEN_SCALE_WEBUI_VERSION, OPEN_SCALE_BUILD_ID, OPEN_SCALE_GIT_COMMIT,
         esp_get_idf_version(), static_cast<int>(chip.model), chip.revision, chip.cores,
-        flash_bytes, psram_present ? "true" : "false", static_cast<unsigned>(psram_total),
+        static_cast<unsigned>(flash_bytes), psram_present ? "true" : "false", static_cast<unsigned>(psram_total),
         OPEN_SCALE_PROTOCOL_VERSION, OPEN_SCALE_MAX_UPLOAD_BYTES, static_cast<unsigned>(MAX_HISTORY_CHUNK));
     return send_json(req, json);
 }
@@ -140,7 +168,7 @@ esp_err_t api_status(httpd_req_t *req) {
         static_cast<unsigned>(event_subscriber_count()),
         static_cast<unsigned>(heap_free), static_cast<unsigned>(heap_min), static_cast<unsigned>(heap_largest),
         static_cast<unsigned>(psram_total), static_cast<unsigned>(psram_free), static_cast<unsigned>(psram_largest),
-        flash_bytes, static_cast<unsigned long long>(fs_total),
+        static_cast<unsigned>(flash_bytes), static_cast<unsigned long long>(fs_total),
         static_cast<unsigned long long>(fs_used), static_cast<unsigned long long>(fs_free),
         wifi.connected ? "true" : "false", rssi_json.c_str(), ip_json.c_str(),
         static_cast<unsigned>(wifi.clients_connected));
@@ -152,10 +180,10 @@ esp_err_t api_status(httpd_req_t *req) {
         char item[512]{};
         std::snprintf(item, sizeof(item),
             "{\"sensorId\":%d,\"state\":\"%s\",\"rate_hz\":%u,\"sensorUptimeUs\":%llu,\"configRevision\":%llu,\"warningRevision\":%llu,\"ringBufferCapacity\":%u,\"ringBufferUsed\":%llu,\"oldestId\":%llu,\"latestId\":%llu,\"queueDrops\":%llu,\"readErrors\":%llu}",
-            sensor.sensor_id, sensor.state.c_str(), sensor.rate_hz,
+            sensor.sensor_id, sensor.state.c_str(), static_cast<unsigned>(sensor.rate_hz),
             static_cast<unsigned long long>(sensor.sensor_uptime_us),
             static_cast<unsigned long long>(sensor.config_revision),
-            static_cast<unsigned long long>(sensor.warning_revision), sensor.capacity,
+            static_cast<unsigned long long>(sensor.warning_revision), static_cast<unsigned>(sensor.capacity),
             static_cast<unsigned long long>(sensor.total_used),
             static_cast<unsigned long long>(sensor.oldest_id),
             static_cast<unsigned long long>(sensor.latest_id),
@@ -256,28 +284,15 @@ esp_err_t api_device_log(httpd_req_t *req) {
     const auto entries = device_log_snapshot(after_id, static_cast<size_t>(limit));
     const uint64_t latest = device_log_latest_id();
     const uint64_t oldest = device_log_oldest_id();
-    auto quote = [](const std::string &value) {
-        cJSON *node = cJSON_CreateString(value.c_str());
-        char *printed = node ? cJSON_PrintUnformatted(node) : nullptr;
-        std::string result = printed ? printed : "\"\"";
-        if (printed) cJSON_free(printed);
-        cJSON_Delete(node);
-        return result;
-    };
     std::string json = "{\"entries\":[";
     for (size_t i = 0; i < entries.size(); ++i) {
         if (i) json += ',';
         const auto &e = entries[i];
         json += "{\"logEntryId\":" + std::to_string(e.log_entry_id) +
                 ",\"t\":" + std::to_string(e.t_us) +
-                ",\"type\":" + quote(e.type) +
-                ",\"message\":" + quote(e.message) + ",\"details\":";
-        cJSON *details = cJSON_Parse(e.details_json.c_str());
-        char *printed = details ? cJSON_PrintUnformatted(details) : nullptr;
-        json += printed ? printed : "{}";
-        if (printed) cJSON_free(printed);
-        cJSON_Delete(details);
-        json += "}";
+                ",\"type\":" + json_quote(e.type) +
+                ",\"message\":" + json_quote(e.message) + ",\"details\":" +
+                (e.details_json.empty() ? "{}" : e.details_json) + "}";
     }
     json += "],\"returned\":" + std::to_string(entries.size()) +
             ",\"oldestLogEntryId\":" + (oldest ? std::to_string(oldest) : "null") +
@@ -327,7 +342,7 @@ std::string configured_index_path() {
 }
 
 esp_err_t static_get(httpd_req_t *req) {
-    const char *uri = req->uri ? req->uri : "/";
+    const char *uri = req->uri;
     const char *query = std::strchr(uri, '?');
     std::string path(uri, query ? static_cast<size_t>(query - uri) : std::strlen(uri));
     if (path == "/") path = configured_index_path();
@@ -371,13 +386,14 @@ void sse_task(void *arg) {
     // Log snapshot only; sample history is fetched independently via /api/history.
     const auto snapshot = device_log_snapshot(0, 128);
     for (const auto &entry : snapshot) {
-        char json[640]{};
-        std::snprintf(json, sizeof(json),
-            "{\"logEntryId\":%llu,\"t\":%llu,\"type\":\"%s\",\"message\":\"%s\",\"details\":%s}",
-            static_cast<unsigned long long>(entry.log_entry_id),
-            static_cast<unsigned long long>(entry.t_us), entry.type.c_str(), entry.message.c_str(),
-            entry.details_json.c_str());
-        const StreamEvent local = event_make_local("device_log", json);
+        // Template/append serialization avoids constructing a cJSON tree for
+        // every retained log entry; uint64 IDs remain exact decimal tokens.
+        const std::string json = "{\"logEntryId\":" + std::to_string(entry.log_entry_id) +
+            ",\"t\":" + std::to_string(entry.t_us) +
+            ",\"type\":" + json_quote(entry.type) +
+            ",\"message\":" + json_quote(entry.message) +
+            ",\"details\":" + (entry.details_json.empty() ? "{}" : entry.details_json) + "}";
+        const StreamEvent local = event_make_local("device_log", json.c_str());
         send_sse_frame(req, local);
     }
     TickType_t last_keepalive = xTaskGetTickCount();
@@ -411,30 +427,43 @@ esp_err_t sse_handler(httpd_req_t *req) {
 }
 
 esp_err_t api_files(httpd_req_t *req) {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *files = cJSON_AddArrayToObject(root, "files");
-    cJSON *api = cJSON_AddArrayToObject(root, "apiPaths");
-    const char *routes[][2] = {{"/api/device", "GET"}, {"/api/status", "GET"}, {"/api/device-log", "GET"},
-        {"/api/history", "GET"}, {"/api/files", "GET"}, {"/stream", "GET"}, {"/api/restart", "POST"},
-        {"/data/settings/<name>.json", "GET,PUT,DELETE"},
-        {"/data/calibration/calibration_<sensorId>_<profileId>.json", "GET,PUT,DELETE"},
-        {"/<static-asset-path>", "GET,PUT,DELETE"}};
-    for (const auto &route : routes) {
-        cJSON *entry = cJSON_CreateObject();
-        cJSON_AddStringToObject(entry, "path", route[0]);
-        cJSON *methods = cJSON_AddArrayToObject(entry, "methods");
-        std::string method_list = route[1];
-        size_t start = 0;
-        while (start < method_list.size()) {
-            const size_t comma = method_list.find(',', start);
-            const std::string method = method_list.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-            cJSON_AddItemToArray(methods, cJSON_CreateString(method.c_str()));
-            if (comma == std::string::npos) break;
-            start = comma + 1;
-        }
-        cJSON_AddItemToArray(api, entry);
-    }
-    std::vector<std::string> pending{ "/fs" };
+    struct ApiPath {
+        const char *path;
+        const char *method1;
+        const char *method2;
+        const char *method3;
+    };
+    static constexpr ApiPath routes[] = {
+        {"/api/device", "GET", nullptr, nullptr},
+        {"/api/status", "GET", nullptr, nullptr},
+        {"/api/device-log", "GET", nullptr, nullptr},
+        {"/api/history", "GET", nullptr, nullptr},
+        {"/api/files", "GET", nullptr, nullptr},
+        {"/stream", "GET", nullptr, nullptr},
+        {"/api/restart", "POST", nullptr, nullptr},
+        {"/data/settings/<name>.json", "GET", "PUT", "DELETE"},
+        {"/data/calibration/calibration_<sensorId>_<profileId>.json", "GET", "PUT", "DELETE"},
+        {"/<static-asset-path>", "GET", "PUT", "DELETE"},
+    };
+
+    std::string json = "{\"files\":[";
+    bool first_file = true;
+    const bool password_set = security::password_is_set();
+    auto append_file = [&](const std::string &path, const char *kind,
+                           const char *encoding, const std::string &size_json,
+                           bool protected_resource, bool read_only) {
+        if (!first_file) json += ',';
+        first_file = false;
+        json += "{\"path\":" + json_quote(path) +
+                ",\"kind\":" + json_quote(kind) +
+                ",\"contentEncoding\":" + json_quote(encoding) +
+                ",\"sizeBytes\":" + size_json +
+                ",\"protected\":" + (protected_resource ? "true" : "false") +
+                ",\"readOnly\":" + (read_only ? "true" : "false") + "}";
+    };
+
+    // Generic static assets are walked independently from /data resources.
+    std::vector<std::string> pending{"/fs"};
     while (!pending.empty()) {
         const std::string current = pending.back();
         pending.pop_back();
@@ -450,63 +479,58 @@ esp_err_t api_files(httpd_req_t *req) {
                 if (full.rfind("/fs/data", 0) != 0) pending.push_back(full);
                 continue;
             }
+            if (!S_ISREG(st.st_mode)) continue;
             const std::string url = full.substr(3);
-            cJSON *file = cJSON_CreateObject();
-            cJSON_AddStringToObject(file, "path", url.c_str());
-            cJSON_AddStringToObject(file, "kind", "asset");
-            cJSON_AddStringToObject(file, "contentEncoding", "gzip");
-            cJSON_AddNumberToObject(file, "sizeBytes", static_cast<double>(st.st_size));
-            cJSON_AddBoolToObject(file, "protected", security::password_is_set());
-            cJSON_AddBoolToObject(file, "readOnly", url == "/default.html" || url == "/default.js");
-            cJSON_AddItemToArray(files, file);
+            append_file(url, "asset", "gzip", std::to_string(st.st_size), password_set,
+                        url == "/default.html" || url == "/default.js");
         }
         closedir(dir);
     }
-    // Calibration files are explicit /data resources and are never exposed through the generic asset walker.
-    {
-        const std::string calibration_dir = "/fs/data/calibration";
-        DIR *dir = opendir(calibration_dir.c_str());
-        if (dir) {
-            struct dirent *entry = nullptr;
-            while ((entry = readdir(dir)) != nullptr) {
-                if (entry->d_name[0] == '.') continue;
-                const std::string name = entry->d_name;
-                if (name.rfind("calibration_", 0) != 0 || name.size() < 6 || name.substr(name.size() - 5) != ".json") continue;
-                const std::string full = calibration_dir + "/" + name;
-                struct stat st{};
-                if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
-                const std::string url = "/data/calibration/" + name;
-                cJSON *file = cJSON_CreateObject();
-                cJSON_AddStringToObject(file, "path", url.c_str());
-                cJSON_AddStringToObject(file, "kind", "calibration");
-                cJSON_AddStringToObject(file, "contentEncoding", "gzip");
-                cJSON_AddNumberToObject(file, "sizeBytes", static_cast<double>(st.st_size));
-                cJSON_AddBoolToObject(file, "protected", security::password_is_set());
-                cJSON_AddBoolToObject(file, "readOnly", false);
-                cJSON_AddItemToArray(files, file);
-            }
-            closedir(dir);
+
+    // Calibration files are explicit /data resources and never enter the generic asset walker.
+    const std::string calibration_dir = "/fs/data/calibration";
+    if (DIR *dir = opendir(calibration_dir.c_str())) {
+        struct dirent *entry = nullptr;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (entry->d_name[0] == '.') continue;
+            const std::string name = entry->d_name;
+            if (name.rfind("calibration_", 0) != 0 || name.size() < 6 ||
+                name.substr(name.size() - 5) != ".json") continue;
+            const std::string full = calibration_dir + "/" + name;
+            struct stat st{};
+            if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            append_file("/data/calibration/" + name, "calibration", "gzip",
+                        std::to_string(st.st_size), password_set, false);
         }
+        closedir(dir);
     }
-    const char *settings[] = {"settings.json", "wifi.json", "sensors.json", "units.json", "webui-settings.json"};
+
+    static constexpr const char *settings[] = {
+        "settings.json", "wifi.json", "sensors.json", "units.json", "webui-settings.json"};
     for (const char *name : settings) {
-        std::string path = std::string("/data/settings/") + name;
         std::vector<uint8_t> bytes;
-        cJSON *file = cJSON_CreateObject();
-        cJSON_AddStringToObject(file, "path", path.c_str());
-        cJSON_AddStringToObject(file, "kind", "settings");
-        cJSON_AddStringToObject(file, "contentEncoding", "identity");
-        if (storage::read_file(path, bytes) == ESP_OK) cJSON_AddNumberToObject(file, "sizeBytes", static_cast<double>(bytes.size()));
-        else cJSON_AddNullToObject(file, "sizeBytes");
-        cJSON_AddBoolToObject(file, "protected", security::password_is_set());
-        cJSON_AddBoolToObject(file, "readOnly", false);
-        cJSON_AddItemToArray(files, file);
+        const std::string path = std::string("/data/settings/") + name;
+        const std::string size_json = storage::read_file(path, bytes) == ESP_OK
+            ? std::to_string(bytes.size()) : "null";
+        append_file(path, "settings", "identity", size_json, password_set, false);
     }
-    char *printed = cJSON_PrintUnformatted(root);
-    std::string body = printed ? printed : "{\"files\":[],\"apiPaths\":[]}";
-    if (printed) cJSON_free(printed);
-    cJSON_Delete(root);
-    return send_json(req, body);
+
+    json += "],\"apiPaths\":[";
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
+        if (i) json += ',';
+        json += "{\"path\":" + json_quote(routes[i].path) + ",\"methods\":[";
+        const char *methods[] = {routes[i].method1, routes[i].method2, routes[i].method3};
+        bool first_method = true;
+        for (const char *method : methods) {
+            if (!method) continue;
+            if (!first_method) json += ',';
+            first_method = false;
+            json += json_quote(method);
+        }
+        json += "]}";
+    }
+    json += "]}";
+    return send_json(req, json);
 }
 }
 
@@ -547,7 +571,7 @@ esp_err_t web_server_start() {
             return register_err;
         }
     }
-    ESP_LOGI(TAG, "HTTP server listening on port %u", config.server_port);
+    ESP_LOGI(TAG, "HTTP server listening on port %u", static_cast<unsigned>(config.server_port));
     return ESP_OK;
 }
 }

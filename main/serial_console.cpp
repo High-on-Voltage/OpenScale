@@ -1,5 +1,6 @@
 #include "serial_console.hpp"
 #include "security.hpp"
+#include "factory_defaults.hpp"
 #include "storage.hpp"
 #include "esp_console.h"
 #include "esp_log.h"
@@ -16,17 +17,18 @@ namespace openscale {
 namespace {
 constexpr char TAG[] = "serial";
 
-cJSON *read_json_or_default(const char *path, const char *defaults) {
+cJSON *read_json_or_default(const char *path, const char *factory_filename) {
     std::vector<uint8_t> bytes;
     if (storage::read_file(path, bytes, 64 * 1024) == ESP_OK) {
         cJSON *parsed = cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         if (parsed) return parsed;
     }
-    return cJSON_Parse(defaults);
+    const char *defaults = factory_defaults::get(factory_filename);
+    return defaults ? cJSON_Parse(defaults) : nullptr;
 }
 
 bool save_json(const char *path, cJSON *root) {
-    char *printed = cJSON_PrintUnformatted(root);
+    char *printed = cJSON_Print(root);
     if (!printed) return false;
     const bool ok = storage::write_file_atomic(path, reinterpret_cast<const uint8_t *>(printed), std::strlen(printed)) == ESP_OK;
     cJSON_free(printed);
@@ -34,7 +36,8 @@ bool save_json(const char *path, cJSON *root) {
 }
 
 int cmd_wifi_clear(int, char **) {
-    cJSON *root = cJSON_Parse("{\"schemaVersion\":1,\"networks\":[],\"ap\":{\"enabled\":true,\"ssidPrefix\":\"OpenScale\",\"channel\":null,\"maxStations\":4,\"keepApWhenConnected\":false}}");
+    const char *defaults = factory_defaults::get("wifi.json");
+    cJSON *root = defaults ? cJSON_Parse(defaults) : nullptr;
     const bool ok = root && save_json("/data/settings/wifi.json", root);
     cJSON_Delete(root);
     std::printf(ok ? "Wi-Fi station list cleared. Reboot to apply.\n" : "Could not save wifi.json.\n");
@@ -53,8 +56,11 @@ int cmd_wifi_set(int argc, char **argv) {
         return 1;
     }
     const int priority = argc == 4 ? std::atoi(argv[3]) : 100;
-    cJSON *root = read_json_or_default("/data/settings/wifi.json", "{\"schemaVersion\":1,\"networks\":[],\"ap\":{\"enabled\":true,\"ssidPrefix\":\"OpenScale\",\"channel\":null,\"maxStations\":4,\"keepApWhenConnected\":false}}");
-    if (!root) root = cJSON_Parse("{\"schemaVersion\":1,\"networks\":[],\"ap\":{\"enabled\":true,\"ssidPrefix\":\"OpenScale\",\"channel\":null,\"maxStations\":4,\"keepApWhenConnected\":false}}");
+    cJSON *root = read_json_or_default("/data/settings/wifi.json", "wifi.json");
+    if (!root) {
+        std::printf("Could not load or create wifi.json.\n");
+        return 1;
+    }
     cJSON *networks = cJSON_GetObjectItemCaseSensitive(root, "networks");
     if (!cJSON_IsArray(networks)) {
         cJSON_DeleteItemFromObjectCaseSensitive(root, "networks");
@@ -80,8 +86,7 @@ int cmd_wifi_set(int argc, char **argv) {
 
 int cmd_password_set(int argc, char **argv) {
     if (argc != 2) { std::printf("Usage: password_set <password>\n"); return 1; }
-    cJSON *root = read_json_or_default("/data/settings/settings.json",
-        "{\"schemaVersion\":1,\"network\":{\"hostname\":\"\"},\"webserver\":{\"redirectToHostname\":true,\"http_indexpath\":\"/default.html\",\"https\":{\"enabled\":false},\"security\":{}},\"buffer\":{\"ringbuffer_max_total_size_bytes\":262144,\"queue_capacity\":64}}");
+    cJSON *root = read_json_or_default("/data/settings/settings.json", "settings.json");
     if (!root || !security::set_password_verifier(root, argv[1]) || !save_json("/data/settings/settings.json", root)) {
         cJSON_Delete(root);
         std::printf("Password update failed (password must be 8-128 bytes; check storage).\n");
@@ -93,8 +98,7 @@ int cmd_password_set(int argc, char **argv) {
 }
 
 int cmd_password_clear(int, char **) {
-    cJSON *root = read_json_or_default("/data/settings/settings.json",
-        "{\"schemaVersion\":1,\"network\":{\"hostname\":\"\"},\"webserver\":{\"redirectToHostname\":true,\"http_indexpath\":\"/default.html\",\"https\":{\"enabled\":false},\"security\":{}},\"buffer\":{\"ringbuffer_max_total_size_bytes\":262144,\"queue_capacity\":64}}");
+    cJSON *root = read_json_or_default("/data/settings/settings.json", "settings.json");
     if (!root || !security::set_password_verifier(root, nullptr) || !save_json("/data/settings/settings.json", root)) {
         cJSON_Delete(root);
         std::printf("Password clear failed.\n");
@@ -110,8 +114,8 @@ int cmd_hostname_set(int argc, char **argv) {
         std::printf("Usage: hostname_set <hostname-without-.local>\n");
         return 1;
     }
-    cJSON *root = read_json_or_default("/data/settings/settings.json",
-        "{\"schemaVersion\":1,\"network\":{\"hostname\":\"\"},\"webserver\":{\"redirectToHostname\":true,\"http_indexpath\":\"/default.html\",\"https\":{\"enabled\":false},\"security\":{}},\"buffer\":{\"ringbuffer_max_total_size_bytes\":262144,\"queue_capacity\":64}}");
+    cJSON *root = read_json_or_default("/data/settings/settings.json", "settings.json");
+    if (!root) { std::printf("Could not load settings.json.\n"); return 1; }
     cJSON *network = cJSON_GetObjectItemCaseSensitive(root, "network");
     if (!cJSON_IsObject(network)) network = cJSON_AddObjectToObject(root, "network");
     cJSON_DeleteItemFromObjectCaseSensitive(network, "hostname");
