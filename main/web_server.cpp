@@ -331,12 +331,6 @@ const char *mime_type(const std::string &path) {
 std::string configured_index_path() {
     std::vector<uint8_t> bytes;
     if (storage::read_file("/data/settings/settings.json", bytes, 32768) == ESP_OK) {
-        static bool logged_settings_load = false;
-        if (!logged_settings_load) {
-            ESP_LOGI(TAG, "Loaded /data/settings/settings.json (%u bytes)",
-                     static_cast<unsigned>(bytes.size()));
-            logged_settings_load = true;
-        }
         cJSON *root = cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         const cJSON *webserver = cJSON_GetObjectItemCaseSensitive(root, "webserver");
         const cJSON *index = cJSON_GetObjectItemCaseSensitive(webserver, "http_indexpath");
@@ -380,7 +374,8 @@ esp_err_t static_get(httpd_req_t *req) {
     const char *uri = req->uri;
     const char *query = std::strchr(uri, '?');
     std::string path(uri, query ? static_cast<size_t>(query - uri) : std::strlen(uri));
-    if (path == "/") path = configured_index_path();
+    const bool root_request = path == "/";
+    if (root_request) path = configured_index_path();
     if (reserved_path(path)) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
         return ESP_OK;
@@ -388,7 +383,8 @@ esp_err_t static_get(httpd_req_t *req) {
     std::vector<uint8_t> data;
     const esp_err_t err = storage::read_file(path, data, 2 * 1024 * 1024);
     if (err != ESP_OK) {
-        if (ap_request && !reserved_path(path)) return redirect_ap_client_to_root(req);
+        if (ap_request && !root_request && !reserved_path(path))
+            return redirect_ap_client_to_root(req);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Asset not found");
         return ESP_OK;
     }
