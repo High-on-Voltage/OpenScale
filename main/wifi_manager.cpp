@@ -413,7 +413,7 @@ esp_err_t wifi_manager_start() {
     if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err == ESP_OK) err = esp_wifi_start();
     if (err != ESP_OK) return err;
-    if (xTaskCreate(wifi_log_worker, "wifi_log", 3072, nullptr, 3, nullptr) != pdPASS)
+    if (xTaskCreate(wifi_log_worker, "wifi_log", 4096, nullptr, 3, nullptr) != pdPASS)
         return ESP_ERR_NO_MEM;
     if (xTaskCreate(captive_dns_worker, "captive_dns", 4096, nullptr, 3, nullptr) != pdPASS)
         return ESP_ERR_NO_MEM;
