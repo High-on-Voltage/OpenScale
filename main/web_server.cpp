@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "lwip/sockets.h"
 #include "lwip/ip4_addr.h"
+#include "esp_netif_ip_addr.h"
 #include "esp_timer.h"
 #include "esp_vfs.h"
 #include "freertos/FreeRTOS.h"
