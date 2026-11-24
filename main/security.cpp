@@ -1,109 +1,204 @@
 #include "security.hpp"
-
-#include <cstdio>
-#include <cstring>
-
+#include "system_state.hpp"
+#include "storage.hpp"
 #include "esp_random.h"
+#include "mbedtls/base64.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pkcs5.h"
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <string>
+#include <vector>
 
-namespace app::security {
+namespace openscale::security {
 namespace {
-constexpr std::size_t kSaltBytes = 16;
-constexpr std::size_t kHashBytes = 32;
-constexpr std::uint32_t kIterations = 100000;
+constexpr uint32_t PBKDF2_ITERATIONS = 120000;
+constexpr size_t SALT_BYTES = 16;
+constexpr size_t DERIVED_BYTES = 32;
 
-bool hex_encode(const unsigned char* input, std::size_t length, char* output, std::size_t output_size) {
-    if (output_size < (length * 2U + 1U)) return false;
-    static constexpr char kHex[] = "0123456789abcdef";
-    for (std::size_t i = 0; i < length; ++i) {
-        output[i * 2U] = kHex[(input[i] >> 4U) & 0x0fU];
-        output[i * 2U + 1U] = kHex[input[i] & 0x0fU];
-    }
-    output[length * 2U] = '\0';
+std::string base64_encode(const uint8_t *data, size_t length) {
+    std::vector<unsigned char> output(((length + 2) / 3) * 4 + 8);
+    size_t written = 0;
+    if (mbedtls_base64_encode(output.data(), output.size(), &written, data, length) != 0) return {};
+    return std::string(reinterpret_cast<char *>(output.data()), written);
+}
+
+bool base64_decode(const char *input, std::vector<uint8_t> &output) {
+    if (!input) return false;
+    const size_t len = std::strlen(input);
+    output.resize(len + 4);
+    size_t written = 0;
+    if (mbedtls_base64_decode(output.data(), output.size(), &written,
+                              reinterpret_cast<const unsigned char *>(input), len) != 0) return false;
+    output.resize(written);
     return true;
 }
 
-int hex_value(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
+bool constant_time_equal(const uint8_t *a, const uint8_t *b, size_t n) {
+    uint8_t diff = 0;
+    for (size_t i = 0; i < n; ++i) diff |= static_cast<uint8_t>(a[i] ^ b[i]);
+    return diff == 0;
 }
 
-bool hex_decode(const char* input, unsigned char* output, std::size_t output_length) {
-    if (input == nullptr || std::strlen(input) != output_length * 2U) return false;
-    for (std::size_t i = 0; i < output_length; ++i) {
-        const int high = hex_value(input[i * 2U]);
-        const int low = hex_value(input[i * 2U + 1U]);
-        if (high < 0 || low < 0) return false;
-        output[i] = static_cast<unsigned char>((high << 4) | low);
-    }
-    return true;
-}
-
-bool derive(const char* password, const unsigned char* salt, std::size_t salt_length,
-            std::uint32_t iterations, unsigned char* output, std::size_t output_length) {
-    const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (info == nullptr) return false;
-
+bool derive(const char *password, size_t password_len, const uint8_t *salt,
+            size_t salt_len, uint32_t iterations, uint8_t *output) {
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info) return false;
     mbedtls_md_context_t context;
     mbedtls_md_init(&context);
     int rc = mbedtls_md_setup(&context, info, 1);
     if (rc == 0) {
-        rc = mbedtls_pkcs5_pbkdf2_hmac(
-            &context,
-            reinterpret_cast<const unsigned char*>(password), std::strlen(password),
-            salt, salt_length, iterations, static_cast<std::uint32_t>(output_length), output);
+        rc = mbedtls_pkcs5_pbkdf2_hmac(&context,
+            reinterpret_cast<const unsigned char *>(password), password_len,
+            salt, salt_len, iterations, DERIVED_BYTES, output);
     }
     mbedtls_md_free(&context);
     return rc == 0;
 }
 
-bool constant_time_equal(const unsigned char* a, const unsigned char* b, std::size_t length) {
-    unsigned char difference = 0;
-    for (std::size_t i = 0; i < length; ++i) difference |= static_cast<unsigned char>(a[i] ^ b[i]);
-    return difference == 0;
+cJSON *read_settings() {
+    std::vector<uint8_t> bytes;
+    if (storage::read_file("/data/settings/settings.json", bytes, 32768) != ESP_OK) return nullptr;
+    return cJSON_ParseWithLength(reinterpret_cast<const char *>(bytes.data()), bytes.size());
 }
-}  // namespace
 
-esp_err_t set_admin_password(Settings& settings, const char* password) {
-    if (password == nullptr || std::strlen(password) < 8U || std::strlen(password) > 128U) {
-        return ESP_ERR_INVALID_ARG;
+bool verify_password(const char *password, size_t password_len) {
+    cJSON *root = read_settings();
+    if (!root) return false;
+    const cJSON *webserver = cJSON_GetObjectItemCaseSensitive(root, "webserver");
+    const cJSON *security = cJSON_GetObjectItemCaseSensitive(webserver, "security");
+    const cJSON *verifier = cJSON_GetObjectItemCaseSensitive(security, "passwordVerifier");
+    const cJSON *salt_json = cJSON_GetObjectItemCaseSensitive(verifier, "salt");
+    const cJSON *hash_json = cJSON_GetObjectItemCaseSensitive(verifier, "verifier");
+    const cJSON *iterations_json = cJSON_GetObjectItemCaseSensitive(verifier, "iterations");
+    std::vector<uint8_t> salt, expected;
+    bool ok = cJSON_IsString(salt_json) && cJSON_IsString(hash_json) &&
+              cJSON_IsNumber(iterations_json) && iterations_json->valuedouble == PBKDF2_ITERATIONS &&
+              base64_decode(salt_json->valuestring, salt) && base64_decode(hash_json->valuestring, expected) &&
+              salt.size() == SALT_BYTES && expected.size() == DERIVED_BYTES;
+    uint8_t actual[DERIVED_BYTES]{};
+    if (ok) ok = derive(password, password_len, salt.data(), salt.size(),
+                        static_cast<uint32_t>(iterations_json->valueint), actual);
+    if (ok) ok = constant_time_equal(actual, expected.data(), DERIVED_BYTES);
+    std::memset(actual, 0, sizeof(actual));
+    cJSON_Delete(root);
+    return ok;
+}
+}
+
+bool password_is_set() {
+    cJSON *root = read_settings();
+    if (!root) return false;
+    const cJSON *webserver = cJSON_GetObjectItemCaseSensitive(root, "webserver");
+    const cJSON *security = cJSON_GetObjectItemCaseSensitive(webserver, "security");
+    const cJSON *verifier = cJSON_GetObjectItemCaseSensitive(security, "passwordVerifier");
+    const bool set = cJSON_IsObject(verifier);
+    cJSON_Delete(root);
+    return set;
+}
+
+bool verify_http_basic(httpd_req_t *req) {
+    const size_t length = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (!length || length > 512) return false;
+    std::vector<char> header(length + 1, 0);
+    if (httpd_req_get_hdr_value_str(req, "Authorization", header.data(), header.size()) != ESP_OK) return false;
+    if (std::strncmp(header.data(), "Basic ", 6) != 0) return false;
+    std::vector<uint8_t> decoded;
+    if (!base64_decode(header.data() + 6, decoded) || decoded.empty()) return false;
+    const auto separator = std::find(decoded.begin(), decoded.end(), static_cast<uint8_t>(':'));
+    if (separator == decoded.end()) return false;
+    const size_t password_offset = static_cast<size_t>(separator - decoded.begin()) + 1;
+    const size_t password_len = decoded.size() - password_offset;
+    const bool result = verify_password(reinterpret_cast<const char *>(decoded.data() + password_offset), password_len);
+    std::fill(decoded.begin(), decoded.end(), 0);
+    return result;
+}
+
+bool check_csrf(httpd_req_t *req) {
+    const size_t length = httpd_req_get_hdr_value_len(req, "X-CSRF-Token");
+    if (!length || length >= 80) return false;
+    char token[80]{};
+    if (httpd_req_get_hdr_value_str(req, "X-CSRF-Token", token, sizeof(token)) != ESP_OK) return false;
+    return std::strcmp(token, csrf_token()) == 0;
+}
+
+bool set_password_verifier(cJSON *settings_root, const char *password) {
+    if (!cJSON_IsObject(settings_root)) return false;
+    cJSON *webserver = cJSON_GetObjectItemCaseSensitive(settings_root, "webserver");
+    if (!cJSON_IsObject(webserver)) {
+        webserver = cJSON_CreateObject();
+        if (!webserver) return false;
+        cJSON_AddItemToObject(settings_root, "webserver", webserver);
     }
-
-    unsigned char salt[kSaltBytes]{};
-    unsigned char hash[kHashBytes]{};
+    cJSON *security = cJSON_GetObjectItemCaseSensitive(webserver, "security");
+    if (!cJSON_IsObject(security)) {
+        security = cJSON_CreateObject();
+        if (!security) return false;
+        cJSON_AddItemToObject(webserver, "security", security);
+    }
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "password");
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordSet");
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordVerifier");
+    if (!password) return true;
+    const size_t password_len = std::strlen(password);
+    if (password_len < 8 || password_len > 128) return false;
+    uint8_t salt[SALT_BYTES]{};
+    uint8_t derived[DERIVED_BYTES]{};
     esp_fill_random(salt, sizeof(salt));
-    if (!derive(password, salt, sizeof(salt), kIterations, hash, sizeof(hash))) {
-        return ESP_FAIL;
-    }
-
-    if (!hex_encode(salt, sizeof(salt), settings.admin_salt_hex, sizeof(settings.admin_salt_hex)) ||
-        !hex_encode(hash, sizeof(hash), settings.admin_hash_hex, sizeof(settings.admin_hash_hex))) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    settings.pbkdf2_iterations = kIterations;
-    return ESP_OK;
+    if (!derive(password, password_len, salt, sizeof(salt), PBKDF2_ITERATIONS, derived)) return false;
+    const std::string salt_b64 = base64_encode(salt, sizeof(salt));
+    const std::string hash_b64 = base64_encode(derived, sizeof(derived));
+    std::memset(derived, 0, sizeof(derived));
+    cJSON *verifier = cJSON_CreateObject();
+    cJSON_AddStringToObject(verifier, "algorithm", "PBKDF2-HMAC-SHA256");
+    cJSON_AddStringToObject(verifier, "salt", salt_b64.c_str());
+    cJSON_AddNumberToObject(verifier, "iterations", PBKDF2_ITERATIONS);
+    cJSON_AddStringToObject(verifier, "verifier", hash_b64.c_str());
+    cJSON_AddItemToObject(security, "passwordVerifier", verifier);
+    return true;
 }
 
-bool verify_admin_password(const Settings& settings, const char* password) {
-    if (password == nullptr || settings.admin_hash_hex[0] == '\0' || settings.admin_salt_hex[0] == '\0') {
-        return false;
+void redact_settings(cJSON *root) {
+    cJSON *webserver = cJSON_GetObjectItemCaseSensitive(root, "webserver");
+    if (!cJSON_IsObject(webserver)) {
+        webserver = cJSON_CreateObject();
+        cJSON_AddItemToObject(root, "webserver", webserver);
     }
-
-    unsigned char salt[kSaltBytes]{};
-    unsigned char expected[kHashBytes]{};
-    unsigned char actual[kHashBytes]{};
-    if (!hex_decode(settings.admin_salt_hex, salt, sizeof(salt)) ||
-        !hex_decode(settings.admin_hash_hex, expected, sizeof(expected))) {
-        return false;
+    cJSON *security = cJSON_GetObjectItemCaseSensitive(webserver, "security");
+    if (!cJSON_IsObject(security)) {
+        security = cJSON_CreateObject();
+        cJSON_AddItemToObject(webserver, "security", security);
     }
-
-    const std::uint32_t iterations = settings.pbkdf2_iterations < 10000U
-        ? 10000U : settings.pbkdf2_iterations;
-    if (!derive(password, salt, sizeof(salt), iterations, actual, sizeof(actual))) return false;
-    return constant_time_equal(expected, actual, sizeof(actual));
+    const cJSON *verifier = cJSON_GetObjectItemCaseSensitive(security, "passwordVerifier");
+    const bool has_password = cJSON_IsObject(verifier);
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "password");
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordVerifier");
+    cJSON_DeleteItemFromObjectCaseSensitive(security, "passwordSet");
+    cJSON_AddBoolToObject(security, "passwordSet", has_password);
 }
 
-}  // namespace app::security
+void redact_wifi(cJSON *root) {
+    cJSON *networks = cJSON_GetObjectItemCaseSensitive(root, "networks");
+    if (cJSON_IsArray(networks)) {
+        const int count = cJSON_GetArraySize(networks);
+        for (int i = 0; i < count; ++i) {
+            cJSON *entry = cJSON_GetArrayItem(networks, i);
+            const cJSON *password = cJSON_GetObjectItemCaseSensitive(entry, "password");
+            const bool password_set = cJSON_IsString(password) && password->valuestring[0];
+            cJSON_DeleteItemFromObjectCaseSensitive(entry, "password");
+            cJSON_DeleteItemFromObjectCaseSensitive(entry, "passwordSet");
+            cJSON_AddBoolToObject(entry, "passwordSet", password_set);
+        }
+    }
+    cJSON *ap = cJSON_GetObjectItemCaseSensitive(root, "ap");
+    if (cJSON_IsObject(ap)) {
+        const cJSON *password = cJSON_GetObjectItemCaseSensitive(ap, "password");
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(ap, "enabled");
+        const bool password_set = password ? (cJSON_IsString(password) && password->valuestring[0]) : cJSON_IsTrue(enabled);
+        cJSON_DeleteItemFromObjectCaseSensitive(ap, "password");
+        cJSON_DeleteItemFromObjectCaseSensitive(ap, "passwordSet");
+        cJSON_AddBoolToObject(ap, "passwordSet", password_set);
+    }
+}
+}

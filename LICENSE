@@ -1,9 +1,11 @@
 SPDX-License-Identifier: AGPL-3.0-or-later
 
-This project is licensed under the GNU Affero General Public License version 3 or
-(at your option) any later version.
+OpenScale firmware is licensed under the GNU Affero General Public License,
+version 3 or (at your option) any later version.
 
-The complete license text is available from the Free Software Foundation:
+The complete license text is available at:
 https://www.gnu.org/licenses/agpl-3.0.txt
 
-Copyright (C) 2026 contributors.
+Third-party components retain their own licenses. In particular, the uPlot
+MIT license is included in the generated virtual web root at
+/lib/uPlot/LICENSE and is also retained in the hidden uPlot prebuild cache.

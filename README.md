@@ -1,79 +1,51 @@
-# OpenScale ESP32 firmware — v0.2.0
+# OpenScale firmware v0.3.0
 
-ESP-IDF C++ firmware for an ESP32 multi-sensor node. This is a v0.2 migration checkpoint toward the v0.5 project, JSON-file and HTTP/SSE specifications; it is not a claim that every v0.5 feature has been completed or hardware-validated.
+ESP-IDF-native C++ firmware rewrite. Target line: ESP-IDF 6.1.x. No Arduino framework.
 
-## Version sources
-
-- `VERSION`: firmware semantic version (`0.2.0`).
-- `WebUI/VERSION`: compatible WebUI release (`0.17`).
-- `main/version.hpp`: compile-time access to both versions, build ID and Git commit.
-- `GET /api/device`: exposes `firmwareVersion`, `webuiVersion`, `buildId`, `gitCommit` and `espIdfVersion`.
-
-A source archive without Git metadata reports `unknown` for the commit and `local` for the build ID.
-
-## Repository and virtual WebUI root
-
-```text
-VERSION
-WebUI/                  WebUI source (v0.17)
-  VERSION               build metadata; not served as an asset
-www/                    firmware-owned recovery/static assets
-main/                   ESP-IDF application component
-config/                 factory/example JSON resources
- tools/                 host-side asset packer and tests
-```
-
-The former `main/www/` tree is now `/www`. The WebUI source lives in `/WebUI`. CMake maps both folders into one virtual web root using their relative paths. For example, `WebUI/assets/app.js` is served as `/assets/app.js`. The build does not rewrite, rename, minify or otherwise mutate either source tree. A path collision is an error; firmware-reserved namespaces cannot be supplied as assets; root `default.*` recovery assets are owned by `/www`.
-
-## Gzip prebuild
-
-`tools/pack_web_assets.py` runs during CMake configuration. It creates deterministic gzip files and an embedded asset pack under the hidden build prebuild directory:
-
-```text
-build/main/.prebuild/gzip/<virtual-path>.gz
-build/main/.prebuild/web_assets.pack
-build/main/.prebuild/web_assets.S
-```
-
-Generated files never go into `/www` or `/WebUI`. The embedded pack seeds missing files into `/data/www/` as gzip bytes; existing on-device files are preserved as user-managed overrides. Static GET responses use `Content-Encoding: gzip`.
-
-## Configuration migration
-
-Factory files under `config/` now follow the v0.5 JSON formats:
-
-- `settings.json`: `schemaVersion`, `http_indexpath`, `redirectToHostname`, `buffer.ringbuffer_max_total_size_bytes`, `buffer.queue_capacity`, `https.enabled`, and security state.
-- `wifi.json`: independent `networks[]` with stable numeric IDs and priorities, plus the `ap` object.
-- `sensors.json`: `schemaVersion` and one `sensors[]` collection using `rate_hz`, `ringbuffer_size_samples`, `rawFormat`, driver blocks and raw warning thresholds.
-- `units.json`: WebUI-owned unit table.
-- `webui-settings.json`: WebUI-owned preferences; factory document is `{"schemaVersion":1}`.
-
-The API exposes the same-resource GET/PUT/DELETE paths under `/data/settings/`. Passwords are redacted from GET responses; administrator passwords use the write-only `security.password` API field, and Wi-Fi passwords are preserved by network ID when omitted. Unknown JSON keys are retained by raw resource PUTs and by serial-side settings/Wi-Fi updates. Calibration resources use `/data/calibration/calibration_<sensorId>_<profileId>.json`; assets/calibration uploads are gzip data.
-
-## Implemented protocol subset
-
-The firmware currently includes `/api/device`, `/api/status`, `/api/device-log`, `/api/history`, `/api/files`, `/stream`, `/api/restart`, the five settings resources, calibration resources and generic static asset routes. Mutating requests require the per-boot `X-CSRF-Token`; Basic authentication is enforced where the v0.5 table requires it. History supports JSON and version-1 binary records, 64-bit integer tokens, requested ID ranges and `X-History-*` metadata. SSE currently emits individual `sample` and `device_log` events with boot-scoped global event IDs.
-
-## Remaining v0.5 work / validation limits
-
-- Warning-state, device-state and sensor-error SSE events are not yet implemented.
-- `configRevision` and `warningRevision` are currently reported as their initial value; live driver reconfiguration, preserving/clearing buffer resize and revision increments are not implemented.
-- The full Wi-Fi reconnect policy (retrying the complete network list every 30 seconds), mDNS/hostname redirects, full `/api/device` hardware/partition/capability metadata, and complete status observability still need implementation/target validation.
-- The Wi-Fi PUT response does not yet include the canonical redacted configuration with newly assigned network IDs. A follow-up GET returns the canonical file.
-- Static-asset uploads currently check the gzip signature, not full DEFLATE-stream integrity. Calibration uploads intentionally remain opaque gzip bytes as specified.
-- Warning-state, device-state and sensor-error SSE events, live `configRevision`/`warningRevision` increments, sensor runtime reconfiguration, and preserving/clearing buffer resize are not yet implemented.
-- PSRAM-aware ring-buffer allocation and validation across ESP32, S2, S3, C3 and C6 are not yet complete.
-- No ESP-IDF build or hardware test is claimed for this archive. The ESP-IDF 6.1.x toolchain must be installed and the target/partition table selected and validated before flashing.
-
-Host-side tests (no ESP-IDF required):
+## Build and asset pipeline
 
 ```sh
-python -m unittest discover -s tools -p 'test_*.py' -v
+. "$IDF_PATH/export.sh"
+make build
+make flash       # first provisioning only: also writes the factory FATFS image
+make monitor
 ```
 
-## Storage safety
+`/WebUI` and `/www` are immutable source inputs. Their contents are merged into a **virtual web root** at build/configure time; conflicting relative paths fail the build. The build does not write to either source directory. `make flash` is for first provisioning: it flashes the factory FATFS image and therefore replaces the contents of the storage partition. For routine firmware updates, use `make flash-app` to flash only the application and preserve stored settings/assets.
 
-FATFS is mounted over ESP-IDF flash wear levelling. Automatic formatting is disabled on mount failure so settings and user assets are not silently destroyed. Provisioning/recovery of a blank or damaged partition must be an explicit service action.
+All firmware-served static files are stored as gzip streams while retaining their original URL path and filename. The intermediate plain and gzip trees, the virtual web root, and downloaded dependencies live under the ignored hidden `.prebuild/` directory. ESP-IDF's FATFS generator builds the initial `storage` partition image from that virtual web root. At runtime the filesystem is mounted through flash wear levelling; mount failure never triggers an automatic format.
 
-## License
+uPlot is pinned to commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012` (1.6.32). The first build fetches it into `.prebuild/uplot/`; subsequent builds use the cache without network access. To deliberately fetch it again:
 
-AGPL-3.0-or-later. See `LICENSE`.
+```sh
+make fetch-uplot
+```
+
+The web root receives the pinned upstream repository tree beneath `/lib/uPlot/`, including `/lib/uPlot/dist/...` and its MIT notice. The WebUI version is taken from the `OPEN_SCALE_WEBUI_VERSION` environment override, then `WebUI/version.txt`, then `WebUI/package.json`, with `not-provided` as the current fallback. It is compiled into `GET /api/device` through `webui_build_info.h`. Firmware version, build ID, Git commit and protocol/file-format versions are exposed from the generated firmware build metadata.
+
+Built-in `/default.html` and `/default.js` are reserved diagnostic assets and cannot be overridden by `/WebUI` or `/www`.
+
+## Project documents
+
+The v0.5.1 contract documents are preserved in `docs/`: `Project Requirements.md`, `JSON File Formats.md` and `API Protocol.md`. The v0.3 implementation boundary and known gaps are tracked in `docs/v0.3-implementation-status.md`.
+
+## Layout
+
+- `main/` — firmware components
+- `WebUI/` — separately developed WebUI (currently empty)
+- `www/` — additional static assets (currently empty)
+- `assets/default/` — firmware-owned diagnostic/recovery page
+- `tools/` — hidden prebuild and gzip generation
+- `.prebuild/` — generated, ignored cache (never edit manually)
+
+## Configuration and hardware
+
+Factory `sensors.json` is empty. No GPIO defaults are assumed. The JSON format example documents a fixed AP password and a two-byte MAC suffix, while the project requirements specify a generated device password and a three-byte suffix. This implementation follows the project requirements (device-derived secret printed to serial; final three MAC bytes). Add a sensor entry with the HX711 fields from `JSON File Formats.md`; the driver only accepts `rawFormat: "int24"` and `rate_hz` 10 or 80. A `rate_gpio` is optional; when omitted, the physical HX711 RATE pin must be strapped to the desired rate.
+
+`partitions.csv` is only a 4 MiB ESP32 starter table and is not a universal partition map for ESP32-S2/S3/C3/C6 or larger flash sizes. Select a target-appropriate partition table before hardware deployment.
+
+## Current implementation boundary
+
+Wi-Fi PUT responses include a `configuration` member containing the canonical, redacted document (including ESP-assigned IDs); the v0.5.1 text requires this canonical result but does not prescribe the member name.
+
+This is the v0.3 rewrite foundation, not a claim that every v0.5.1 protocol item has passed implementation or hardware validation. The acquisition/ring-buffer path, HX711, device log/event fan-out, basic metadata/status/history/SSE, FATFS storage, build-time asset packaging, serial recovery commands and configuration resource handlers are present. Wi-Fi static-IP application, hostname/mDNS redirects, full config-diff classification/live sensor reconfiguration, file listing completeness, all history edge cases, and full multi-target build/hardware validation remain to be completed and tested.
