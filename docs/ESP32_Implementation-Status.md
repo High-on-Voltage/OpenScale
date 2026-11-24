@@ -8,7 +8,7 @@ This is the first clean firmware rewrite based on the v0.5.1 project, JSON-forma
 - Firmware version, build ID, Git revision, WebUI version, protocol version and file-format versions compiled into the firmware and exposed by `/api/device`.
 - Hidden `.prebuild/` staging for immutable `/WebUI` + `/www` inputs, gzip outputs, virtual root and downloaded uPlot source.
 - uPlot source pinned to commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012`; first configure/build downloads it, following builds reuse the cache. `make fetch-uplot` forces a fresh fetch.
-- uPlot repository tree copied under virtual `/lib/uPlot/`; all virtual-root assets are gzip-compressed without changing their URL paths or source names.
+- Only `dist/uPlot.iife.min.js` and `dist/uPlot.min.css` are copied to virtual `/www/libs/` and gzip-compressed without changing their filenames or URL paths. All other downloaded uPlot files, including its MIT license, remain in the hidden `.prebuild/uplot/` cache.
 - FATFS partition image generation and runtime FATFS mounting through flash wear levelling. Failed mounts do not trigger automatic formatting.
 - HX711 acquisition tasks, shared non-blocking FreeRTOS queue, per-sensor RAM ring buffers, per-sensor sample IDs, monotonic timestamps, queue-drop counters and threshold-warning transitions.
 - Basic JSON/binary history, SSE sample/event transport, bounded per-boot device log, metadata/status endpoints, config/calibration/static-resource handlers and serial recovery commands.

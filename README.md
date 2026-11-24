@@ -21,7 +21,7 @@ uPlot is pinned to commit `e995b061e9fc5476a6d862cd2fb2ebc7452ca012` (1.6.32). T
 make fetch-uplot
 ```
 
-The web root receives the pinned upstream repository tree beneath `/lib/uPlot/`, including `/lib/uPlot/dist/...` and its MIT notice. The WebUI version is taken from the `OPEN_SCALE_WEBUI_VERSION` environment override, then `WebUI/version.txt`, then `WebUI/package.json`, with `not-provided` as the current fallback. It is compiled into `GET /api/device` through `webui_build_info.h`. Firmware version, build ID, Git commit and protocol/file-format versions are exposed from the generated firmware build metadata.
+Only `dist/uPlot.iife.min.js` and `dist/uPlot.min.css` are added to the virtual `/www/libs/` directory. They are stored as gzip streams while retaining their original filenames and URL paths. The downloaded upstream source and its MIT license remain in the hidden `.prebuild/uplot/` cache; no other uPlot repository files are copied into the virtual web root. The WebUI version is taken from the `OPEN_SCALE_WEBUI_VERSION` environment override, then `WebUI/version.txt`, then `WebUI/package.json`, with `not-provided` as the current fallback. It is compiled into `GET /api/device` through `webui_build_info.h`. Firmware version, build ID, Git commit and protocol/file-format versions are exposed from the generated firmware build metadata.
 
 Built-in `/default.html` and `/default.js` are reserved diagnostic assets and cannot be overridden by `/WebUI` or `/www`.
 

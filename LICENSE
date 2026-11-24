@@ -6,6 +6,7 @@ version 3 or (at your option) any later version.
 The complete license text is available at:
 https://www.gnu.org/licenses/agpl-3.0.txt
 
-Third-party components retain their own licenses. In particular, the uPlot
-MIT license is included in the generated virtual web root at
-/lib/uPlot/LICENSE and is also retained in the hidden uPlot prebuild cache.
+Third-party components retain their own licenses. The uPlot MIT license is
+retained with the downloaded upstream source in the hidden .prebuild/uplot/
+cache. Only the two requested minified distribution assets are copied into
+the generated virtual web root.

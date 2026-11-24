@@ -23,7 +23,6 @@ idf_component_register(
         nvs_flash
         fatfs
         wear_levelling
-        json
         mbedtls
         esp_driver_gpio
         esp_driver_uart

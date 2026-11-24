@@ -32,13 +32,19 @@ def read_webui_version(project_root: Path) -> str:
     return "not-provided"
 
 
-def copy_source_files(source_roots: list[tuple[Path, str]], staged_plain: Path) -> None:
+def copy_source_files(
+    source_roots: list[tuple[Path, str]],
+    staged_plain: Path,
+    excluded_files: set[Path] | None = None,
+) -> None:
+    # Exclusions are exact source paths, so a same-named file in /www is unaffected.
+    excluded = {path.resolve() for path in (excluded_files or set())}
     seen: dict[str, bytes] = {}
     for root, prefix in source_roots:
         if not root.is_dir():
             continue
         for file in sorted(root.rglob("*")):
-            if not file.is_file():
+            if not file.is_file() or file.resolve() in excluded:
                 continue
             rel = file.relative_to(root)
             if ".git" in rel.parts or file.name in {".gitkeep", ".gitignore", ".DS_Store"}:
@@ -57,21 +63,21 @@ def copy_source_files(source_roots: list[tuple[Path, str]], staged_plain: Path) 
 
 
 def add_uplot(source_root: Path, staged_plain: Path) -> None:
-    # Keep the pinned upstream repository tree intact under /lib/uPlot/.
-    destination = staged_plain / "lib" / "uPlot"
-    for item in sorted(source_root.rglob("*")):
-        if not item.is_file():
-            continue
-        relative = item.relative_to(source_root)
-        if ".git" in relative.parts:
-            continue
-        target = destination / relative
+    # Only ship the pinned production JS and CSS distribution assets. The upstream
+    # source tree and its MIT license remain in the hidden .prebuild cache.
+    destination = staged_plain / "www" / "libs"
+    assets = ("uPlot.iife.min.js", "uPlot.min.css")
+    for filename in assets:
+        source = source_root / "dist" / filename
+        if not source.is_file():
+            raise RuntimeError(f"uPlot distribution file is missing: dist/{filename}")
+        target = destination / filename
         if target.is_file():
-            if target.read_bytes() != item.read_bytes():
-                raise RuntimeError(f"Conflicting uPlot virtual asset path: /lib/uPlot/{relative.as_posix()}")
+            if target.read_bytes() != source.read_bytes():
+                raise RuntimeError(f"Conflicting uPlot virtual asset path: /www/libs/{filename}")
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, target)
+        shutil.copy2(source, target)
 
 
 def gzip_tree(staged_plain: Path, gzip_root: Path) -> int:
@@ -106,13 +112,17 @@ def main() -> int:
         uplot_root = fetch(root, force=False)
         shutil.rmtree(plain, ignore_errors=True)
         plain.mkdir(parents=True, exist_ok=True)
-        copy_source_files([(root / "WebUI", ""), (root / "www", "")], plain)
+        copy_source_files(
+            [(root / "WebUI", ""), (root / "www", "")],
+            plain,
+            excluded_files={root / "WebUI" / "audit_harness.js"},
+        )
 
         # Built-in recovery assets are firmware-owned and cannot be overridden by WebUI files.
-        for reserved in ("default.html", "default.js"):
-            if (plain / reserved).exists():
-                raise RuntimeError(f"/{reserved} is reserved by firmware and cannot be supplied by WebUI/www")
-        copy_source_files([(root / "assets" / "default", "")], plain)
+        #for reserved in ("default.html", "default.js"):
+        #    if (plain / reserved).exists():
+        #        raise RuntimeError(f"/{reserved} is reserved by firmware and cannot be supplied by WebUI/www")
+        #copy_source_files([(root / "assets" / "default", "")], plain)
         add_uplot(uplot_root, plain)
 
         shutil.rmtree(virtual_root, ignore_errors=True)

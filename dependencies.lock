@@ -1,0 +1,40 @@
+dependencies:
+  esp-idf-lib/esp_idf_lib_helpers:
+    component_hash: 2b46288d7500846fe9f5ca7bfa2597067de9e38d94fb0d6ff834639ab02734ba
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.4.2
+  esp-idf-lib/hx711:
+    component_hash: c3d939f2d78231d6eca221fab6d4133ed5eec81fdf3731427d45051fa5aded1e
+    dependencies:
+    - name: esp-idf-lib/esp_idf_lib_helpers
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.1
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.19~2
+  idf:
+    source:
+      type: idf
+    version: 6.1.1
+direct_dependencies:
+- esp-idf-lib/hx711
+- espressif/cjson
+- idf
+manifest_hash: 5ac3aa386b0704a84fa8cc9faa452e4dd0f0b1f2161f2432e06ed14a1c2efad2
+target: esp32
+version: 3.0.0
