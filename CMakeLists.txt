@@ -22,6 +22,24 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${OPEN_SCALE_UPL
 
 set(OPEN_SCALE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${OPEN_SCALE_GENERATED_DIR}")
+
+# Generate immutable factory defaults in the build tree, before ESP-IDF starts
+# its component-requirements discovery pass. Component CMakeLists files are
+# evaluated in a restricted discovery context, so they must not generate files
+# into their source/current-binary directories.
+set(OPEN_SCALE_FACTORY_DEFAULTS_CPP "${OPEN_SCALE_GENERATED_DIR}/factory_defaults.cpp")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/tools/generate_factory_defaults.py"
+            --defaults-dir "${CMAKE_CURRENT_LIST_DIR}/assets/default"
+            --output "${OPEN_SCALE_FACTORY_DEFAULTS_CPP}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
+    RESULT_VARIABLE OPEN_SCALE_DEFAULTS_RESULT
+)
+if(NOT OPEN_SCALE_DEFAULTS_RESULT EQUAL 0)
+    message(FATAL_ERROR "OpenScale factory-default embedding failed (${OPEN_SCALE_DEFAULTS_RESULT})")
+endif()
+
 execute_process(
     COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_LIST_DIR}/tools/prepare_web_assets.py"

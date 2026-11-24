@@ -1,16 +1,8 @@
-# Convert the source-controlled JSON documents into immutable byte arrays in
-# the build directory. The readable source files are never rewritten.
-set(OPEN_SCALE_FACTORY_DEFAULTS_CPP "${CMAKE_CURRENT_BINARY_DIR}/factory_defaults.cpp")
-execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_LIST_DIR}/../tools/generate_factory_defaults.py"
-            --defaults-dir "${CMAKE_CURRENT_LIST_DIR}/../assets/default"
-            --output "${OPEN_SCALE_FACTORY_DEFAULTS_CPP}"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/.."
-    RESULT_VARIABLE OPEN_SCALE_DEFAULTS_RESULT
-)
-if(NOT OPEN_SCALE_DEFAULTS_RESULT EQUAL 0)
-    message(FATAL_ERROR "OpenScale factory-default embedding failed (${OPEN_SCALE_DEFAULTS_RESULT})")
+# The root CMakeLists generates this immutable defaults source in the build
+# tree before ESP-IDF component discovery begins.
+set(OPEN_SCALE_FACTORY_DEFAULTS_CPP "${CMAKE_BINARY_DIR}/generated/factory_defaults.cpp")
+if(NOT EXISTS "${OPEN_SCALE_FACTORY_DEFAULTS_CPP}")
+    message(FATAL_ERROR "Missing generated factory defaults: ${OPEN_SCALE_FACTORY_DEFAULTS_CPP}")
 endif()
 
 idf_component_register(
