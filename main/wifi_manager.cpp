@@ -320,26 +320,29 @@ void start_fallback_ap() {
     ap_config.ap.channel = s_ap_channel;
     ap_config.ap.max_connection = s_max_stations;
     ap_config.ap.authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    // Configure DHCP options before APSTA mode brings up the AP DHCP server.
+    // ESP-IDF rejects DHCP-server option updates while the server is running.
+    esp_netif_ip_info_t ap_info{};
+    if (esp_netif_get_ip_info(s_ap_netif, &ap_info) == ESP_OK) {
+        s_ap_ip_addr.store(ap_info.ip.addr);
+        std::snprintf(s_captive_portal_uri, sizeof(s_captive_portal_uri),
+                      "http://" IPSTR "/", IP2STR(&ap_info.ip));
+        uint8_t offer_dns = 1;
+        const esp_err_t dns_option_err = esp_netif_dhcps_option(
+            s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER,
+            &offer_dns, sizeof(offer_dns));
+        if (dns_option_err != ESP_OK)
+            ESP_LOGW(TAG, "Could not advertise AP DNS server: %s", esp_err_to_name(dns_option_err));
+        const esp_err_t portal_option_err = esp_netif_dhcps_option(
+            s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
+            s_captive_portal_uri, std::strlen(s_captive_portal_uri) + 1);
+        if (portal_option_err != ESP_OK)
+            ESP_LOGW(TAG, "Could not advertise captive portal URI: %s", esp_err_to_name(portal_option_err));
+    } else {
+        ESP_LOGW(TAG, "Could not read fallback AP IPv4 configuration");
+    }
+
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) == ESP_OK && esp_wifi_set_config(WIFI_IF_AP, &ap_config) == ESP_OK) {
-        esp_netif_ip_info_t ap_info{};
-        if (esp_netif_get_ip_info(s_ap_netif, &ap_info) == ESP_OK) {
-            s_ap_ip_addr.store(ap_info.ip.addr);
-            std::snprintf(s_captive_portal_uri, sizeof(s_captive_portal_uri),
-                          "http://" IPSTR "/", IP2STR(&ap_info.ip));
-            uint8_t offer_dns = 1;
-            const esp_err_t dns_option_err = esp_netif_dhcps_option(
-                s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER,
-                &offer_dns, sizeof(offer_dns));
-            if (dns_option_err != ESP_OK)
-                ESP_LOGW(TAG, "Could not advertise AP DNS server: %s", esp_err_to_name(dns_option_err));
-            const esp_err_t portal_option_err = esp_netif_dhcps_option(
-                s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
-                s_captive_portal_uri, std::strlen(s_captive_portal_uri) + 1);
-            if (portal_option_err != ESP_OK)
-                ESP_LOGW(TAG, "Could not advertise captive portal URI: %s", esp_err_to_name(portal_option_err));
-        } else {
-            ESP_LOGW(TAG, "Could not read fallback AP IPv4 configuration");
-        }
         if (generated_password) ESP_LOGW(TAG, "Fallback AP: SSID=%s password=%s", ssid, password);
         else if (password[0]) ESP_LOGI(TAG, "Fallback AP started with configured credentials (password not logged)");
         else ESP_LOGW(TAG, "Fallback AP started without a password (explicit configuration)");
