@@ -381,20 +381,57 @@ esp_err_t static_get(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
         return ESP_OK;
     }
-    std::vector<uint8_t> data;
-    const esp_err_t err = storage::read_file(path, data, 2 * 1024 * 1024);
-    if (err != ESP_OK) {
+    // Stream static assets from FATFS instead of allocating one contiguous
+    // buffer for the entire file. Large gzip assets can exceed the largest
+    // available heap block even when total free heap is sufficient.
+    const std::string full_path = storage::physical_path(path);
+    FILE *file = (storage::ready() && !full_path.empty()) ? std::fopen(full_path.c_str(), "rb") : nullptr;
+    if (!file) {
         if (ap_request && !root_request && !reserved_path(path))
             return redirect_ap_client_to_root(req);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Asset not found");
         return ESP_OK;
     }
+
+    constexpr size_t MAX_STATIC_FILE_BYTES = 2 * 1024 * 1024;
+    if (std::fseek(file, 0, SEEK_END) != 0) {
+        std::fclose(file);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Unable to inspect asset");
+        return ESP_OK;
+    }
+    const long file_size = std::ftell(file);
+    if (file_size < 0 || static_cast<size_t>(file_size) > MAX_STATIC_FILE_BYTES ||
+        std::fseek(file, 0, SEEK_SET) != 0) {
+        std::fclose(file);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Asset not found");
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "Serving %s (%u bytes, gzip)%s", path.c_str(),
-             static_cast<unsigned>(data.size()), ap_request ? " via fallback AP" : "");
+             static_cast<unsigned>(file_size), ap_request ? " via fallback AP" : "");
     httpd_resp_set_type(req, mime_type(path));
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Cache-Control", path == "/default.html" || path == "/default.js" ? "no-store" : "public, max-age=3600");
-    return httpd_resp_send(req, reinterpret_cast<const char *>(data.data()), data.size());
+
+    uint8_t chunk[1024];
+    while (true) {
+        const size_t bytes_read = std::fread(chunk, 1, sizeof(chunk), file);
+        if (bytes_read > 0) {
+            const esp_err_t send_err = httpd_resp_send_chunk(
+                req, reinterpret_cast<const char *>(chunk), bytes_read);
+            if (send_err != ESP_OK) {
+                std::fclose(file);
+                return send_err;
+            }
+        }
+        if (bytes_read < sizeof(chunk)) {
+            const bool read_error = std::ferror(file) != 0;
+            std::fclose(file);
+            if (read_error) return ESP_FAIL;
+            break;
+        }
+    }
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 void send_sse_frame(httpd_req_t *req, const StreamEvent &event) {
