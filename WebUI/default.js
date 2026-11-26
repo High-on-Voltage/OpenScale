@@ -1976,12 +1976,13 @@ async function activateCalibration(config,source){
   if(state!==target){checked.errors.push('The shown sensor changed while the calibration was being checked; nothing was applied. Select the sensor again and retry.');return checked;}
   if(fp.id===state.revisionId){checked.warnings.push('This calibration is already active; nothing changed.');checked.unchanged=true;activeSensor.settings.calibrationFile=calName;return checked;}
   if(config.contentHash&&fp.full&&config.contentHash!==fp.full)checked.warnings.push('The file’s contentHash does not match its content (edited after export?). The recalculated fingerprint is used.');
-  CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;activeSensor.hasOwnCal=true;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
+  CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;const _firstCal=!activeSensor.hasOwnCal;activeSensor.hasOwnCal=true;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
   state.calibrations.push({effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,hashType:fp.type,config:calibration,source});
   cancelMeasurement('calibration changed'); cancelCharRec('calibration changed');
   addTareEvent(0,{method:'Tare reset · calibration changed'});
   appendLogEntry({type:'calibration',entryId:`calibration-${Date.now()}`,createdAt:new Date().toISOString(),effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,profileName:config.profileName,source});
   activeSensor.settings.calibrationFile=calName;
+  if(_firstCal&&state.unitId==='raw'){$('unitSelect').value=UNIT_CONFIG.defaultUnit;$('unitSelect').dispatchEvent(new Event('change'));}
   state.autoYMin=null;state.autoYMax=null;updateCalibrationInfo();updateSelectionForNewContext();scheduleRender();
   return checked;
 }
@@ -2026,7 +2027,7 @@ async function selectCalibrationFile(id,name){
 }
 function updateCalibrationInfo(){
   const weights=CALIBRATION.referenceWeights||[],count=state.calibrations.length;
-  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION,activeSensor.id))}${CALIBRATION.sensorId?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Characterization: ${esc(charSummaryText(CALIBRATION.characterization))}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
+  $('calibrationInfo').innerHTML=`Sensor: <strong>${esc(activeSensor.name)}</strong> · file ${esc(calFileName(CALIBRATION,activeSensor.id))}${CALIBRATION.sensorId!=null?'':' (not bound to a sensor yet)'}<br><strong>${esc(CALIBRATION.profileName)}</strong><br>Profile: ${esc(CALIBRATION.profileId)}<br>Revision: <strong>${esc(state.revisionId)}</strong> <span class="small">(${esc(state.hashType)})</span><br>Unit: ${esc(CALIBRATION.calibrationUnit)} · Anchors: ${calibration.anchors.length} · Reference weights: ${weights.length} · Observations: ${(CALIBRATION.observations||[]).length}<br>Characterization: ${esc(charSummaryText(CALIBRATION.characterization))}<br>Validation: ${esc(CALIBRATION.validation?.status||'not characterized')}${count>1?`<br><span class="small">${count} calibration revisions used in this session.</span>`:''}`;
 }
 
 function initEvents(){
@@ -2915,7 +2916,7 @@ function sensorSettingsRender() {
   $('ssForm').hidden = none; $('ssNone').hidden = !none;
   if (none) return;
   $('ssName').value = s.name; $('ssRate').value = s.state.rateHz; $('ssNotes').value = s.settings.notes || '';
-  $('ssHistoryInfo').textContent = historyStatusText(s); $('ssHistoryBtn').disabled = !historyUrlFor(s);
+  
   $('ssRate').disabled = true; $('ssRateNote').textContent = s.kind !== 'server' ? 'Fixed for the test signal.' : 'Effective rate reported by the device; it is changed in sensors.json (rate_hz), not here.';
   $('ssDeviceInfo').textContent = s.kind !== 'server' ? '' : `${s.sensorType ? 'type ' + s.sensorType + ' · ' : ''}raw format ${s.rawFormat || '?'} · ${s.disabled ? 'DISABLED on the device · ' : ''}config revision ${s.configRev ?? '—'}, warning revision ${s.warnRev ?? '—'}${s.status ? ` · state ${s.status.state || 'ok'} · queue drops ${s.status.queueDrops ?? 0} · read errors ${s.status.readErrors ?? 0}` : ''}${s.def && s.def.warnings ? ' · firmware warnings (raw): ' + JSON.stringify(s.def.warnings) : ''}${s.settings.calibrationError ? ' · calibration problem: ' + s.settings.calibrationError : ''}${s.state.flagged ? ' · samples with error flags: ' + s.state.flagged : ''}`;
   const ov = s.settings.overload || {}, ml = ov.maxLoad, nl = ov.minLoad;
@@ -3072,6 +3073,7 @@ function hwValidate(doc) {
   return er;
 }
 async function hwApply() {
+  if (!sensorSettingsApplyLocal()) { hwSetMsg('Fix the Sensor tab first (see its message).'); return; } hwMergeWebKeys(hwDraft);
   const er = hwValidate(hwDraft); if (er.length) { hwSetMsg('Not sent:\n' + er.join('\n')); return; }
   if (!deviceReachable) { hwSetMsg('No device connection.'); return; }
   const mode = $('hwBuffer').value, old = new Set(((sensorsDocRaw && sensorsDocRaw.sensors) || []).map(e => e.id)), removed = [...old].filter(id => !hwDraft.sensors.some(e => e.id === id));
@@ -3112,6 +3114,74 @@ function hwInit() {
   $('ssCalDeleteBtn').addEventListener('click', deleteCalibrationFile);
 }
 
+// ===== v0.18 part 3: merged sensor tabs, history diagnostics ==========================================================================
+// WebUI-owned keys that the "Sensor" tab changes in the session. When the draft of the "Device sensors" tab did not change such a key, the value
+// of the session wins at send time; a key changed in the draft (or loaded from a file) wins over the session.
+const HW_WEBKEYS = ['name', 'notes', 'calibrationFile', 'primaryTemperatureSensorId', 'loadLimits', 'conversion'];
+function hwMergeWebKeys(doc) {
+  const web = sensorsDoc(), base = (sensorsDocRaw && sensorsDocRaw.sensors) || [];
+  for (const e of doc.sensors) {
+    const w = web.sensors.find(x => x.id === e.id), b = base.find(x => x.id === e.id); if (!w || !b) continue;
+    for (const k of HW_WEBKEYS) if (JSON.stringify(e[k]) === JSON.stringify(b[k])) { if (k in w) e[k] = w[k]; else delete e[k]; }
+  }
+}
+// The Sensor tab has no button any more: its fields are applied to the session when they change.
+function sensorSettingsApplyLocal() {
+  const s = ssSelectedId && sensors.get(ssSelectedId); if (!s) return true;
+  { const ovr = overloadApplySettings(s, ssReadOverload()); if (ovr.errors.length) { ssMsg('Not applied: ' + ovr.errors.join(' ')); return false; } }
+  { const r = applyUseConditions(s, { readingDelayS: $('ssReadDelay').value, sessionSinceTareS: $('ssSessionS').value, temperatureDeltaK: $('ssTempDelta').value }); if (r.errors.length) { ssMsg('Not applied: ' + r.errors.join(' ')); return false; } }
+  s.settings.primaryTemperatureSensorId = $('ssPrimaryTemp').value || null;
+  s.name = ($('ssName').value || '').trim() || ('Sensor ' + s.id); s.settings.notes = $('ssNotes').value || '';
+  renderSensorSelect(); return true;
+}
+function hwDownload() { if (!hwDraft) hwDraft = sensorsDoc(); const d = cloneJson(hwDraft); hwMergeWebKeys(d); downloadBlob(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }), 'sensors.json'); }
+function hwLoadFile(doc) {
+  if (!doc || typeof doc !== 'object' || doc.schemaVersion !== 1 || !Array.isArray(doc.sensors)) { hwSetMsg('Not a sensors.json: it needs schemaVersion 1 and a "sensors" list.'); return; }
+  hwDraft = cloneJson(doc); hwNew.clear(); hwSel = hwDraft.sensors.length ? String(hwDraft.sensors[0].id) : null;
+  const er = hwValidate(hwDraft); hwSetMsg('File loaded into the draft. Nothing was sent; “Validate & send” stores it on the device.' + (er.length ? '\nThings to fix first:\n' + er.join('\n') : '')); hwRender();
+}
+function hwHistoryTarget() { const o = hwSel != null && (sensors.get(hwSel) || auxChannels.get(hwSel)); return o && o.kind !== 'test' && o.kind !== 'archive' && !o.archived ? o : null; }
+function hwHistoryInfo() {
+  const b = $('ssHistoryBtn'), i = $('ssHistoryInfo'); if (!b || !i) return; const o = hwHistoryTarget();
+  if (!o) { b.disabled = true; i.textContent = hwSel != null && hwNew.has(String(hwSel)) ? 'new sensor: send it to the device first' : '—'; return; }
+  b.disabled = !historyUrlFor(o) || !!(o.history && o.history.running); i.textContent = historyStatusText(o);
+}
+async function hwHistoryClick() {
+  const o = hwHistoryTarget(); if (!o) { hwSetMsg('Choose a sensor that exists on the device.'); return; }
+  if (o.history.noOlder) { if (!uiConfirm('A configuration change started a new epoch for this sensor, so older device history may have another meaning. Load it anyway?')) return; o.history.noOlder = false; }
+  await (sensors.has(o.id) ? historyLoadOlder(o) : auxHistoryLoadOlder(o)); hwHistoryInfo();
+}
+// ---- history diagnostics: every decision is written to the device log pane and the console ------------------------------------------------
+const _historyLoadOlder = historyLoadOlder;
+historyLoadOlder = async function (sensor) {
+  const h = sensor.history, say = t => { console.info('[history]', sensor.id, t); deviceLogLocal('webui_history', 'Sensor ' + sensor.id + ': ' + t); };
+  say('load older: url ' + (historyUrlFor(sensor) || 'none') + ', first id ' + firstKnownId(sensor.state) + ', floor ' + h.minId + ', noOlder ' + !!h.noOlder + ', running ' + !!h.running + ', samples ' + sensor.state.count + '/' + sensor.state.capacity);
+  const r = await _historyLoadOlder(sensor);
+  say('result: ' + h.status + (h.error ? ' (' + h.error + ')' : '') + ', loaded ' + h.loaded); return r;
+};
+const _historyScheduleInitial = historyScheduleInitial;
+historyScheduleInitial = function (sensor) {
+  const h = sensor.history;
+  if (h.autoStarted || !historyUrlFor(sensor)) { const t = 'automatic history skipped: autoStarted ' + h.autoStarted + ', history url ' + (historyUrlFor(sensor) || 'none') + ' (device seen ' + deviceSeen + ')'; console.info('[history]', sensor.id, t); deviceLogLocal('webui_history', 'Sensor ' + sensor.id + ': ' + t); }
+  return _historyScheduleInitial(sensor);
+};
+// A sensor whose first live sample arrived while no history URL was usable is retried with every status poll (it used to be forgotten).
+const _handleStatus = handleStatus;
+handleStatus = function (st) {
+  _handleStatus(st);
+  for (const s of sensors.values()) if (s.kind === 'server' && s.firstLiveId != null && !s.history.autoStarted) historyScheduleInitial(s);
+  for (const c of auxChannels.values()) if (!c.archived && c.firstLiveId != null && !c.history.autoStarted) auxHistoryScheduleInitial(c);
+};
+const _hwRender = hwRender;
+hwRender = function () { _hwRender(); hwHistoryInfo(); };
+function hw3Init() {
+  $('smPane_sensor').addEventListener('change', e => {
+    const id = e.target && e.target.id;
+    if (/^ss(Name|Notes|MaxLoad|LoadUnit|MinLoad|AvgS|Yellow|Orange|Red|Break|Hold|ReadDelay|SessionS|TempDelta|PrimaryTemp)$/.test(id) && sensorSettingsApplyLocal()) ssMsg('Applied in this session. “Validate & send sensors.json” (tab Device sensors) stores notes, load limits and the temperature channel on the device.');
+  });
+  setInterval(() => { const p = $('smPane_hw'), m = $('settingsModal'); if (p && !p.hidden && m && !m.hidden) hwHistoryInfo(); }, 1000);
+}
+
 function openSettingsMenu(tab) {
   openSettings(false); $('settingsModal').hidden = false; settingsMenuTab(tab || 'ui');
   updateUiSettingsInfo(); sensorSettingsRender();
@@ -3120,14 +3190,14 @@ function settingsMenuTab(tab) {
   for (const t of ['ui', 'sensor', 'hw']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); } if (tab === 'hw') hwOpen();
 }
 function initSettingsMenu() {
-  hwInit(); authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
-  $('ssHistoryBtn').addEventListener('click', () => { const s = ssSelectedId && sensors.get(ssSelectedId); if (s) historyLoadOlder(s).then(sensorSettingsRender); });
+  hwInit(); hw3Init(); authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
+  $('ssHistoryBtn').addEventListener('click', () => { hwHistoryClick(); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
   $('settingsModal').addEventListener('pointerdown', e => { if (e.target === $('settingsModal')) $('settingsModal').hidden = true; });
   $('smTab_ui').addEventListener('click', () => settingsMenuTab('ui')); $('smTab_sensor').addEventListener('click', () => settingsMenuTab('sensor'));
   $('ssSensor').addEventListener('change', e => { ssSelectedId = e.target.value; sensorSettingsRender(); ssMsg(''); });
-  $('ssApplyBtn').addEventListener('click', sensorSettingsApply);
+  
   $('ssAuxSelect').addEventListener('change', e => { ssAuxId = e.target.value; sensorSettingsRender(); });
   $('ssAuxApply').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; let conv; try { conv = JSON.parse($('ssAuxConv').value); } catch (err) { ssMsg(`The conversion is not valid JSON: ${err.message}`); return; } const er = auxSetConversion(c, conv); ssMsg(er.length ? 'Not applied: ' + er.join(' ') : 'Conversion applied to the stored samples of this channel. “Apply & send sensors.json” keeps it.'); sensorSettingsRender(); scheduleRender(); });
   $('ssAuxReset').addEventListener('click', () => { const c = auxChannels.get(ssAuxId); if (!c) return; auxSetConversion(c, (c.def && c.def.conversion) || null); ssMsg('The conversion stored on the device is used again.'); sensorSettingsRender(); scheduleRender(); });
@@ -3135,8 +3205,8 @@ function initSettingsMenu() {
   $('deviceRestartBtn').addEventListener('click', deviceRestart); $('deviceResetBtn').addEventListener('click', () => deviceResetFile($('deviceResetSelect').value)); updateDeviceInfoUI(); renderDeviceLog();
   $('ssCalFile').addEventListener('change', async e => { ssMsg(await selectCalibrationFile(ssSelectedId, e.target.value)); sensorSettingsRender(); });
   $('ssLoadBtn').addEventListener('click', () => $('ssFile').click());
-  $('ssFile').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { ssMsg(applySensorsFile(JSON.parse(await f.text())).join(' ')); } catch (err) { ssMsg(`Could not read the file: ${err.message}`); } });
-  $('ssDownloadBtn').addEventListener('click', () => downloadBlob(new Blob([JSON.stringify(sensorsDoc(), null, 2)], { type: 'application/json' }), 'sensors.json'));
+  $('ssFile').addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { hwLoadFile(JSON.parse(await f.text())); } catch (err) { ssMsg(`Could not read the file: ${err.message}`); } });
+  $('ssDownloadBtn').addEventListener('click', () => hwDownload());
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('authModal').hidden) $('authCancel').click(); else if (!$('wizModal').hidden) wizClose(); else if (!$('settingsModal').hidden) $('settingsModal').hidden = true; } });
 }
 

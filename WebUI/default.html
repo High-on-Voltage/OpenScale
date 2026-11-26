@@ -360,7 +360,8 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         <textarea id="hwJson" rows="12" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px"></textarea>
         <div class="button-row"><button id="hwJsonApply">Use this JSON for the entry</button></div></details>
       <div class="control-grid" style="margin-top:10px"><div class="field"><label for="hwBuffer">Ring-buffer resize (?buffer=)</label><select id="hwBuffer"><option value="preserve">preserve (keep the newest samples)</option><option value="clear">clear (history is lost)</option></select></div></div>
-      <div class="button-row"><button id="hwApply" class="primary">Validate &amp; send sensors.json</button></div>
+      <div class="field" style="margin-top:10px"><label>Sample history of the selected sensor</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the device</button></div><div class="small" id="ssHistoryInfo">—</div></div>
+      <div class="button-row"><button id="hwApply" class="primary">Validate &amp; send sensors.json</button><button id="ssDownloadBtn">Download sensors.json</button><button id="ssLoadBtn">Load sensors.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
       <div id="hwMessages" class="small" style="margin-top:8px;white-space:pre-wrap"></div>
     </div>
     <div class="modal-body" id="smPane_sensor" hidden>
@@ -373,7 +374,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssRate">Sampling rate (Hz, effective, read-only)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
           <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
         </div>
-        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><button id="ssCalDeleteBtn" title="DELETE /data/calibration/&lt;file&gt; on the device (password and CSRF as for every write)">Delete this file on the device…</button><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Apply &amp; send sensors.json” makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
+        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><button id="ssCalDeleteBtn" title="DELETE /data/calibration/&lt;file&gt; on the device (password and CSRF as for every write)">Delete this file on the device…</button><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Validate &amp; send sensors.json” (tab Device sensors) makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
         <h3 style="margin:12px 0 4px">Overload warning</h3>
         <div class="small">Limits are weights (stored as <code>loadLimits</code> in sensors.json), compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used. They are independent of the firmware warnings on raw values.</div>
         <div class="control-grid" style="margin-top:6px">
@@ -399,8 +400,8 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="small">The conversion of a channel (raw × rawScale, then the formula; for example an ice-point offset in a polynomial). There is only one conversion per channel: it is stored in sensors.json when you apply and send.</div>
           <div class="control-grid" style="margin-top:6px"><div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div><div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g. {"type":"polynomial","rawScale":0.001,"unit":"°C","coefficients":[-12.3,1]})</label><input type="text" id="ssAuxConv"></div></div>
           <div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Back to the stored conversion</button></div><div class="small" id="ssAuxInfo"></div></div>
-        <div class="field span2" style="margin-top:8px"><label>Sample history</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the server</button></div><div class="small" id="ssHistoryInfo">—</div></div>
-        <div class="button-row"><button id="ssApplyBtn" class="primary">Apply &amp; send sensors.json</button><button id="ssDownloadBtn">Download sensors.json</button><button id="ssLoadBtn">Load sensors.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
+        
+        
       </div>
       <div id="ssMessages" class="small" style="margin-top:8px"></div>
       <div class="small" style="margin-top:6px">The device owns the hardware settings (GPIOs, rate, raw format, firmware warnings); this tool only changes name, notes, calibration file, temperature channel, load limits and conversions and sends the rest back untouched. The use conditions are not saved anywhere.</div>
