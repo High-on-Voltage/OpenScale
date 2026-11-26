@@ -56,7 +56,7 @@ progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;m
 .layout{grid-template-columns:minmax(0,1fr)!important}
 .side{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))!important;gap:12px;align-items:start}
 .side .panel:last-child{grid-column:auto!important}
-.span2{grid-column:span 2}.metric-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.span2{grid-column:span 2}.metric-pair{display:grid;grid-template-columns:minmax(0, 60fr) minmax(0, 40fr);gap:10px}
 .span2 .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.control-grid .span2{grid-column:span 2}
 .controls-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-top:10px}
 .header-actions{flex-wrap:wrap}
@@ -93,6 +93,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
   <div class="header-left">
     <label class="sensor-pick" for="sensorSelect">Sensor</label><select id="sensorSelect" aria-label="Shown sensor"></select>
     <span id="simControls" class="sim-controls"><select id="simModeSelect" aria-label="Simulated test signal" title="Only for exercising the validity checks. A real device replaces the simulator."><option value="wander">Wandering (default)</option><option value="quiet">Quiet (white noise)</option><option value="hum">Quiet + 50 Hz hum (aliases to 30 Hz)</option><option value="steps">Quiet + occasional weight steps</option></select></span>
+    <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
   </div>
   <div class="header-actions">
     <button id="pauseBtn" title="Pause or resume the shown sensor. A paused sensor discards incoming data.">Ⅱ Pause</button>
@@ -135,7 +136,6 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
         </details>
       </div>
     </div>
-    <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
   </div>
 </header>
 <main>
@@ -233,12 +233,12 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       </section>
     </aside>
       <section class="panel log-panel">
-        <details id="logDetails">
+        <details id="logDetails" open>
           <summary>Measurement & event log <span id="logCount" class="small">(0 entries)</span></summary>
           <div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or event.</span><button id="clearLogBtn">Clear log</button></div>
           <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No events yet.</div></div>
         </details>
-        <details id="deviceLogDetails" style="margin-top:10px">
+        <details id="deviceLogDetails" style="margin-top:10px" open>
           <summary>Device log <span id="deviceLogCount" class="small">(0 entries)</span></summary>
           <div class="small" style="margin:8px 0">General-purpose log of the device (restarts, sensor errors, configuration changes, …) plus notes of this tool about epoch breaks.</div>
           <div id="deviceLogList" class="log-list"><div class="small" style="padding:10px 0">No device log entries.</div></div>
