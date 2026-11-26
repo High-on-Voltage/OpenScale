@@ -338,9 +338,9 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
 </script>
 
 <div id="settingsModal" class="modal" hidden>
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="smTitle">
+  <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="smTitle">
     <div class="modal-head"><h2 id="smTitle">Settings Menu</h2><button id="smClose" aria-label="Close settings menu">✕</button></div>
-    <div class="tabs" role="tablist"><button role="tab" id="smTab_ui" aria-selected="true">Interface</button><button role="tab" id="smTab_sensor" aria-selected="false">Sensor</button></div>
+    <div class="tabs" role="tablist"><button role="tab" id="smTab_ui" aria-selected="true">Interface</button><button role="tab" id="smTab_sensor" aria-selected="false">Sensor</button><button role="tab" id="smTab_hw" aria-selected="false">Device sensors</button></div>
     <div class="modal-body" id="smPane_ui">
       <div id="uiSettingsInfo" class="readout">—</div>
       <div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser (<code>webui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the server default, or the built-in values if there is none.</div>
@@ -350,6 +350,18 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       <div class="button-row"><button id="authForgetBtn">Forget password</button></div>
       <div class="small" style="margin:6px 0">A password is only asked for when something is changed on the server (settings, calibration). Reading and the live stream never need it. It is kept in this tab; it is never written into a file or a link. The password is sent as HTTP Basic: on plain HTTP it is readable on the network, so use it on a trusted home network or over HTTPS only.</div>
       <div id="uiMessages" class="small" style="margin-top:8px"></div>
+    </div>
+    <div class="modal-body" id="smPane_hw" hidden>
+      <div class="small">Hardware definitions of the sensors on the device (<code>sensors.json</code>): add, change or remove sensors, set pins, rate, raw format, warnings and auxiliary channels. The document is checked here, then sent as a whole; the device decides what needs a sensor reconfiguration or a restart.</div>
+      <div class="field" style="margin-top:8px"><label for="hwSelect">Sensor definition</label><select id="hwSelect"></select></div>
+      <div class="button-row"><button id="hwAddHx">＋ HX711 load cell</button><button id="hwAddTemp">＋ Temperature channel</button><button id="hwDelete">Remove</button><button id="hwReload">Discard changes</button></div>
+      <div id="hwForm"></div>
+      <details style="margin-top:10px"><summary>Entry as JSON (every key, also unknown ones)</summary>
+        <textarea id="hwJson" rows="12" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px"></textarea>
+        <div class="button-row"><button id="hwJsonApply">Use this JSON for the entry</button></div></details>
+      <div class="control-grid" style="margin-top:10px"><div class="field"><label for="hwBuffer">Ring-buffer resize (?buffer=)</label><select id="hwBuffer"><option value="preserve">preserve (keep the newest samples)</option><option value="clear">clear (history is lost)</option></select></div></div>
+      <div class="button-row"><button id="hwApply" class="primary">Validate &amp; send sensors.json</button></div>
+      <div id="hwMessages" class="small" style="margin-top:8px;white-space:pre-wrap"></div>
     </div>
     <div class="modal-body" id="smPane_sensor" hidden>
       <div class="field"><label for="ssSensor">Sensor</label><select id="ssSensor"></select></div>
@@ -361,7 +373,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
           <div class="field"><label for="ssRate">Sampling rate (Hz, effective, read-only)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
           <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
         </div>
-        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Apply &amp; send sensors.json” makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
+        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><button id="ssCalDeleteBtn" title="DELETE /data/calibration/&lt;file&gt; on the device (password and CSRF as for every write)">Delete this file on the device…</button><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Apply &amp; send sensors.json” makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
         <h3 style="margin:12px 0 4px">Overload warning</h3>
         <div class="small">Limits are weights (stored as <code>loadLimits</code> in sensors.json), compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used. They are independent of the firmware warnings on raw values.</div>
         <div class="control-grid" style="margin-top:6px">

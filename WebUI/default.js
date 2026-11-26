@@ -2957,15 +2957,170 @@ async function sensorSettingsApply() {
 }
 // "Load sensors.json…": reads a file into the sensor list of this session (like a reload); nothing is sent until "Apply & send".
 function applySensorsFile(doc) { const r = applySensorList(doc); return [`File read: ${r.added.length + r.auxAdded.length} added, ${r.updated.length + r.auxUpdated.length} updated.${r.errors.length ? ' ' + r.errors.join(' ') : ''} Nothing was sent to the device; use “Apply & send sensors.json” for that.`]; }
+// ===== v0.18: DEVICE SENSORS (hardware definitions in sensors.json) =====================================================================
+// Edits a DRAFT copy of the whole sensors.json (including the WebUI-owned keys), validates it and sends it with PUT ?buffer=preserve|clear.
+// Unknown keys are never dropped: the JSON box shows and edits the complete entry. New entries get an id (next free number) that stays editable until sent.
+const HW_KINDS = ['loadcell', 'temperature', 'generic'], HW_TYPES = ['hx711', 'temperature'], HW_GAINS = ['A128', 'A64', 'B32'];
+let hwDraft = null, hwSel = null, hwMsg = '';
+const hwNew = new Set();
+function hwTemplate(type, id) {
+  if (type === 'temperature') return { id, name: 'Temperature ' + id, kind: 'temperature', type: 'temperature', enabled: true, unit: 'm°C', rawFormat: 'int32', rate_hz: 1, ringbuffer_size_samples: 1000, attachedTo: [], conversion: { type: 'direct', rawScale: 0.001, unit: '°C' } };
+  return { id, name: 'Scale ' + id, kind: 'loadcell', type: 'hx711', enabled: true, unit: 'ADC count', rawFormat: 'int24', rate_hz: 80, ringbuffer_size_samples: 1600,
+    hx711: { dout_gpio: null, sck_gpio: null, rate_gpio: null, gain: null },
+    warnings: { overload: { enabled: false, threshold: 8388607, hysteresis: 1024 }, underload: { enabled: false, threshold: -8388608, hysteresis: 1024 } }, calibrationFile: null, primaryTemperatureSensorId: null };
+}
+function hwGet(o, p) { return p.split('.').reduce((a, k) => (a == null ? undefined : a[k]), o); }
+function hwSetPath(o, p, v) { const ks = p.split('.'); let a = o; for (let i = 0; i < ks.length - 1; i++) { if (a[ks[i]] == null || typeof a[ks[i]] !== 'object') a[ks[i]] = {}; a = a[ks[i]]; } a[ks[ks.length - 1]] = v; }
+function hwSetMsg(t) { hwMsg = t; const el = $('hwMessages'); if (el) el.textContent = t; }
+function hwCur() { return hwDraft && hwDraft.sensors.find(e => String(e.id) === hwSel) || null; }
+function hwField(e, path, label, t, opt = {}) {
+  const v = hwGet(e, path); let ctl;
+  if (t === 'bool') ctl = `<input type="checkbox" data-hw="${path}" data-t="bool" ${v ? 'checked' : ''}>`;
+  else if (t === 'sel') ctl = `<select data-hw="${path}" data-t="sel">${opt.options.map(o => `<option value="${esc(o)}"${(v == null ? '' : v) === o ? ' selected' : ''}>${o === '' ? '(none / device default)' : esc(o)}</option>`).join('')}</select>`;
+  else if (t === 'ids') ctl = `<input type="text" data-hw="${path}" data-t="ids" value="${esc(Array.isArray(v) ? v.join(', ') : '')}">`;
+  else if (t === 'json') ctl = `<input type="text" data-hw="${path}" data-t="json" value="${esc(v === undefined ? '' : JSON.stringify(v))}">`;
+  else if (t === 'text') ctl = `<input type="text" data-hw="${path}" data-t="text" value="${esc(v == null ? '' : v)}">`;
+  else ctl = `<input type="number" step="any" data-hw="${path}" data-t="${t}" value="${esc(v == null ? '' : v)}"${opt.ro ? ' disabled' : ''}>`;
+  return `<div class="field"><label>${label}</label>${ctl}</div>`;
+}
+function hwRender() {
+  if (!hwDraft) hwDraft = sensorsDoc();
+  const sel = $('hwSelect'); sel.innerHTML = '';
+  for (const e of hwDraft.sensors) { const o = document.createElement('option'); o.value = String(e.id); o.textContent = `${e.id} · ${e.name || '?'} (${e.type || '?'})${hwNew.has(String(e.id)) ? ' · new' : ''}`; sel.appendChild(o); }
+  if (hwSel != null) sel.value = hwSel;
+  const e = hwCur(); $('hwDelete').disabled = !e; $('hwApply').disabled = !deviceReachable; $('hwJsonApply').disabled = !e; $('hwJson').disabled = !e;
+  const form = $('hwForm');
+  if (!e) { form.innerHTML = '<div class="small" style="margin-top:8px">No sensor definitions yet. Add one with the buttons above.</div>'; $('hwJson').value = ''; $('hwMessages').textContent = hwMsg; return; }
+  const g = (p, l, t, o) => hwField(e, p, l, t, o), isNew = hwNew.has(String(e.id)), hx = e.type === 'hx711' || !!e.hx711, aux = !!(e.kind && e.kind !== 'loadcell');
+  const types = HW_TYPES.includes(e.type) || !e.type ? HW_TYPES : [...HW_TYPES, e.type], h3 = t => `<h3 style="margin:12px 0 4px">${t}</h3>`;
+  let h = '<div class="control-grid" style="margin-top:8px">' + g('id', 'ID (number' + (isNew ? '' : ', fixed') + ')', 'num', { ro: !isNew }) + g('name', 'Name', 'text') + g('notes', 'Notes', 'text')
+    + g('kind', 'Kind', 'sel', { options: HW_KINDS }) + g('type', 'Type (driver)', 'sel', { options: types }) + g('enabled', 'Enabled', 'bool') + '</div>'
+    + h3('Raw data') + '<div class="control-grid">' + g('unit', 'Unit of the raw value (e.g. ADC count, m°C)', 'text') + g('rawFormat', 'rawFormat', 'sel', { options: [...RAW_FORMATS] })
+    + g('rate_hz', 'rate_hz (HX711: 10 or 80)', 'num') + g('ringbuffer_size_samples', 'Ring buffer (samples)', 'num') + '</div>';
+  if (hx) h += h3('HX711 pins and gain') + '<div class="control-grid">' + g('hx711.dout_gpio', 'DOUT GPIO', 'num') + g('hx711.sck_gpio', 'SCK GPIO', 'num') + g('hx711.rate_gpio', 'RATE GPIO (empty = strapped on the board)', 'nullnum') + g('hx711.gain', 'Gain', 'sel', { options: ['', ...HW_GAINS] }) + '</div><div class="small">Pins are board-specific; there is no default. Check them for your board and chip.</div>';
+  h += h3('Firmware warnings (raw units, not weights)') + '<div class="control-grid">' + g('warnings.overload.enabled', 'Overload on', 'bool') + g('warnings.overload.threshold', 'Overload threshold', 'num') + g('warnings.overload.hysteresis', 'Overload hysteresis (≥ 0)', 'num')
+    + g('warnings.underload.enabled', 'Underload on', 'bool') + g('warnings.underload.threshold', 'Underload threshold', 'num') + g('warnings.underload.hysteresis', 'Underload hysteresis (≥ 0)', 'num') + '</div>';
+  if (aux) h += h3('Auxiliary channel') + '<div class="control-grid">' + g('attachedTo', 'Attached to load cell ids (comma separated)', 'ids') + '<div class="field span2"><label>Conversion (JSON)</label>' + hwField(e, 'conversion', '', 'json').replace('<div class="field"><label></label>', '').replace(/<\/div>$/, '') + '</div></div>';
+  h += '<div class="small" style="margin-top:8px">Calibration file, primary temperature channel and load limits belong to the WebUI and are edited in the “Sensor” tab; they are kept as they are. Other drivers than HX711 are accepted here, but the firmware may reject what it does not implement yet.</div>';
+  form.innerHTML = h; $('hwJson').value = JSON.stringify(e, null, 2); $('hwMessages').textContent = hwMsg;
+}
+function hwOpen() { hwDraft = sensorsDoc(); if (!hwDraft.sensors.some(e => String(e.id) === hwSel)) hwSel = hwDraft.sensors.length ? String(hwDraft.sensors[0].id) : null; hwNew.clear(); hwMsg = ''; hwRender(); }
+function hwParse(t, v) {
+  if (t === 'bool') return !!v; if (t === 'text' || t === 'sel') return t === 'sel' && v === '' ? null : v;
+  if (t === 'ids') return String(v).split(/[\s,;]+/).filter(Boolean).map(Number);
+  return v === '' ? null : Number(v);   // num / nullnum
+}
+function hwOnChange(ev) {
+  const t = ev.target, p = t && t.dataset && t.dataset.hw, e = hwCur(); if (!p || !e) return;
+  const ty = t.dataset.t; let v;
+  if (ty === 'json') { try { v = t.value.trim() === '' ? undefined : JSON.parse(t.value); } catch (x) { hwSetMsg('Not valid JSON: ' + x.message); return; } }
+  else v = hwParse(ty, ty === 'bool' ? t.checked : t.value);
+  if (p === 'id') {
+    if (!Number.isInteger(v) || v < 0) { hwSetMsg('The id must be a whole number ≥ 0.'); hwRender(); return; }
+    if (hwDraft.sensors.some(o => o !== e && o.id === v)) { hwSetMsg('The id ' + v + ' is already used.'); hwRender(); return; }
+    hwNew.delete(String(e.id)); hwNew.add(String(v)); hwSel = String(v);
+  }
+  if (p === 'type' && v === 'hx711' && !e.hx711) e.hx711 = { dout_gpio: null, sck_gpio: null, rate_gpio: null, gain: null };
+  if (v === undefined) { const ks = p.split('.'), last = ks.pop(), par = ks.length ? hwGet(e, ks.join('.')) : e; if (par) delete par[last]; } else hwSetPath(e, p, v);
+  hwSetMsg(''); hwRender();
+}
+function hwAdd(type) {
+  if (!hwDraft) hwDraft = sensorsDoc();
+  const used = new Set(hwDraft.sensors.map(x => Number(x.id))); let id = 0; while (used.has(id)) id++;
+  hwDraft.sensors.push(hwTemplate(type, id)); hwNew.add(String(id)); hwSel = String(id); hwSetMsg(''); hwRender();
+}
+function hwDelete() {
+  const e = hwCur(); if (!e) return;
+  if (!uiConfirm('Remove sensor ' + e.id + ' (' + e.name + ') from the draft? It is deleted on the device when you send the document. Samples already collected here stay as “not in list”.')) return;
+  hwDraft.sensors = hwDraft.sensors.filter(o => o !== e); hwNew.delete(String(e.id)); hwSel = hwDraft.sensors.length ? String(hwDraft.sensors[0].id) : null; hwSetMsg(''); hwRender();
+}
+function hwJsonApply() {
+  const e = hwCur(); if (!e) return; let o;
+  try { o = JSON.parse($('hwJson').value); } catch (x) { hwSetMsg('Not valid JSON: ' + x.message); return; }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) { hwSetMsg('The entry must be a JSON object.'); return; }
+  if (!hwNew.has(String(e.id)) && o.id !== e.id) { hwSetMsg('The id of a sensor that exists on the device cannot be changed here.'); return; }
+  if (hwDraft.sensors.some(x => x !== e && x.id === o.id)) { hwSetMsg('The id ' + o.id + ' is already used.'); return; }
+  hwNew.delete(String(e.id)); if (Number.isInteger(o.id) && o.id !== e.id) hwNew.add(String(o.id));
+  hwDraft.sensors[hwDraft.sensors.indexOf(e)] = o; hwSel = String(o.id); hwSetMsg('Entry replaced by the JSON.'); hwRender();
+}
+function hwValidate(doc) {
+  const er = [], seen = new Set();
+  if (!doc || !Array.isArray(doc.sensors)) return ['The document needs a "sensors" list.'];
+  doc.sensors.forEach((e, i) => {
+    if (!e || typeof e !== 'object') { er.push('Entry ' + (i + 1) + ' is not an object.'); return; }
+    const L = 'Sensor ' + (e.id != null ? e.id : '#' + (i + 1)) + ': ';
+    if (!Number.isInteger(e.id) || e.id < 0) er.push(L + 'the id must be a whole number ≥ 0.'); else { if (seen.has(e.id)) er.push(L + 'duplicate id.'); seen.add(e.id); }
+    if (typeof e.name !== 'string' || !e.name.trim()) er.push(L + 'the name is empty.');
+    if (e.kind != null && !HW_KINDS.includes(e.kind)) er.push(L + 'unknown kind “' + e.kind + '”.');
+    if (typeof e.type !== 'string' || !e.type) er.push(L + 'the type is missing.');
+    if (!RAW_FORMATS.has(e.rawFormat)) er.push(L + 'rawFormat is missing or unknown.');
+    const rate = Number(e.rate_hz); if (!(rate > 0)) er.push(L + 'rate_hz must be greater than 0.'); else if (e.type === 'hx711' && rate !== 10 && rate !== 80) er.push(L + 'an HX711 runs at 10 or 80 Hz.');
+    if (!(Number.isInteger(e.ringbuffer_size_samples) && e.ringbuffer_size_samples > 0)) er.push(L + 'the ring buffer size must be a positive whole number.');
+    if (e.type === 'hx711') {
+      const hx = e.hx711 || {};
+      for (const k of ['dout_gpio', 'sck_gpio']) if (!Number.isInteger(hx[k]) || hx[k] < 0) er.push(L + k + ' must be a GPIO number.');
+      if (hx.rate_gpio != null && !(Number.isInteger(hx.rate_gpio) && hx.rate_gpio >= 0)) er.push(L + 'rate_gpio must be a GPIO number or empty.');
+      if (hx.gain != null && !HW_GAINS.includes(hx.gain)) er.push(L + 'gain must be A128, A64, B32 or empty.');
+      if (Number.isInteger(hx.dout_gpio) && hx.dout_gpio === hx.sck_gpio) er.push(L + 'DOUT and SCK cannot be the same pin.');
+    }
+    for (const w of ['overload', 'underload']) { const x = e.warnings && e.warnings[w]; if (x && x.enabled) { if (!Number.isFinite(x.threshold)) er.push(L + w + ' threshold is not a number.'); if (!(Number.isFinite(x.hysteresis) && x.hysteresis >= 0)) er.push(L + w + ' hysteresis must be a number ≥ 0.'); } }
+    if (e.kind && e.kind !== 'loadcell') {
+      for (const m of validateAuxConversion(e.conversion == null ? { type: 'direct' } : e.conversion)) er.push(L + m);
+      if (e.attachedTo != null && (!Array.isArray(e.attachedTo) || !e.attachedTo.every(v => Number.isInteger(v) && v >= 0))) er.push(L + 'attachedTo must be a list of load-cell ids.');
+    }
+  });
+  return er;
+}
+async function hwApply() {
+  const er = hwValidate(hwDraft); if (er.length) { hwSetMsg('Not sent:\n' + er.join('\n')); return; }
+  if (!deviceReachable) { hwSetMsg('No device connection.'); return; }
+  const mode = $('hwBuffer').value, old = new Set(((sensorsDocRaw && sensorsDocRaw.sensors) || []).map(e => e.id)), removed = [...old].filter(id => !hwDraft.sensors.some(e => e.id === id));
+  let q = 'Send sensors.json to the device now?';
+  if (removed.length) q += '\n\nSensors removed from the device: ' + removed.join(', ') + '.';
+  if (mode === 'clear') q += '\n\nBuffer mode “clear”: the device history of resized sensors is lost.';
+  q += '\n\nThe device decides what needs a sensor reconfiguration or a restart; nothing restarts automatically.';
+  if (!uiConfirm(q)) return;
+  try {
+    const r = await serverWrite(SENSORS_URL + '?buffer=' + encodeURIComponent(mode), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(hwDraft, null, 2) });
+    if (!r.ok) throw new Error(await httpErrorText(r));
+    const j = await writeResult(r);
+    if (j.saved !== false) { sensorsDocRaw = cloneJson(hwDraft); hwNew.clear(); await loadSensorList(); pollStatus(); if (typeof sensorSettingsRender === 'function') sensorSettingsRender(); }
+    hwSetMsg('Sent sensors.json (buffer=' + mode + '): ' + writeResultText(j));
+  } catch (e) { hwSetMsg('The device did not accept sensors.json: ' + e.message); }
+  hwRender();
+}
+async function deleteCalibrationFile() {
+  const name = $('ssCalFile').value;
+  if (!name) { ssMsg('Choose a calibration file first (the embedded demo cannot be deleted).'); return; }
+  if (!deviceReachable) { ssMsg('No device connection.'); return; }
+  if (!uiConfirm('Delete ' + name + ' on the device? This cannot be undone.')) return;
+  try {
+    const r = await serverWrite(CALIBRATION_DIR + '/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!r.ok) throw new Error(await httpErrorText(r));
+    const j = await writeResult(r); calLibrary.delete(name);
+    ssMsg('Deleted ' + name + ' (' + writeResultText(j) + '). A sensor that still names it in sensors.json should get another file; apply and send.');
+  } catch (e) { ssMsg('Could not delete ' + name + ': ' + e.message); }
+  sensorSettingsRender();
+}
+function hwInit() {
+  $('smTab_hw').addEventListener('click', () => settingsMenuTab('hw'));
+  $('hwSelect').addEventListener('change', e => { hwSel = e.target.value; hwSetMsg(''); hwRender(); });
+  $('hwForm').addEventListener('change', hwOnChange);
+  $('hwAddHx').addEventListener('click', () => hwAdd('hx711')); $('hwAddTemp').addEventListener('click', () => hwAdd('temperature'));
+  $('hwDelete').addEventListener('click', hwDelete); $('hwReload').addEventListener('click', hwOpen);
+  $('hwJsonApply').addEventListener('click', hwJsonApply); $('hwApply').addEventListener('click', hwApply);
+  $('ssCalDeleteBtn').addEventListener('click', deleteCalibrationFile);
+}
+
 function openSettingsMenu(tab) {
   openSettings(false); $('settingsModal').hidden = false; settingsMenuTab(tab || 'ui');
   updateUiSettingsInfo(); sensorSettingsRender();
 }
 function settingsMenuTab(tab) {
-  for (const t of ['ui', 'sensor']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); }
+  for (const t of ['ui', 'sensor', 'hw']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); } if (tab === 'hw') hwOpen();
 }
 function initSettingsMenu() {
-  authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
+  hwInit(); authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
   $('ssHistoryBtn').addEventListener('click', () => { const s = ssSelectedId && sensors.get(ssSelectedId); if (s) historyLoadOlder(s).then(sensorSettingsRender); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
