@@ -228,7 +228,7 @@ let state = null;
 function makeSensor(def) {
   const kind = def.kind || 'server';
   const rateHz = Number.isFinite(def.rateHz) && def.rateHz > 0 ? def.rateHz : RATE_HZ_DEFAULT;
-  const sensor = {id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, rawFormat: null, def: null, sensorType: null, disabled: false, epochNo: 1, err: null, fw: {overload: null, underload: null}, configRev: null, warnRev: null, status: null, details: {}, settings: {notes: ''}, unlisted: false,
+  const sensor = {hasOwnCal: kind === 'test', id: String(def.id), name: String(def.name || def.id), kind, sseUrl: def.sseUrl || null, rawFormat: null, def: null, sensorType: null, disabled: false, epochNo: 1, err: null, fw: {overload: null, underload: null}, configRev: null, warnRev: null, status: null, details: {}, settings: {notes: ''}, unlisted: false,
     ovl: newOverloadState(), firstLiveId: null, skipNextGap: false, gaps: [], gapCount: 0, history: {status: 'idle', loaded: 0, running: false, error: null, minId: null, autoStarted: false},
     state: createSensorState({rateHz, lazy: kind !== 'test', unitId: kind === 'test' ? undefined : SERVER_SENSOR_DEFAULT_UNIT})};
   sensors.set(sensor.id, sensor);
@@ -317,8 +317,8 @@ function nextSensorValue(st = state) {
 function appendSample(rawValue, timeMs, sampleId) {
   if (state.unlimited && state.count === state.capacity) resizeBuffers(state.capacity + 100000);
   const sampleTime = timeMs == null ? state.nextTime : timeMs;
-  if (state.measurement && state.count && sampleTime - newestTime() > ANALYSIS_THRESHOLDS.gapFactor * PERIOD_MS) cancelMeasurement('sampling gap');
-  if (state.charRec && state.count && sampleTime - newestTime() > ANALYSIS_THRESHOLDS.gapFactor * PERIOD_MS) cancelCharRec('sampling gap');
+  if (state.measurement && timeStepIsGap(sampleTime, sampleId)) cancelMeasurement('sampling gap');
+  if (state.charRec && timeStepIsGap(sampleTime, sampleId)) cancelCharRec('sampling gap');
 
   // Maintain the raw rolling statistics independently of calibration and tare.
   if (state.rawCount >= state.activeWindow) {
@@ -1465,23 +1465,23 @@ function worstVerdict(checks) { let w = 'ok', seen = false; for (const c of chec
 // times: ms. counters (optional, from the device): integer per-sample counter. Timestamps are
 // authoritative; the counter is an independent witness for dropped / repeated frames.
 // A segment is a maximal run [start,end) with 0 < dt <= gapFactor * nominal between neighbours.
-function analysisSegments(times, nominalMs, gapFactor = ANALYSIS_THRESHOLDS.gapFactor) {
+function analysisSegments(times, nominalMs, gapFactor = ANALYSIS_THRESHOLDS.gapFactor, counters = null) {
   const n = times.length, segs = []; if (!n) return segs;
   let start = 0;
   for (let i = 1; i < n; i++) {
     const dt = times[i] - times[i - 1];
-    if (!(dt > 0) || dt > gapFactor * nominalMs) { segs.push([start, i]); start = i; }
+    if (!(dt > 0) || (dt > gapFactor * nominalMs && !(counters && counters[i] - counters[i - 1] === 1))) { segs.push([start, i]); start = i; }
   }
   segs.push([start, n]); return segs;
 }
 function analysisGaps(times, nominalMs, counters = null) {
   const n = times.length, T = ANALYSIS_THRESHOLDS;
-  let gaps = 0, missing = 0, duplicates = 0, backwards = 0, counterGaps = 0, counterMissing = 0, counterDup = 0;
+  let gaps = 0, missing = 0, duplicates = 0, backwards = 0, counterGaps = 0, counterMissing = 0, counterDup = 0, jitter = 0;
   for (let i = 1; i < n; i++) {
     const dt = times[i] - times[i - 1];
     if (dt === 0) duplicates++;
     else if (dt < 0) backwards++;
-    else if (dt > T.gapFactor * nominalMs) { gaps++; missing += Math.max(1, Math.round(dt / nominalMs) - 1); }
+    else if (dt > T.gapFactor * nominalMs) { if (counters && counters[i] - counters[i - 1] === 1) jitter++; else { gaps++; missing += Math.max(1, Math.round(dt / nominalMs) - 1); } }
     if (counters) {
       const dc = counters[i] - counters[i - 1];
       if (dc === 0) counterDup++; else if (dc < 0 || dc > 1) { counterGaps++; counterMissing += Math.max(0, dc - 1); }
@@ -1496,7 +1496,7 @@ function analysisGaps(times, nominalMs, counters = null) {
   if (duplicates) parts.push(`${duplicates} duplicate timestamp${duplicates === 1 ? '' : 's'}`);
   if (backwards) parts.push(`${backwards} backwards step${backwards === 1 ? '' : 's'}`);
   if (counters) parts.push(`counter: ${counterGaps} jump${counterGaps === 1 ? '' : 's'}, ${counterMissing} missing, ${counterDup} repeated`);
-  return { id: 'gaps', label: 'Gaps and duplicates', value: fraction, valueText: `${(100 * fraction).toFixed(2)} % missing`, threshold: { warn: 'any gap', fail: T.gapFailFraction, failText: 'duplicate/backwards time, or > ' + (100 * T.gapFailFraction) + ' % missing' }, verdict, detail: parts.join('; '), gaps, missing, duplicates, backwards };
+  return { id: 'gaps', label: 'Gaps and duplicates', value: fraction, valueText: `${(100 * fraction).toFixed(2)} % missing`, threshold: { warn: 'any gap', fail: T.gapFailFraction, failText: 'duplicate/backwards time, or > ' + (100 * T.gapFailFraction) + ' % missing' }, verdict, detail: parts.join('; ') + (jitter ? '; ' + jitter + ' irregular interval(s), counter contiguous: no samples lost' : ''), jitter, gaps, missing, duplicates, backwards };
 }
 
 // ---- autocorrelation and effective sample size ----------------------------------------------------
@@ -1665,7 +1665,7 @@ function analyzeSeries(values, times, opts = {}) {
     const f = opts.outOfRangeCount / n;
     checks.push({ id: 'range', label: 'Calibrated range', value: f, valueText: `${opts.outOfRangeCount} of ${n} samples outside`, threshold: { warn: 'any', fail: T.rangeFailFraction }, verdict: opts.outOfRangeCount === 0 ? 'ok' : (f > T.rangeFailFraction ? 'invalid' : 'suspect'), detail: 'extrapolated mass values are not backed by a calibration anchor' });
   }
-  const segs = analysisSegments(times, nominalMs);
+  const segs = analysisSegments(times, nominalMs, undefined, opts.counters || null);
   let seg = segs[0]; for (const s of segs) if (s[1] - s[0] > seg[1] - seg[0]) seg = s;
   let a = seg[0], b = seg[1], cut = false;
   if (b - a > T.maxSamples) { a = b - T.maxSamples; cut = true; }
@@ -1700,8 +1700,8 @@ function analyzeSeries(values, times, opts = {}) {
 function analyzeInterval(first,end){
   const n=end-first;if(n<=0)return{status:'n/a',checks:[],note:'empty interval'};
   const raws=new Float64Array(n),times=new Float64Array(n),ids=new Float64Array(n);let oor=0,haveIds=true;
-  for(let j=0;j<n;j++){const i=first+j,t=getTime(i),r=getRaw(i),id=getId(i);raws[j]=r;times[j]=t;ids[j]=id;if(!Number.isFinite(id))haveIds=false;if(calibrateAbsolute(r,calibrationAt(t).config).outOfRange)oor++;}
-  return analyzeSeries(raws,times,{nominalMs:PERIOD_MS,counters:haveIds?ids:null,outOfRangeCount:oor});   // the device counter is a second witness for dropped / repeated frames
+  for(let j=0;j<n;j++){const i=first+j,t=getTime(i),r=getRaw(i),id=getId(i);raws[j]=r;times[j]=t;ids[j]=id;if(!Number.isFinite(id))haveIds=false;if(activeSensor.hasOwnCal&&calibrateAbsolute(r,calibrationAt(t).config).outOfRange)oor++;}
+  return analyzeSeries(raws,times,{nominalMs:PERIOD_MS,counters:haveIds?ids:null,outOfRangeCount:activeSensor.hasOwnCal?oor:undefined});   // the device counter is a second witness for dropped / repeated frames
 }
 const VERDICT_ICON={ok:'✓',suspect:'⚠',invalid:'✖','n/a':'–',insufficient:'…'};
 const STATUS_TEXT={ok:'no problem detected',suspect:'suspect',invalid:'invalid','n/a':'not analysed',insufficient:'insufficient data'};
@@ -1976,7 +1976,7 @@ async function activateCalibration(config,source){
   if(state!==target){checked.errors.push('The shown sensor changed while the calibration was being checked; nothing was applied. Select the sensor again and retry.');return checked;}
   if(fp.id===state.revisionId){checked.warnings.push('This calibration is already active; nothing changed.');checked.unchanged=true;activeSensor.settings.calibrationFile=calName;return checked;}
   if(config.contentHash&&fp.full&&config.contentHash!==fp.full)checked.warnings.push('The file’s contentHash does not match its content (edited after export?). The recalculated fingerprint is used.');
-  CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
+  CALIBRATION=config;calibration=checked.prepared;state.calConfig=config;state.calPrepared=checked.prepared;activeSensor.hasOwnCal=true;state.revisionId=fp.id;state.hashType=fp.type;state.fullHash=fp.full;
   state.calibrations.push({effectiveFromTime:state.nextTime,revisionId:fp.id,profileId:config.profileId,hashType:fp.type,config:calibration,source});
   cancelMeasurement('calibration changed'); cancelCharRec('calibration changed');
   addTareEvent(0,{method:'Tare reset · calibration changed'});
@@ -2003,7 +2003,7 @@ async function importCalibrationFile(file){
 }
 async function restoreDemoCalibration(){
   const result=await activateCalibration(JSON.parse(JSON.stringify(EMBEDDED_CALIBRATION)),'embedded demo');
-  if(!result.errors.length)activeSensor.settings.calibrationFile=null;
+  if(!result.errors.length){activeSensor.settings.calibrationFile=null;activeSensor.hasOwnCal=activeSensor.kind==='test';}
   showCalibrationMessages(result.errors,result.warnings,result.errors.length||result.unchanged?'':'Embedded illustrative demo calibration restored.');
 }
 async function exportCalibration(){
@@ -2208,6 +2208,7 @@ function housekeeping() {
 // (counted in state.dropped). Only the shown sensor is processed; the others just store time + raw counts.
 // timeMs: device time relative to the sensor's origin (undefined for the simulator). Non-monotonic or
 // duplicate times are rejected (state.rejected) because the binary searches assume sorted time.
+function timeStepIsGap(t, id){ if(!state.count)return false; if(!(t-newestTime()>ANALYSIS_THRESHOLDS.gapFactor*PERIOD_MS))return false; return !(Number.isFinite(id)&&id===lastStoredId(state)+1); }
 function lastStoredId(st){return st.count?st.ids[(st.head+st.count-1)%st.capacity]:NaN;}
 function ingestSample(sensor,raw,timeMs,force=false,sampleId){
   const st=sensor.state;
@@ -2222,7 +2223,7 @@ function ingestSample(sensor,raw,timeMs,force=false,sampleId){
   }
   const tt=timeMs==null?st.nextTime:timeMs;
   if(sensor===activeSensor)appendSample(raw,timeMs,sampleId);else appendRawOnly(st,raw,timeMs,sampleId);
-  if(sensor.ovl.cfg.maxMg>0)overloadStep(sensor,tt,calibrateAbsolute(raw,st.calPrepared).valueMg);
+  if(sensor.ovl.cfg.maxMg>0&&sensor.hasOwnCal)overloadStep(sensor,tt,calibrateAbsolute(raw,st.calPrepared).valueMg);
   return true;
 }
 function appendRawOnly(st,raw,timeMs,sampleId){
@@ -2401,7 +2402,7 @@ function updateStatusUI(){
 }
 function renderSensorSelect(){
   const sel=$('sensorSelect');sel.innerHTML='';
-  for(const s of sensors.values()){const o=document.createElement('option');o.value=s.id;o.textContent=`${LINK_ICON[sensorLink(s).key]||'○'} ${s.name}${s.unlisted?' (not in list)':''}`;sel.appendChild(o);}
+  for(const s of [...sensors.values()].sort((a,b)=>(a.kind==='test')-(b.kind==='test'))){const o=document.createElement('option');o.value=s.id;o.textContent=`${LINK_ICON[sensorLink(s).key]||'○'} ${s.name}${s.unlisted?' (not in list)':''}`;sel.appendChild(o);}
   sel.value=activeSensor.id;
 }
 function setSensorPaused(s,paused,quiet=false){
@@ -2430,7 +2431,7 @@ const sseStats={unknown:0,bad:0};
 // ===== v17: DEVICE LAYER: status, boot detection, CSRF, device log, units, startup =============================================
 // Startup (protocol §3): status + device -> units / files / webui-settings -> sensors.json (+ the calibration each sensor names) -> status again -> device log
 // -> only then the ONE multiplexed /stream is opened (startupHold), so no sample arrives before the sensor list and calibrations exist.
-let startupHold = false, deviceReachable = false, deviceBootId = null, deviceStatus = null, deviceInfo = null, deviceInfoError = null, csrfToken = null, pendingChanges = [], deviceFiles = null, deviceState = null, sensorsDocRaw = null, statusPromise = null, statusError = '', startupNotes = [];
+let deviceSeen = false, statusFails = 0, startupHold = false, deviceReachable = false, deviceBootId = null, deviceStatus = null, deviceInfo = null, deviceInfoError = null, csrfToken = null, pendingChanges = [], deviceFiles = null, deviceState = null, sensorsDocRaw = null, statusPromise = null, statusError = '', startupNotes = [];
 const deviceLog = [], deviceLogKeys = new Set(), DEVICE_LOG_MAX = 1000;
 function deviceOnline() { return deviceReachable; }
 async function httpErrorText(r) {
@@ -2462,8 +2463,8 @@ function pollStatus() {
   if (typeof fetch === 'undefined') return Promise.resolve(null);
   if (statusPromise) return statusPromise;
   statusPromise = (async () => {
-    try { const st = await fetchWire(STATUS_URL); deviceReachable = true; statusError = ''; handleStatus(st); return st; }
-    catch (e) { deviceReachable = false; statusError = e.message; updateStatusUI(); updateDeviceInfoUI(); return null; }
+    try { const st = await fetchWire(STATUS_URL); deviceReachable = true; deviceSeen = true; statusFails = 0; statusError = ''; handleStatus(st); return st; }
+    catch (e) { statusFails++; statusError = e.message; if (statusFails >= 3 || !deviceSeen) deviceReachable = false; updateStatusUI(); updateDeviceInfoUI(); return null; }
     finally { statusPromise = null; }
   })();
   return statusPromise;
@@ -2572,7 +2573,7 @@ async function deviceStartup() {
     if (jobs[1].status === 'fulfilled') { deviceFiles = jobs[1].value; indexCalibrationFiles(deviceFiles); }
     if (jobs[2].status === 'fulfilled' && jobs[2].value && !uiLocalRead()) applyUiSettings(jobs[2].value);
     updateUiSettingsInfo(); startUPlot();
-    await loadSensorList(); await pollStatus(); await loadDeviceLog();
+    await loadSensorList(); await pollStatus(); await loadDeviceLog(); selectDefaultSensor();
     return true;
   } finally { startupHold = false; syncConnections(); updateDeviceInfoUI(); updateSettingsAvailability(); }
 }
@@ -2764,7 +2765,7 @@ async function adoptCalibrationFile(s){
     st.calibrations=[{effectiveFromTime:-Infinity,revisionId:fp.id,profileId:e.config.profileId,hashType:fp.type,config:checked.prepared,source:`file: ${name}`}];
     if(st.unitId==='raw')st.unitId=UNIT_CONFIG.defaultUnit;
     if(s===activeSensor){CALIBRATION=e.config;calibration=checked.prepared;updateCalibrationInfo();syncUIFromState();}
-    s.settings.calibrationAdopted=name;s.settings.calibrationError=null;
+    s.settings.calibrationAdopted=name;s.settings.calibrationError=null;s.hasOwnCal=true;
   }catch(err){s.settings.calibrationError=`${name}: ${err.message}`;deviceLogLocal('webui_error',`Calibration ${name} of sensor ${s.id} could not be used: ${err.message}`);}
 }
 async function loadSensorList(){
@@ -2777,6 +2778,7 @@ async function loadSensorList(){
   }catch(error){setSensorListInfo(`Could not load sensors.json: ${error.message}`);return null;}
 }
 
+function selectDefaultSensor(){const first=[...sensors.values()].find(s=>s.kind==='server'&&!s.unlisted&&!s.disabled);if(first&&activeSensor===testSensor)activateSensor(first.id);}
 function initSensorCalibration(st,fp){
   st.calConfig=EMBEDDED_CALIBRATION;st.calPrepared=EMBEDDED_PREPARED;st.revisionId=fp.id;st.hashType=fp.type;st.fullHash=fp.full;
   st.calibrations=[{effectiveFromTime:-Infinity,revisionId:fp.id,profileId:EMBEDDED_CALIBRATION.profileId,hashType:fp.type,config:EMBEDDED_PREPARED,source:'embedded demo'}];
@@ -4185,7 +4187,7 @@ function decodeHistoryJson(msg, rawFormat) {
 // that the validity checks now compare against).
 // ASSUMED server limits (to be confirmed with the firmware): how many samples it retains, the largest chunk, the binary layout (decodeHistoryBinary).
 const HISTORY_MAX_CHUNKS = 400;
-function historyUrlFor(sensor) { return deviceReachable && sensor.sseUrl ? HISTORY_URL : null; }
+function historyUrlFor(sensor) { return deviceSeen && sensor.sseUrl ? HISTORY_URL : null; }   // v0.18: "a device was found", not "the last poll worked"
 let historyMaxChunkSeen = null;   // X-History-Max-Chunk of the latest response
 function historyChunkSize() { return Math.max(1, Math.min(5000, deviceInfo && deviceInfo.maxHistoryChunk > 0 ? deviceInfo.maxHistoryChunk : 5000, historyMaxChunkSeen > 0 ? historyMaxChunkSeen : 5000)); }
 function historyRequestUrl(base, sensorId, fromId, toId, limit) { return `${base}${base.includes('?') ? '&' : '?'}sensor_id=${encodeURIComponent(sensorId)}&from_id=${fromId}&to_id=${toId}&limit=${limit}&format=bin`; }
@@ -4928,7 +4930,7 @@ async function boot(){
   populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=true;setSensorListInfo('Looking for the device…');
   // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped with the placeholder revision id.
   embeddedFp=await fingerprintConfig(EMBEDDED_CALIBRATION);
-  initSensorCalibration(testSensor.state,embeddedFp);
+  initSensorCalibration(testSensor.state,embeddedFp);testSensor.state.paused=true;
   updateCalibrationInfo();updateEstimatorFields();syncMeasurementInputs('samples');updateMeasurementUI();updateStatusUI();
   tickTimer=setInterval(tick,PERIOD_MS);setInterval(housekeeping,500);setInterval(statusTimer,3000);
   // Display the shell and start acquisition first; the device is asked in the background (protocol startup order), uPlot is loaded as soon as /api/files told where it lives.
