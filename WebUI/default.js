@@ -204,7 +204,7 @@ function createSensorState(opts = {}) {
   snapY: false, wasHidden: false, lastFrameTs: 0, autoYLatch: [false,false],   // Y-axis dead-band / snap
   hoverRange: null, logPinned: null,                   // log / graph hover highlight, clicked log entry
   simMode: 'wander', simOffset: 0, simN: 0,
-  auxHidden: new Set(), auxSig: '', auxHasData: false, auxColsAny: [], auxSeriesShown: [], charRec: null   // v16
+  auxHidden: new Set(), hiddenSeries: new Set(), auxSig: '', auxHasData: false, auxColsAny: [], auxSeriesShown: [], charRec: null   // v16
   };
 }
 // Module-level (not per-sensor) render bookkeeping: one render loop serves whichever sensor is shown.
@@ -558,7 +558,8 @@ function buildVisibleData() {
   const outputCapacity = useDownsample ? Math.min(count, maxBuckets * 2) : count;
   ensurePlotBuffers(outputCapacity);
   const buf = state.plotBuffer;
-  const curve = buildEstimatorCurve(lo, hi, diagnostic); state.curveStride = curve.stride;
+  const skipCalc = !!(state.hiddenSeries.has(2) && state.hiddenSeries.has(3) && state.hiddenSeries.has(4));   // v0.19: centre and band both switched off in the legend: do not calculate them
+  const curve = skipCalc ? { stride: 1, center: () => NaN, upper: () => NaN, lower: () => NaN } : buildEstimatorCurve(lo, hi, diagnostic); state.curveStride = curve.stride;
   let out = 0;
   const write = i => {
     const value = chartValueAt(i, diagnostic), ma = curve.center(i), up = curve.upper(i), lw = curve.lower(i);
@@ -836,9 +837,9 @@ function makeMainOptions() {
     series:[
       {label:'Time',value:(u,v)=>v==null?'—':`${v.toFixed(2)} s`},
       {label:state.unitId==='raw'?'Raw sensor counts':'Measured mass',stroke:c.raw,width:1.25,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
-      {label:centerLabel(),stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
-      {label:bandLabels()[0],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
-      {label:bandLabels()[1],stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
+      {label:centerLabel(),show:!state.hiddenSeries.has(2),stroke:c.ma,width:2.1,points:{show:false},value:(u,v)=>v==null?'—':(state.unitId==='raw'?`${fmtNumber(v,0)} counts`:`${fmtNumber(v,displayDigits())} ${displayUnitSymbol()}`)},
+      {label:bandLabels()[0],show:!state.hiddenSeries.has(3),stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())},
+      {label:bandLabels()[1],show:!state.hiddenSeries.has(4),stroke:'rgba(0,0,0,0)',width:0,points:{show:false},value:(u,v)=>v==null?'—':fmtNumber(v,displayDigits())}
     ,...auxSeries],
     bands:[{series:[3,4],fill:'rgba(190,112,220,.16)'}],
     hooks:{drawAxes:[u=>{
@@ -855,7 +856,7 @@ function makeMainOptions() {
         ctx.restore();
       }
     }]},
-    plugins:[zeroFillPlugin(),calibrationMarkerPlugin()]
+    plugins:[zeroFillPlugin(),calibrationMarkerPlugin(),legendCalcPlugin()]
   };
 }
 function makeMiniOptions(){
@@ -2442,7 +2443,7 @@ async function httpErrorText(r) {
   return `HTTP ${r.status}${hint ? ' (' + hint + ')' : ''}${msg ? ': ' + msg : ''}`;
 }
 async function fetchWire(url) {
-  const r = await fetch(url, { cache: 'no-store' });
+  const r = await fetch(apiUrl(url), { cache: 'no-store' });
   if (!r.ok) throw new Error(await httpErrorText(r));
   return parseWire(await r.text());
 }
@@ -2628,7 +2629,7 @@ function syncConnections(){
     c={es:null,ids,status:'connecting',since:performance.now()};sseConnections.set(url,c);
     if(typeof EventSource==='undefined'){c.status='error';continue;}
     try{
-      c.es=new EventSource(url);
+      c.es=new EventSource(apiUrl(url));
       c.es.onopen=()=>{c.status='live';renderSensorSelect();updateStatusUI();pollStatus();};   // compare the boot id after every (re)connection
       c.es.onerror=()=>{c.status=c.es.readyState===2?'error':'connecting';renderSensorSelect();updateStatusUI();};
       if(c.es.addEventListener)for(const name of SSE_EVENTS)c.es.addEventListener(name,e=>handleSseEvent(name,e.data,e.lastEventId));
@@ -2845,7 +2846,7 @@ function updateUiSettingsInfo() {
 async function uiFetchServerDefault() {
   if (!deviceReachable) { uiServerState = 'not configured (no device)'; return null; }
   try {
-    const r = await fetch(WEBUI_SETTINGS_URL, { cache: 'no-store' });
+    const r = await fetch(apiUrl(WEBUI_SETTINGS_URL), { cache: 'no-store' });
     if (r.status === 404) { uiServerDefault = null; uiServerState = 'no default stored'; return null; }
     if (!r.ok) throw new Error(await httpErrorText(r));
     const s = sanitizeUiSettings(JSON.parse(await r.text())); if (!s.value) throw new Error(s.errors.join(' '));   // {"schemaVersion":1} alone = the factory default: every missing key takes its built-in value
@@ -3190,7 +3191,7 @@ function settingsMenuTab(tab) {
   for (const t of ['ui', 'sensor', 'hw']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); } if (tab === 'hw') hwOpen();
 }
 function initSettingsMenu() {
-  hwInit(); hw3Init(); authInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
+  hwInit(); hw3Init(); authInit(); localInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
   $('ssHistoryBtn').addEventListener('click', () => { hwHistoryClick(); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
@@ -3814,7 +3815,7 @@ function wizPaneWeights() {
   const singles = w.weights.filter(x => x.weightId !== 'ref-empty');
   const combo = w.comboOpen ? `<div class="status-note" style="margin:8px 0"><strong>New combination:</strong> tick the weights that are placed on the platform together.<div>${singles.map((x, i) => `<label class="check"><input type="checkbox" data-w="comboPick" data-i="${w.weights.indexOf(x)}" ${w.comboPick[x.weightId] ? 'checked' : ''}> ${esc(x.name)} (${wizMassText(wizWeightMassMg(w, x), x.unit)})</label>`).join('') || '<span class="small">Add weights first.</span>'}</div><div class="button-row"><button class="primary" data-wa="comboCreate">Create combination</button><button data-wa="comboCancel">Cancel</button></div></div>` : '';
   const combos = w.loads.filter(l => !l.auto).map(l => `<tr><td>${esc(l.name)}</td><td>${l.components.map(c => esc((w.weights.find(x => x.weightId === c.weightId) || {}).name || '?')).join(' + ')}</td><td>${wizMassText(wizLoadMassSafe(l), p.unit)}</td><td><button data-wa="delLoad" data-id="${esc(l.loadId)}">✕</button></td></tr>`).join('');
-  return `<div class="button-row" style="margin-top:0"><button data-wa="restart">Start empty</button><button data-wa="fromActive">Load the active calibration of the shown sensor (refit / edit)</button></div>
+  return `${wizSourceHTML(false)}
   <div class="control-grid" style="margin-top:10px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', p.profileName)}</div>
   <div class="field"><label>Profile ID</label>${wizInput('profile', 0, 'profileId', p.profileId)}</div>
   <div class="field"><label>Calibration unit (masses in the file)</label>${wizUnitSelect('profile', 0, 'unit', p.unit)}</div>
@@ -3917,18 +3918,7 @@ function wizPaneFit() {
   const sel = Object.entries(FIT_MODELS).map(([id, m]) => `<option value="${id}"${id === wiz.fitModel ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
   const wsel = Object.entries(WEIGHTINGS).map(([id, t]) => `<option value="${id}"${id === wiz.weighting ? ' selected' : ''}>${esc(t)}</option>`).join('');
   const cmp = Object.entries(FIT_MODELS).map(([id, m]) => { const f = fits[id]; return `<tr class="${id === wiz.fitModel ? 'sel' : ''}"><td>${esc(m.label)}</td>${f.ok ? `<td>${f.params}</td><td>${f.dof}</td><td>${Number.isFinite(f.sdRawRes) ? fmtNumber(f.sdRawRes, 3) : '—'}</td><td>${f.reducedChi2 == null ? '—' : fmtNumber(f.reducedChi2, 2)}</td><td>${wizMassText(f.rmsMassMg, u)}</td><td>${wizMassText(f.maxAbsMassMg, u)}</td>` : `<td colspan="6" class="warning">${esc(f.errors[0] || 'not possible')}</td>`}</tr>`; }).join('');
-  let plots = '';
-  const all = wizCalObs(wiz).map(o => { const l = wiz.loads.find(x => x.loadId === o.loadId); return l ? { o, m: wizLoadMassSafe(l) } : null; }).filter(x => x && Number.isFinite(x.m));
-  if (all.length >= 2 && fit.g) {
-    const xs = all.map(a => uf(a.m)), lo = Math.min(...xs), hi = Math.max(...xs), cur = [];
-    for (let k = 0; k <= 60; k++) { const m = fit.mRange[0] + (fit.mRange[1] - fit.mRange[0]) * k / 60; cur.push([uf(m), fit.g(m)]); }
-    const ys = all.map(a => a.o.rawMean).concat(cur.map(c => c[1])), yl = Math.min(...ys), yh = Math.max(...ys), py = (yh - yl) * 0.08 || 1, px = (hi - lo) * 0.04 || 1;
-    plots += wizPlotSVG({ w: 560, h: 250, xMin: lo - px, xMax: hi + px, yMin: yl - py, yMax: yh + py, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 0), curve: cur, points: all.map(a => ({ x: uf(a.m), y: a.o.rawMean, on: a.o.include })), xTitle: `reference mass (${us})`, yTitle: 'mean raw counts' });
-    const rp = all.map(a => { const g = fit.g(a.m), d = fit.dg ? fit.dg(a.m) : null; return { x: uf(a.m), y: d ? uf((a.o.rawMean - g) / d) : NaN, on: a.o.include }; }).filter(q => Number.isFinite(q.y));
-    if (rp.length && fit.dg) { const r = Math.max(...rp.map(q => Math.abs(q.y)), 1e-9) * 1.15; plots += wizPlotSVG({ w: 560, h: 170, xMin: lo - px, xMax: hi + px, yMin: -r, yMax: r, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 3), curve: [], points: rp, zero: true, xTitle: `reference mass (${us})`, yTitle: `residual (${us})` }); }
-    const sp = fit.ok ? fit.residuals.filter(r => Number.isFinite(r.std)).map(r => ({ x: uf(r.massMg), y: r.std, on: true })) : [];
-    if (sp.length) { const r = Math.max(3, ...sp.map(q => Math.abs(q.y))) * 1.1; plots += wizPlotSVG({ w: 560, h: 170, xMin: lo - px, xMax: hi + px, yMin: -r, yMax: r, xFmt: v => fmtNumber(v, 1), yFmt: v => fmtNumber(v, 1), curve: [], points: sp, zero: true, xTitle: `reference mass (${us})`, yTitle: 'standardised residual' }); }
-  }
+  const plots = wizChartsHTML(fit, u);
   const rrows = fit.ok ? fit.residuals.map(r => `<tr><td>${esc(r.id)}</td><td>${wizMassText(r.massMg, u)}</td><td>${fmtNumber(r.raw, 3)}</td><td>${fmtNumber(r.fitRaw, 3)}</td><td>${fmtNumber(r.resRaw, 3)}</td><td>${Number.isFinite(r.resMassMg) ? fmtNumber(uf(r.resMassMg), 4) : '—'}</td><td>${fmtNumber(r.w, 4)}</td><td>${Number.isFinite(r.std) ? fmtNumber(r.std, 2) : '—'}</td><td>${(looBy.get(r.id) || {}).looRaw == null ? '—' : fmtNumber(looBy.get(r.id).looRaw, 3)}</td><td>${(looBy.get(r.id) || {}).looMassMg == null ? '—' : fmtNumber(uf(looBy.get(r.id).looMassMg), 4)}</td></tr>`).join('') : '';
   const wt = fit.weighting || {}, sig = new Map((wt.sigmaPerMass || []).map(s => [fitKey(s.massMg), s]));
   const groups = fit.groups.map(g => { const s = sig.get(fitKey(g.massMg)); return `<tr><td>${wizMassText(g.massMg, u)}</td><td>${g.raws.length}</td><td>${fmtNumber(g.rawMean, 3)}</td><td>${Number.isFinite(g.rawSD) ? fmtNumber(g.rawSD, 3) : '—'}</td><td>${s ? fmtNumber(s.sigma, 3) : '—'}</td></tr>`; }).join('');
@@ -3973,6 +3963,7 @@ function wizPaneReview() {
   ${uncSummaryHTML(b.unc, u)}
   <div class="readout" style="margin:6px 0">Characterization: <strong>${esc(charSummaryText(b.char))}</strong> <span class="small">(tab 5)</span></div>
   ${over.length ? `<div class="small warning">Overridden observations (included although the validity check failed): ${over.map(esc).join(', ')}</div>` : ''}
+  <div class="plots">${wizChartsHTML(b.fit, u)}</div>
   <div class="small" style="margin:6px 0">Activating starts a new calibration epoch on the shown sensor: the tare is reset, a running measurement is aborted, and earlier samples keep the calibration they were recorded with. The file claims no uncertainty (validation status “not-characterized”); only its structure and monotonicity are checked.</div>
   ${wizSizeLine(b.cfg)}<div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration JSON</button><button data-wa="sendCal" ${b.errors.length || !wizCanSend() ? 'disabled' : ''} title="Compress and upload to the device">Send to device</button></div>
   ${block ? `<div class="warning small">${esc(block)}</div>` : ''}
@@ -3988,6 +3979,7 @@ function wizSimpleWeights() {
   const spec = wiz.simpleSpec != null ? wiz.simpleSpec : '3 x 100 g, 1 x 200 g';
   const list = wiz.weights.filter(w => w.weightId !== 'ref-empty').map(w => `<li>${esc(w.name)}${w.groupId ? ' <span class="small">(pooled with the others of its group)</span>' : ''}</li>`).join('');
   return `<div class="small">Step 1 of 3 · Which reference weights do you have? Write them as “number x mass”, separated by commas, for example <strong>3 x 100 g, 1 x 200 g</strong>. Use the printed (nominal) masses. Weights without a certificate are fine; the result will say that the scale then rests on their nominal values.</div>
+  ${wizSourceHTML(true)}
   <div class="field" style="margin-top:8px"><label>Your weights</label><input type="text" id="wizSimpleSpec" data-w="simpleSpec" value="${esc(spec)}" placeholder="3 x 100 g, 1 x 200 g"></div>
   <div class="button-row"><button class="primary" data-wa="simpleSet" ${wiz.observations.length ? 'disabled' : ''}>Use these weights</button><button data-wa="restart">Start over</button></div>
   ${wiz.observations.length ? '<div class="small">Measurements exist already; use “Start over” to change the weights.</div>' : ''}
@@ -4023,6 +4015,7 @@ function wizSimpleFinish() {
   ${b.unc && b.unc.status === 'estimated' ? `<div class="status-note" style="margin:6px 0">Typical uncertainty of a weighing in the middle of the range: <strong>± ${esc(formatMassSig(wizUncAt(b.unc, (b.unc.combined.table[0].massMg + b.unc.combined.table[b.unc.combined.table.length - 1].massMg) / 2), u))}</strong> (${esc(uncProfileLabel(b.unc))}; 95 %). Each measurement adds its own reading noise. “Repeatability” is how well the scale repeats when you put the same weight back; it is not the same as being accurate.</div>` : (b.unc ? `<div class="status-note" style="margin:6px 0">${esc(b.unc.reason || '')}</div>` : '')}
   ${b.errors.map(e => `<div class="warning small">✖ ${esc(e)}</div>`).join('')}${b.warnings.map(e => `<div class="small">⚠ ${esc(e.plain)}</div>`).join('')}
   <div class="small" style="margin:6px 0">Characterization (optional, tab 4 Extra checks): <strong>${esc(charSummaryText(b.char))}</strong>.</div>
+  <div class="plots">${wizChartsHTML(b.fit, u)}</div>
   <div class="small" style="margin:6px 0">After activating, put a weight you know on the scale and check that it reads right. Activating starts a new calibration period: the tare is reset and earlier readings keep the calibration they were recorded with.</div>
   ${wizSizeLine(b.cfg)}<div class="button-row"><button class="primary" data-wa="activate" ${b.errors.length || block ? 'disabled' : ''}>Activate on the shown sensor</button><button data-wa="exportCal" ${b.cfg ? '' : 'disabled'}>Export calibration file</button><button data-wa="sendCal" ${b.errors.length || !wizCanSend() ? 'disabled' : ''} title="Compress and upload to the device">Send to device</button></div>
   ${block ? `<div class="warning small">${esc(block)}</div>` : ''}`;
@@ -4081,6 +4074,7 @@ function wizOnChange(e) {
   else if (a === 'obsDir') { const o = wiz.observations[i]; if (o) o.loadingDirection = v || null; render = true; }
   else if (a === 'hystUse') { wiz.hysteresisUse = v; render = true; }
   else if (a === 'char') { const C = wizChar(); C[f] = v; if (wizMode === 'simple' && (f === 'tempZero10K' || f === 'tempSpanPpm')) C.tempMode = (C.tempZero10K !== '' || C.tempSpanPpm !== '') ? 'typed' : 'auto'; render = t.tagName === 'SELECT' || t.type === 'select-one' || f.startsWith('temp'); }
+  else if (a === 'srcPick') wiz.srcKey = v;
   else if (a === 'selLoad') wiz.selLoad = v;
   else if (a === 'replaced') wiz.replaced = v;
   else if (a === 'obsInclude') { const o = wiz.observations[i]; if (o) wizSetInclude(o, v); render = true; }
@@ -4093,7 +4087,7 @@ function wizOnClick(e) {
   const a = b.dataset.wa, i = Number(b.dataset.i);
   switch (a) {
     case 'tab': wiz.tab = b.dataset.id; wiz.message = ''; break;
-    case 'restart': wizNew(); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; break;
+    case 'restart': wizNew(); wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; wiz.srcAnchors = null; wiz.srcNote = ''; break;
     case 'fromActive': return wizFromActive();
     case 'useShown': wiz.sensorId = activeSensor.id; wiz.rateHz = RATE_HZ; break;
     case 'addWeight': { const id = wizId('ref-', wiz.weights, 'weightId'); wiz.weights.push({ weightId: id, name: `Weight ${wiz.weights.length}`, nominalMass: 100, assignedMass: null, unit: wiz.profile.unit, referenceUncertainty: null, groupId: null }); wizSyncLoads(); break; }
@@ -4115,6 +4109,8 @@ function wizOnClick(e) {
       const r = parseWeightSpec(spec); if (r.errors.length) { wiz.message = r.errors.join(' '); break; }
       wizSimpleSetWeights(r.items); wiz.message = `${r.items.reduce((s, x) => s + x.qty, 0)} weight(s) set. Continue with step 2.`; wiz.tab = 'observations'; break; }
     case 'inclAnyway': { const o = wiz.observations[i]; if (o) { wizSetInclude(o, true); wiz.message = 'Included anyway. This choice is recorded in the calibration file.'; } break; }
+    case 'srcLoad': wizLoadSource(wiz.srcKey); return;
+    case 'srcFile': wizPickFile(); return;
     case 'record': return wizRecord();
     case 'cancelRec': cancelCharRec('cancelled by user'); cancelMeasurement('cancelled by user'); return;
     case 'recordChar': return wizRecord({ purpose: b.dataset.purpose, position: b.dataset.pos, loadId: wizChar().eccLoadId });
@@ -4454,7 +4450,7 @@ function historyAfterMerge(sensor) {
   scheduleRender();
 }
 async function historyFetchChunk(sensor, fromId, toId) {
-  const size = Math.min(toId - fromId + 1, historyChunkSize()), r = await fetch(historyRequestUrl(HISTORY_URL, sensor.id, fromId, toId, size), { cache: 'no-store' });   // a READ: no Authorization / CSRF header
+  const size = Math.min(toId - fromId + 1, historyChunkSize()), r = await fetch(apiUrl(historyRequestUrl(HISTORY_URL, sensor.id, fromId, toId, size)), { cache: 'no-store' });   // a READ: no Authorization / CSRF header
   if (!r.ok) throw new Error(await httpErrorText(r));
   const type = (r.headers && r.headers.get && r.headers.get('content-type')) || '', hv = n => { const v = r.headers && r.headers.get ? r.headers.get(n) : null; return v == null || v === '' ? undefined : Number(v); };
   const chunk = /octet-stream|x-history/.test(type) ? decodeHistoryBinary(new Uint8Array(await r.arrayBuffer()), sensor.rawFormat) : decodeHistoryJson(parseWire(await r.text()), sensor.rawFormat);
@@ -4556,7 +4552,7 @@ function authAsk(message) {
 let csrfRefreshing = false;
 async function serverWrite(url, init = {}) {
   const send = async cred => {
-    const go = () => { const headers = { ...(init.headers || {}) }; if (csrfToken) headers['X-CSRF-Token'] = csrfToken; if (cred) headers['Authorization'] = basicAuthHeader(cred.user, cred.password); return fetch(url, { ...init, headers }); };
+    const go = () => { const headers = { ...(init.headers || {}) }; if (csrfToken) headers['X-CSRF-Token'] = csrfToken; if (cred) headers['Authorization'] = basicAuthHeader(cred.user, cred.password); return fetch(apiUrl(url), { ...init, headers }); };
     let r = await go();
     if (r.status === 403) { await pollStatus(); r = await go(); }   // CSRF token expired (e.g. after a restart): one refresh and one retry
     return r;
@@ -5144,13 +5140,148 @@ function loadUPlotAsync(){return new Promise((resolve,reject)=>{
     const script=document.createElement('script');script.src=js;script.async=true;script.onload=()=>resolve();script.onerror=onFail;document.head.appendChild(script);
   };
   const cdn=()=>{const base=`https://cdn.jsdelivr.net/npm/uplot@${UPLOT_VERSION}/dist/`;add(base+'uPlot.iife.min.js',base+'uPlot.min.css',()=>reject(new Error('Unable to load uPlot from the device or from jsDelivr.')));};
-  const loc=localUPlotAssets();if(loc)add(loc.js,loc.css,cdn);else cdn();
+  const loc=localUPlotAssets();if(loc)add(apiUrl(loc.js),loc.css?apiUrl(loc.css):null,cdn);else cdn();
 });}
 let uplotStarted=false;
 function startUPlot(){
   if(uplotStarted)return;uplotStarted=true;
   requestAnimationFrame(()=>requestAnimationFrame(()=>loadUPlotAsync().then(()=>{chartsPending=false;createCharts();updateStatusUI();scheduleRender();}).catch(error=>{$('statusText').textContent='Chart library unavailable';$('mainChart').innerHTML='<p class="warning">uPlot could not be loaded (not served by the device, and the CDN is not reachable). Reload the page.</p>';console.error(error);})));
 }
+
+// ===== v0.19 MODULE (appended before boot) =====================================================================================
+// 1) LOCAL MODE: an optional fixed prefix for every device URL (stream, API, files). Browser-only (localStorage), never sent anywhere.
+const LOCAL_BASE_KEY = 'massTelemetryWorkbench.deviceBase';
+function normalizeBase(v) {
+  v = String(v || '').trim().replace(/\/+$/, ''); if (!v) return '';
+  if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+  try { const u = new URL(v); return u.origin; } catch (_) { return ''; }
+}
+let API_BASE = (() => { try { return normalizeBase(localStorage.getItem(LOCAL_BASE_KEY)); } catch (_) { return ''; } })();
+function apiUrl(u) { return API_BASE && typeof u === 'string' && u.charAt(0) === '/' ? API_BASE + u : u; }
+function localModeInfo() {
+  const el = $('localBaseInfo'), i = $('localBaseInput');
+  if (el) el.textContent = API_BASE ? `Local mode is ON: stream, API and files are requested from ${API_BASE}. The device must allow cross-origin requests (CORS).` : 'Local mode is off: requests go to the server that delivered this page.';
+  if (i) i.value = API_BASE;
+}
+function localInit() {
+  $('localBaseApply').addEventListener('click', () => {
+    const v = $('localBaseInput').value.trim(), n = normalizeBase(v);
+    if (v && !n) { $('localBaseInfo').textContent = 'Not a valid address. Example: http://192.168.0.115'; return; }
+    try { if (n) localStorage.setItem(LOCAL_BASE_KEY, n); else localStorage.removeItem(LOCAL_BASE_KEY); } catch (_) {}
+    location.reload();
+  });
+  $('localBaseClear').addEventListener('click', () => { try { localStorage.removeItem(LOCAL_BASE_KEY); } catch (_) {} location.reload(); });
+  localModeInfo();
+}
+
+// 2) MAIN GRAPH: the estimator centre line and the spread band are only calculated while at least one of their legend entries is switched on.
+// Legend click (uPlot) -> state.hiddenSeries. Graph only: the panel values, selections and measurements are not affected.
+function legendCalcPlugin() {
+  return { hooks: { setSeries: [(u, i) => {
+    if (i == null || i < 2 || i > 4) return;
+    const hs = state.hiddenSeries; let changed = false;
+    for (const k of [2, 3, 4]) { const s = u.series[k]; if (!s) continue; const hide = !s.show; if (hide !== hs.has(k)) { changed = true; if (hide) hs.add(k); else hs.delete(k); } }
+    if (changed) { state.curveCache = { key: '', map: new Map() }; scheduleRender(); }
+  }] } };
+}
+
+// 3) WIZARD CHARTS (inline SVG; colours through style="" so they do not depend on presentation-attribute var() support)
+wizPlotSVG = function (o) {
+  const fin = Number.isFinite;
+  if (![o.xMin, o.xMax, o.yMin, o.yMax].every(fin)) return '';
+  const W = o.w, H = o.h, L = 66, R = 10, T = 8, B = 36, pw = W - L - R, ph = H - T - B;
+  const sx = x => L + (x - o.xMin) / ((o.xMax - o.xMin) || 1) * pw, sy = y => T + ph - (y - o.yMin) / ((o.yMax - o.yMin) || 1) * ph;
+  const tx = (a, b, c, d) => `<text x="${a}" y="${b}" ${c} style="font-size:10px;fill:var(--muted)"${d || ''}>`;
+  let s = `<svg viewBox="0 0 ${W} ${H}" class="wizplot" style="width:100%;max-width:${W}px;height:auto;display:block" role="img" aria-label="${esc(o.yTitle)} versus ${esc(o.xTitle)}"><rect x="${L}" y="${T}" width="${pw}" height="${ph}" style="fill:none;stroke:var(--line)"/>`;
+  for (const t of wizNiceTicks(o.xMin, o.xMax)) s += `<line x1="${sx(t)}" x2="${sx(t)}" y1="${T}" y2="${T + ph}" style="stroke:var(--line);stroke-opacity:.5"/>${tx(sx(t), T + ph + 14, 'text-anchor="middle"')}${esc(o.xFmt(t))}</text>`;
+  for (const t of wizNiceTicks(o.yMin, o.yMax, 4)) s += `<line y1="${sy(t)}" y2="${sy(t)}" x1="${L}" x2="${L + pw}" style="stroke:var(--line);stroke-opacity:.5"/>${tx(L - 5, sy(t) + 3, 'text-anchor="end"')}${esc(o.yFmt(t))}</text>`;
+  if (o.zero && o.yMin < 0 && o.yMax > 0) s += `<line x1="${L}" x2="${L + pw}" y1="${sy(0)}" y2="${sy(0)}" style="stroke:var(--zero);stroke-width:1.5"/>`;
+  const cv = (o.curve || []).filter(p => fin(p[0]) && fin(p[1]));
+  if (cv.length > 1) s += `<polyline points="${cv.map(([x, y]) => `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join(' ')}" style="fill:none;stroke:var(--ma);stroke-width:2"/>`;
+  for (const p of o.points) { if (!fin(p.x) || !fin(p.y)) continue; s += p.on ? `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="4" style="fill:var(--raw)"/>` : `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="4" style="fill:none;stroke:var(--danger);stroke-width:1.5"/>`; }
+  return s + `${tx(L + pw / 2, H - 4, 'text-anchor="middle"')}${esc(o.xTitle)}</text><text x="12" y="${T + ph / 2}" style="font-size:10px;fill:var(--muted)" transform="rotate(-90 12 ${T + ph / 2})" text-anchor="middle">${esc(o.yTitle)}</text></svg>`;
+};
+// All wizard charts in one place (Fit tab, Review tab, Simple "Finish"): response curve, residuals, standardised residuals.
+function wizChartsHTML(fit, u) {
+  const us = unitById(u).symbol, uf = mg => mgToUnit(mg, u);
+  const all = wizCalObs(wiz).map(o => { const l = wiz.loads.find(x => x.loadId === o.loadId); return l ? { o, m: wizLoadMassSafe(l) } : null; }).filter(x => x && Number.isFinite(x.m) && Number.isFinite(x.o.rawMean));
+  const hasFit = !!(fit && fit.ok && fit.g && fit.mRange);
+  let pts = all.map(a => ({ x: uf(a.m), y: a.o.rawMean, on: a.o.include })), cur = [], note = '';
+  if (hasFit) { for (let k = 0; k <= 60; k++) { const m = fit.mRange[0] + (fit.mRange[1] - fit.mRange[0]) * k / 60; cur.push([uf(m), fit.g(m)]); } }
+  else if (wiz.srcAnchors && wiz.srcAnchors.length >= 2) {
+    const an = wiz.srcAnchors.map(a => { try { return { x: uf(massToMg(Number(a.referenceValue), a.referenceUnit || wiz.profile.unit)), y: Number(a.rawMean) }; } catch (_) { return null; } }).filter(a => a && Number.isFinite(a.x) && Number.isFinite(a.y)).sort((a, b) => a.x - b.x);
+    cur = an.map(a => [a.x, a.y]); if (!pts.length) pts = an.map(a => ({ x: a.x, y: a.y, on: true }));
+    note = 'Showing the stored anchors of the loaded file.';
+  }
+  if (pts.length < 2) return '<div class="small">No chart yet: record at least two observations or load a calibration.</div>';
+  if (!hasFit && !note) note = 'No fitted curve yet' + (fit && fit.errors && fit.errors[0] ? ' (' + esc(fit.errors[0]) + ')' : '') + '. Showing the observations only.';
+  const xs = pts.map(p => p.x).concat(cur.map(c => c[0])), ys = pts.map(p => p.y).concat(cur.map(c => c[1]));
+  const lo = Math.min(...xs), hi = Math.max(...xs), yl = Math.min(...ys), yh = Math.max(...ys), px = (hi - lo) * 0.04 || 1, py = (yh - yl) * 0.08 || 1;
+  const xFmt = v => fmtNumber(v, 1), base = { xMin: lo - px, xMax: hi + px, xFmt, xTitle: `reference mass (${us})` };
+  let h = wizPlotSVG({ ...base, w: 560, h: 250, yMin: yl - py, yMax: yh + py, yFmt: v => fmtNumber(v, 0), curve: cur, points: pts, yTitle: 'mean raw counts' });
+  if (hasFit && fit.slopeAt) {
+    const rp = all.map(a => { const d = fit.slopeAt(a.m); return { x: uf(a.m), y: d ? uf((a.o.rawMean - fit.g(a.m)) / d) : NaN, on: a.o.include }; }).filter(q => Number.isFinite(q.y));
+    if (rp.length) { const r = Math.max(...rp.map(q => Math.abs(q.y)), 1e-9) * 1.15; h += wizPlotSVG({ ...base, w: 560, h: 170, yMin: -r, yMax: r, yFmt: v => fmtNumber(v, 3), curve: [], points: rp, zero: true, yTitle: `residual (${us})` }); }
+    const sp = (fit.residuals || []).filter(r => Number.isFinite(r.std)).map(r => ({ x: uf(r.massMg), y: r.std, on: true }));
+    if (sp.length) { const r = Math.max(3, ...sp.map(q => Math.abs(q.y))) * 1.1; h += wizPlotSVG({ ...base, w: 560, h: 170, yMin: -r, yMax: r, yFmt: v => fmtNumber(v, 1), curve: [], points: sp, zero: true, yTitle: 'standardised residual' }); }
+  }
+  return h + (note ? `<div class="small" style="width:100%">${note}</div>` : '');
+}
+
+// 4) WIZARD: review / edit the active, imported and uploaded calibrations
+function wizCalSources() {
+  const l = [{ key: 'active', label: `Active on “${activeSensor.name}”: ${CALIBRATION.profileName}` }];
+  for (const e of calLibrary.values()) l.push({ key: 'file:' + e.name, label: `${e.name}${e.onDevice ? ' · on device' : ''}${e.config ? ' · in this session' : ' · will be fetched'}` });
+  return l;
+}
+function wizSourceHTML(simple) {
+  const sel = wiz.srcKey || '', opts = wizCalSources().map(s => `<option value="${esc(s.key)}"${s.key === sel ? ' selected' : ''}>${esc(s.label)}</option>`).join('');
+  const prof = simple ? `<div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', wiz.profile.profileName)}</div><div class="field"><label>Profile ID (the file name; keep it to overwrite, change it to save as a new calibration)</label>${wizInput('profile', 0, 'profileId', wiz.profile.profileId)}</div></div>` : '';
+  return `<div class="status-note"><strong>Review / edit an existing calibration</strong>
+    <div class="inline" style="margin-top:6px;flex-wrap:nowrap"><select data-w="srcPick"><option value="">— choose —</option>${opts}</select><button data-wa="srcLoad">Load into the editor</button></div>
+    <div class="button-row"><button data-wa="srcFile">Open a file from disk…</button><button data-wa="restart">Start empty</button></div>
+    <div class="small">Active, imported and device files can be loaded. Weights, observations and fit can then be changed; activating, exporting or sending uses the profile ID below as the file name. A file without observations can only be viewed (stored anchors), not refitted.</div>${wiz.srcNote ? `<div class="small">${esc(wiz.srcNote)}</div>` : ''}${prof}</div>`;
+}
+function wizApplySource(cfg, label) {
+  wizLoadFromConfig(cfg);
+  const sid = cfg.sensorId != null ? String(cfg.sensorId) : activeSensor.id, s = sensors.get(sid);
+  wiz.sensorId = sid; wiz.rateHz = s ? s.state.rateHz : RATE_HZ;
+  wiz.srcAnchors = Array.isArray(cfg.calibrationAnchors) ? cfg.calibrationAnchors : null;
+  const noObs = !(cfg.observations && cfg.observations.length);
+  wiz.srcNote = `Loaded: ${label} (sensor ${sid}, ${cfg.observations ? cfg.observations.length : 0} observations).`;
+  wiz.message = noObs ? 'This file has no observations: only its stored anchors are shown; it cannot be refitted.' : (sid !== activeSensor.id ? `The file belongs to sensor “${sid}”; show that sensor to record or activate.` : 'Loaded into the editor.');
+}
+async function wizLoadSource(key) {
+  if (!key) { wiz.message = 'Choose a calibration first.'; wizRender(); return; }
+  try {
+    let cfg, label;
+    if (key === 'active') { cfg = cloneJson(CALIBRATION); label = 'active calibration'; }
+    else {
+      const name = key.slice(5); let e = calLibrary.get(name); if (!e) throw new Error('unknown file');
+      if (!e.config) {
+        if (!deviceReachable) throw new Error('not loaded in this session and no device connection');
+        const c = await fetchWire(`${CALIBRATION_DIR}/${encodeURIComponent(name)}`);
+        if (calFileName(c, e.sensorId) !== name) throw new Error('the file name and the profile / sensor id inside the file disagree');
+        calLibraryAdd(c, e.sensorId); e = calLibrary.get(name);
+      }
+      cfg = cloneJson(e.config); label = name;
+    }
+    const chk = validateCalibrationConfig(cfg); if (chk.errors.length) throw new Error(chk.errors.join(' '));
+    wizApplySource(cfg, label);
+  } catch (err) { wiz.message = `Could not load: ${err.message}`; }
+  wizRender();
+}
+function wizPickFile() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    try { if (f.size > 2e6) throw new Error('File is larger than 2 MB.'); const cfg = JSON.parse(await f.text()), chk = validateCalibrationConfig(cfg); if (chk.errors.length) throw new Error(chk.errors.join(' ')); wizApplySource(cfg, f.name); }
+    catch (e) { wiz.message = `Could not read the file: ${e.message}`; }
+    wizRender();
+  };
+  inp.click();
+}
+// ===== END v0.19 MODULE ================================================================================================
 async function boot(){
   populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=true;setSensorListInfo('Looking for the device…');
   // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped with the placeholder revision id.

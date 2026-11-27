@@ -349,7 +349,12 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
       <hr class="settings-divider"><div id="authInfo" class="readout">—</div>
       <div class="button-row"><button id="authForgetBtn">Forget password</button></div>
       <div class="small" style="margin:6px 0">A password is only asked for when something is changed on the server (settings, calibration). Reading and the live stream never need it. It is kept in this tab; it is never written into a file or a link. The password is sent as HTTP Basic: on plain HTTP it is readable on the network, so use it on a trusted home network or over HTTPS only.</div>
-      <div id="uiMessages" class="small" style="margin-top:8px"></div>
+      <hr class="settings-divider"><h3 style="margin:0 0 6px">Local mode (this browser only)</h3>
+	<div class="small">Open this page from your own computer and use a device on the network: type its address, e.g. <code>http://192.168.0.115</code>. Every request (stream, API, files) then gets this prefix. Stored only in this browser. The device must allow cross-origin requests (CORS).</div>
+	<div class="range-row" style="margin-top:6px"><input type="text" id="localBaseInput" placeholder="http://192.168.0.115"><button id="localBaseApply">Apply &amp; reload</button></div>
+	<div class="button-row"><button id="localBaseClear">Switch off &amp; reload</button></div>
+	<div id="localBaseInfo" class="small" style="margin-top:4px"></div>
+	<div id="uiMessages" class="small" style="margin-top:8px"></div>
     </div>
     <div class="modal-body" id="smPane_hw" hidden>
       <div class="small">Hardware definitions of the sensors on the device (<code>sensors.json</code>): add, change or remove sensors, set pins, rate, raw format, warnings and auxiliary channels. The document is checked here, then sent as a whole; the device decides what needs a sensor reconfiguration or a restart.</div>
