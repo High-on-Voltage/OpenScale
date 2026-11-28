@@ -302,8 +302,8 @@ function nextSensorValue(st = state) {
     // Quiet test signals for exercising the validity checks (v10): white-ish noise around 5000 counts.
     st.simN++;
     if (mode === 'steps' && Math.random() < 1 / 1200) st.simOffset += (Math.random() < 0.5 ? -1 : 1) * (20 + Math.random() * 40);
-    const hum = mode === 'hum' ? 1.5 * Math.sin(2 * Math.PI * 50 * st.simN / RATE_HZ) : 0;   // 50 Hz at 80 Hz sampling -> 30 Hz alias
-    return Math.round(Math.max(4600, Math.min(5400, 5000 + st.simOffset + hum + (Math.random() - 0.5) * 3)));
+    const hum = mode === 'hum' ? 8 * Math.sin(2 * Math.PI * 50 * st.simN / RATE_HZ) : 0;   // 50 Hz at 80 Hz sampling -> 30 Hz alias
+    return Math.round(Math.max(4600, Math.min(5400, 5000 + st.simOffset + hum + simGauss() * 6)));
   }
   if (Math.random() < 0.018) st.drift = (Math.random() - 0.5) * 0.7;
   const pull = (5000 - st.seedValue) * 0.0015;
@@ -553,7 +553,7 @@ function buildVisibleData() {
   const count = hi - lo + 1;
   const diagnostic = state.unitId === 'raw';
   const pixelWidth = Math.max(320, Math.floor(state.mainPlot?.bbox?.width || $('mainChart').clientWidth || 800));
-  const maxBuckets = Math.max(160, pixelWidth * 2);
+  const maxBuckets = Math.max(160, pixelWidth);   // v0.20: one min/max pair per pixel column (2 points per pixel)
   const useDownsample = $('downsampleToggle').checked && count > maxBuckets * 2;
   const outputCapacity = useDownsample ? Math.min(count, maxBuckets * 2) : count;
   ensurePlotBuffers(outputCapacity);
@@ -832,7 +832,7 @@ function makeMainOptions() {
     }},...(auxList.length?{aux:{auto:true}}:{})},
     axes:[
       {stroke:c.muted,grid:{stroke:'rgba(130,150,180,.12)'},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>`${v.toFixed(1)}s`)},
-      {stroke:c.muted,size:axisWidthFit,grid:{stroke:'rgba(130,150,180,.12)',filter:(u,splits)=>splits.map(v=>(state.unitId!=='raw'&&!$('zeroLineToggle').checked&&Math.abs(v)<1e-12)?null:v)},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>state.unitId==='raw'?fmtNumber(v,0):fmtNumber(v,displayDigits()))}
+      {stroke:c.muted,size:axisWidthFit,grid:{stroke:'rgba(130,150,180,.12)',filter:(u,splits)=>splits.map(v=>(state.unitId!=='raw'&&Math.abs(v)<1e-12)?null:v)},ticks:{stroke:c.line},values:(u,vals)=>vals.map(v=>state.unitId==='raw'?fmtNumber(v,0):fmtNumber(v,displayDigits()))}
     ,...auxAxes],
     series:[
       {label:'Time',value:(u,v)=>v==null?'—':`${v.toFixed(2)} s`},
@@ -844,7 +844,7 @@ function makeMainOptions() {
     bands:[{series:[3,4],fill:'rgba(190,112,220,.16)'}],
     hooks:{drawAxes:[u=>{
       const ctx=u.ctx;
-      if(state.unitId!=='raw'&&$('zeroLineToggle').checked){
+      if(state.unitId!=='raw'){   // v0.20: drawn whenever 0 is inside the visible Y range; the option only forces 0 into the range
         const y=u.valToPos(0,'y',true);
         if(Number.isFinite(y)&&y>=u.bbox.top&&y<=u.bbox.top+u.bbox.height){ctx.save();ctx.strokeStyle=c.zero;ctx.lineWidth=2.6;ctx.globalAlpha=.92;ctx.beginPath();ctx.moveTo(u.bbox.left,Math.round(y)+.5);ctx.lineTo(u.bbox.left+u.bbox.width,Math.round(y)+.5);ctx.stroke();ctx.restore();}
       }
@@ -878,7 +878,7 @@ function makeMiniOptions(){
 // estimator only relabels the main chart's series, so only that chart is rebuilt.
 function createMainChart(){
   state.auxSig=auxSigNow();state.auxSeriesShown=[];state.mainPlot=new uPlot(makeMainOptions(),emptyMainData(),$('mainChart'));
-  wireMainInteractions();wireEventHover(state.mainPlot);wireCrosshairSync(state.mainPlot,'main');
+  wireEventClick(state.mainPlot);wireMainInteractions();wireEventHover(state.mainPlot);wireCrosshairSync(state.mainPlot,'main');
 }
 function createMiniChart(){
   state.miniPlot=new uPlot(makeMiniOptions(),[[],[]],$('miniChart'));
@@ -916,19 +916,20 @@ function renderFrame(){
   if(!state.count){renderEmpty();return;}
   if(!state.live)autoTrackIfAtEnd();
   if(state.live)fitLiveWindow();
-  updateMetrics();updateAuxReadout();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
+  if(state.live)applyXSmoothing();updateMetrics();updateAuxReadout();updateMeasurementUI();$('sampleCount').textContent=`${state.count.toLocaleString()} samples`;updateViewLabel();
   const ts=performance.now();
   if(state.lastFrameTs&&ts-state.lastFrameTs>2000)state.snapY=true;   // rendering was suspended (background tab): do not damp
   state.lastFrameTs=ts;
   if(!state.mainPlot)return;
-  const data=buildVisibleData(),minX=state.viewMin/1000,maxX=Math.max(minX+PERIOD_MS/1000,state.viewMax/1000);
+  const _t0=performance.now(),data=buildVisibleData(),_t1=performance.now(),minX=state.viewMin/1000,maxX=Math.max(minX+PERIOD_MS/1000,state.viewMax/1000);
   state.mainPlot.batch(()=>{state.mainPlot.setData(data,true);state.mainPlot.setScale('x',{min:minX,max:maxX});if(state.manualY)state.mainPlot.setScale('y',{min:state.yMin,max:state.yMax});});
-  auxApplySeriesVisibility();
+  auxApplySeriesVisibility();fpsFrame(_t0,_t1,performance.now(),data[0].length);
   state.snapY=false;   // damping resumes immediately after the one undamped frame
   // v11 fix: the Y damping advances once per RENDERED frame. While streaming that is every 12.5 ms, but a
   // paused chart renders only on interaction, so the axis stopped part-way to its target. As long as an
   // edge is still easing (latched), keep rendering until both edges have settled.
   if(state.yBusy&&!state.manualY)scheduleRender();
+  if(state.live&&xSmoothMs>0&&!state.paused)scheduleRender();   // the smoothed right edge moves with the clock
   const now=performance.now();if(now-miniLastRender>=miniRefreshMs()){updateMini();miniLastRender=now;}else updateMiniSelection();
   if(state.selection)updateSelectionReadout();
 }
@@ -1853,11 +1854,11 @@ function exportCSV(){
   const csvField=v=>/[",\n\r]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':v;
   // Built in chunks of 20,000 rows so a multi-million-row export never needs one giant string array.
   const auxCh=attachedAux(activeSensor);
-  const parts=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range'+auxCh.map(c=>',aux_'+csvField(c.id)).join('')+'\n'];
+  const parts=['runtime_ms,raw_sensor_counts,absolute_mass_mg,historical_tare_mass_mg,net_mass_mg,moving_average_net_mg,spread_sigma_mg,tare_event_id,calibration_profile_id,calibration_revision_id,calibration_out_of_range,sample_id'+auxCh.map(c=>',aux_'+csvField(c.id)).join('')+'\n'];
   let rows=[];
   for(let i=0;i<state.count;i++){
     const time=getTime(i),event=tareEventAt(time),cal=calibrationAt(time),raw=getRaw(i);   // per-row: the calibration the sample was RECORDED with
-    rows.push([time,raw,getMassMg(i),event?event.tareMassMg:0,getNetMg(i),getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(cal.profileId),csvField(cal.revisionId),calibrateAbsolute(raw,cal.config).outOfRange?1:0].concat(auxCh.map(c=>{const v=auxValueAt(c,time);return Number.isFinite(v)?v:'';})).join(','));
+    rows.push([time,raw,getMassMg(i),event?event.tareMassMg:0,getNetMg(i),getMassMA(i),getMassSD(i),event?event.eventId:'',csvField(cal.profileId),csvField(cal.revisionId),calibrateAbsolute(raw,cal.config).outOfRange?1:0,Number.isFinite(getId(i))?getId(i):''].concat(auxCh.map(c=>{const v=auxValueAt(c,time);return Number.isFinite(v)?v:'';})).join(','));
     if(rows.length>=20000){parts.push(rows.join('\n')+'\n');rows=[];}
   }
   if(rows.length)parts.push(rows.join('\n')+'\n');
@@ -2647,7 +2648,7 @@ function handleSseEvent(name,data,eventId){
   if(name==='device_log'){addDeviceLogEntry(msg,'sse');return;}
   sseStats.unknown++;
 }
-function handleSampleMessage(msg){
+function handleSampleMessage(msg){fpsRx();
   const items=Array.isArray(msg)?msg:(msg&&Array.isArray(msg.samples)?msg.samples:[msg]);   // the protocol sends one sample per event; arrays are tolerated
   let touched=false;
   for(const it of items){
@@ -2792,8 +2793,8 @@ function initSensorCalibration(st,fp){
 // Order of precedence for the UI settings: this browser's own copy (localStorage) > server default > built-in.
 // Applying a setting never writes it anywhere; only a user change writes the browser copy.
 const UI_LOCAL_KEY = 'massTelemetryWorkbench.uiSettings.v1';
-const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: false, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false, tempRateWindowS: 60 });
-const UI_CONTROL_IDS = new Set(['wizMode', 'tempRateWindow', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
+const UI_DEFAULTS = Object.freeze({ schemaVersion: 1, theme: 'dark', navPanelVisible: false, yResponsePercent: 5, downsample: true, zeroFill: false, zeroRawFill: false, zeroLine: false, wizardMode: 'simple', bandMode: 'symmetric', subPixel: false, tempRateWindowS: 60, xSmoothMs: 250, showFps: false });
+const UI_CONTROL_IDS = new Set(['wizMode', 'xSmoothRange', 'fpsToggle', 'tempRateWindow', 'subPixelToggle', 'bandModeSelect', 'navPanelToggle', 'yResponseRange', 'downsampleToggle', 'zeroFillToggle', 'zeroRawFillToggle', 'zeroLineToggle']);
 let uiTheme = 'dark', uiServerDefault = null, uiSaveTimer = null, uiServerState = 'not configured (no device)';
 const wq = id => document.getElementById(id);   // dynamic (script-generated) elements; $() is for elements that exist in the HTML
 
@@ -2808,12 +2809,14 @@ function sanitizeUiSettings(o) {
   if (o.wizardMode !== undefined) { if (o.wizardMode === 'simple' || o.wizardMode === 'advanced') out.wizardMode = o.wizardMode; else errors.push('wizardMode must be "simple" or "advanced".'); }
   if (o.bandMode !== undefined) { if (BAND_MODES[o.bandMode]) out.bandMode = o.bandMode; else errors.push('bandMode must be "symmetric", "asymmetric" or "stepaware".'); }
   if (o.tempRateWindowS !== undefined) { if (Number.isFinite(o.tempRateWindowS)) out.tempRateWindowS = clamp(Math.round(o.tempRateWindowS), 5, 3600); else errors.push('tempRateWindowS must be a number.'); }
+  if (o.xSmoothMs !== undefined) { if (Number.isFinite(o.xSmoothMs)) out.xSmoothMs = clamp(Math.round(o.xSmoothMs), 0, 2000); else errors.push('xSmoothMs must be a number.'); }
+  if (o.showFps !== undefined) { if (typeof o.showFps === 'boolean') out.showFps = o.showFps; else errors.push('showFps must be true or false.'); }
   if (o.yResponsePercent !== undefined) { if (Number.isFinite(o.yResponsePercent)) out.yResponsePercent = clamp(Math.round(o.yResponsePercent), 1, 100); else errors.push('yResponsePercent must be a number.'); }
   return { value: errors.length ? null : out, errors };
 }
 function collectUiSettings() {
   return { schemaVersion: 1, theme: uiTheme, navPanelVisible: !$('navPanel').hidden, yResponsePercent: clamp(Math.round(Number($('yResponseRange').value) || 5), 1, 100),
-    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode, subPixel, tempRateWindowS: auxRateWindowS() };
+    downsample: !!$('downsampleToggle').checked, zeroFill: !!$('zeroFillToggle').checked, zeroRawFill: !!$('zeroRawFillToggle').checked, zeroLine: !!$('zeroLineToggle').checked, wizardMode: wizMode, bandMode, subPixel, tempRateWindowS: auxRateWindowS(), xSmoothMs, showFps: !!$('fpsToggle').checked };
 }
 function setTheme(light) {
   uiTheme = light ? 'light' : 'dark';
@@ -2831,6 +2834,7 @@ function applyUiSettings(s) {
   subPixel = !!s.subPixel; { const t = $('subPixelToggle'); if (t) t.checked = subPixel; }
   setBandMode(s.bandMode || 'symmetric');
   $('tempRateWindow').value = s.tempRateWindowS || AUX_RATE_WINDOW_DEFAULT_S;
+  setXSmooth(s.xSmoothMs == null ? 250 : s.xSmoothMs); setFpsVisible(!!s.showFps);
   scheduleRender();
 }
 function uiLocalRead() { try { if (typeof localStorage === 'undefined') return null; const t = localStorage.getItem(UI_LOCAL_KEY); return t ? sanitizeUiSettings(JSON.parse(t)).value : null; } catch (_) { return null; } }
@@ -3028,7 +3032,7 @@ function hwOnChange(ev) {
 }
 function hwAdd(type) {
   if (!hwDraft) hwDraft = sensorsDoc();
-  const used = new Set(hwDraft.sensors.map(x => Number(x.id))); let id = 0; while (used.has(id)) id++;
+  const used = new Set(hwDraft.sensors.map(x => Number(x.id))); let id = 1; while (used.has(id)) id++;
   hwDraft.sensors.push(hwTemplate(type, id)); hwNew.add(String(id)); hwSel = String(id); hwSetMsg(''); hwRender();
 }
 function hwDelete() {
@@ -3188,10 +3192,10 @@ function openSettingsMenu(tab) {
   updateUiSettingsInfo(); sensorSettingsRender();
 }
 function settingsMenuTab(tab) {
-  for (const t of ['ui', 'sensor', 'hw']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); } if (tab === 'hw') hwOpen();
+  for (const t of ['ui', 'hw']) { $('smPane_' + t).hidden = t !== tab; $('smTab_' + t).setAttribute('aria-selected', String(t === tab)); } if (tab === 'hw') hwOpen();
 }
 function initSettingsMenu() {
-  hwInit(); hw3Init(); authInit(); localInit(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
+  hwInit(); hw3Init(); authInit(); localInit(); mergeSensorTab(); v20Init(); $('authForgetBtn').addEventListener('click', authForget); $('calUploadBtn').addEventListener('click', uploadCalibration); 
   $('ssHistoryBtn').addEventListener('click', () => { hwHistoryClick(); });
   $('openSettingsMenuBtn').addEventListener('click', () => openSettingsMenu('ui'));
   $('smClose').addEventListener('click', () => { $('settingsModal').hidden = true; });
@@ -3587,7 +3591,7 @@ const wiz = { open: false, tab: 'weights', minimised: false, sensorId: null, rat
   captureSeconds: 10, capture: null, fitModel: 'anchors', weighting: 'equal', message: '', selLoad: null, replaced: true, nextNum: 1, comboOpen: false, comboPick: {}, manualOpen: false, simpleSpec: null, placements: 3, returnRun: false, hysteresisUse: 'both', direction: null, char: null };
 const WIZ_EMPTY_WEIGHT = () => ({ weightId: 'ref-empty', name: 'Empty platform / zero reference', nominalMass: 0, assignedMass: null, unit: 'g', referenceUncertainty: null, groupId: null });
 function wizNew() {
-  Object.assign(wiz, { tab: 'weights', profile: { profileId: `scale-profile-${wizStamp()}`, profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '', temperatureC: '', humidityPercent: '', warmUpMinutes: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', weighting: 'equal', message: '',
+  Object.assign(wiz, { tab: 'weights', profile: { profileId: wizNextProfileId(), profileName: 'New calibration', unit: 'g', notes: '', sensorModel: '', temperatureC: '', humidityPercent: '', warmUpMinutes: '' }, nextNum: 1, observations: [], capture: null, fitModel: 'anchors', weighting: 'equal', message: '',
     weights: [WIZ_EMPTY_WEIGHT()], groups: [], loads: [], comboOpen: false, comboPick: {}, runId: `run-${wizStamp()}`, selLoad: null, simpleSpec: null, returnRun: false, hysteresisUse: 'both', direction: null, char: wizCharNew() });
   wizSyncLoads(); wiz.selLoad = wiz.loads[0].loadId;
 }
@@ -3690,7 +3694,7 @@ function wizPlanDown() {
     const cnt = l => wizCalObs(wiz).filter(o => o.loadId === l.loadId && o.loadingDirection === 'down').length, pick = ls.slice().sort((a, b) => cnt(a) - cnt(b))[0], done = ls.reduce((s, l) => s + cnt(l), 0);
     rows.push({ load: pick, req: 1, done, mass: wizLoadMassSafe(pick), direction: 'down' });
   }
-  return rows.sort((a, b) => b.mass - a.mass);
+  return rows.sort((a, b) => b.mass - a.mass).slice(1);   // v0.20: the top level was reached from below on the way up; measuring it again is no direction change
 }
 function wizFullPlan() { return wizPlan().concat(wizPlanDown()); }
 function wizPlainVerdict(v) {
@@ -3817,7 +3821,7 @@ function wizPaneWeights() {
   const combos = w.loads.filter(l => !l.auto).map(l => `<tr><td>${esc(l.name)}</td><td>${l.components.map(c => esc((w.weights.find(x => x.weightId === c.weightId) || {}).name || '?')).join(' + ')}</td><td>${wizMassText(wizLoadMassSafe(l), p.unit)}</td><td><button data-wa="delLoad" data-id="${esc(l.loadId)}">✕</button></td></tr>`).join('');
   return `${wizSourceHTML(false)}
   <div class="control-grid" style="margin-top:10px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', p.profileName)}</div>
-  <div class="field"><label>Profile ID</label>${wizInput('profile', 0, 'profileId', p.profileId)}</div>
+  <div class="field"><label>Profile ID <span class="small">(letters, digits, . _ - only; becomes part of the file name)</span></label>${wizInput('profile', 0, 'profileId', p.profileId)}${wizIdWarn()}</div>
   <div class="field"><label>Calibration unit (masses in the file)</label>${wizUnitSelect('profile', 0, 'unit', p.unit)}</div>
   <div class="field span2"><label>Notes (stored in environment.notes)</label>${wizInput('profile', 0, 'notes', p.notes)}</div>
   <div class="field"><label>Temperature (°C)</label>${wizInput('profile', 0, 'temperatureC', p.temperatureC, 'number')}</div><div class="field"><label>Relative humidity (%)</label>${wizInput('profile', 0, 'humidityPercent', p.humidityPercent, 'number')}</div><div class="field"><label>Warm-up before measuring (min)</label>${wizInput('profile', 0, 'warmUpMinutes', p.warmUpMinutes, 'number', 'min="0"')}</div></div>
@@ -4050,7 +4054,7 @@ function wizOnChange(e) {
   const t = e.target, a = t.dataset && t.dataset.w; if (!a) return;
   const i = Number(t.dataset.i), f = t.dataset.f, v = t.type === 'checkbox' ? t.checked : t.value;
   let render = false;
-  if (a === 'profile') { wiz.profile[f] = v; render = f === 'unit'; }
+  if (a === 'profile') { wiz.profile[f] = v; render = f === 'unit' || f === 'profileId'; }
   else if (a === 'weight') {
     const w = wiz.weights[i]; if (!w) return;
     if (f === 'name') { w.name = v; wizSyncLoads(); }
@@ -5236,7 +5240,7 @@ function wizCalSources() {
 }
 function wizSourceHTML(simple) {
   const sel = wiz.srcKey || '', opts = wizCalSources().map(s => `<option value="${esc(s.key)}"${s.key === sel ? ' selected' : ''}>${esc(s.label)}</option>`).join('');
-  const prof = simple ? `<div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', wiz.profile.profileName)}</div><div class="field"><label>Profile ID (the file name; keep it to overwrite, change it to save as a new calibration)</label>${wizInput('profile', 0, 'profileId', wiz.profile.profileId)}</div></div>` : '';
+  const prof = simple ? `<div class="control-grid" style="margin-top:8px"><div class="field span2"><label>Profile name</label>${wizInput('profile', 0, 'profileName', wiz.profile.profileName)}</div><div class="field"><label>Profile ID (letters, digits, . _ - only; it is the file name: keep it to overwrite, change it to save as a new calibration)</label>${wizInput('profile', 0, 'profileId', wiz.profile.profileId)}${wizIdWarn()}</div></div>` : '';
   return `<div class="status-note"><strong>Review / edit an existing calibration</strong>
     <div class="inline" style="margin-top:6px;flex-wrap:nowrap"><select data-w="srcPick"><option value="">— choose —</option>${opts}</select><button data-wa="srcLoad">Load into the editor</button></div>
     <div class="button-row"><button data-wa="srcFile">Open a file from disk…</button><button data-wa="restart">Start empty</button></div>
@@ -5282,6 +5286,94 @@ function wizPickFile() {
   inp.click();
 }
 // ===== END v0.19 MODULE ================================================================================================
+
+// ===== v0.20 MODULE (appended before boot) =====================================================================================
+let xSmoothMs = 250, fpsOn = false;
+function simGauss() { return (Math.random() + Math.random() + Math.random() - 1.5) * 2; }   // sd 1, bell shaped (test signal)
+
+// X-axis smoothing of the live view. Samples arrive in bursts (network / device); following the newest sample directly makes the right edge jump.
+// The edge instead runs with the wall clock (device ms per wall ms = 1) and is pulled towards (newest sample - xSmoothMs) with a low-pass.
+// xSmoothMs is therefore also the display delay of the right edge. 0 = off (old behaviour).
+function setXSmooth(ms) {
+	xSmoothMs = clamp(Math.round(Number(ms) || 0), 0, 2000);
+	const r = $('xSmoothRange'); if (r) r.value = xSmoothMs;
+	const t = $('xSmoothText'); if (t) t.textContent = xSmoothMs > 0 ? `${xSmoothMs} ms` : 'off';
+	if (state) state.xs = null; scheduleRender();
+}
+function applyXSmoothing() {
+	if (!(xSmoothMs > 0) || !state.count || state.paused) { state.xs = null; return; }
+	const now = performance.now(), newest = newestTime(), target = newest - xSmoothMs;
+	let s = state.xs;
+	if (!s || !Number.isFinite(s.e) || Math.abs(target - s.e) > 5 * xSmoothMs + 2000) s = state.xs = { e: target, t: now };
+	else { const dt = clamp(now - s.t, 0, 250), adv = s.e + dt, a = 1 - Math.exp(-dt / Math.max(40, xSmoothMs / 2)); s.e = adv + (target - adv) * a; s.t = now; }
+	s.e = Math.min(s.e, newest);
+	const first = oldestTime();
+	state.viewMax = Math.max(s.e, first + PERIOD_MS); state.viewMin = Math.max(first, state.viewMax - state.liveWindowSpan);
+}
+
+// Frame counter (debug): frames per second, mean time to build the data and to draw, points plotted, longest gap between frames,
+// stream events per second and the longest gap between two stream events, and the effective sample rate from the timestamps.
+const fpsStat = { t: 0, frames: 0, build: 0, draw: 0, pts: 0, last: 0, maxGap: 0, rx: 0, rxLast: 0, rxMax: 0 };
+function setFpsVisible(on) { fpsOn = !!on; const b = $('fpsToggle'); if (b) b.checked = fpsOn; const el = $('fpsBox'); if (el) el.hidden = !fpsOn; Object.assign(fpsStat, { t: 0, frames: 0, build: 0, draw: 0, last: 0, maxGap: 0, rx: 0, rxLast: 0, rxMax: 0 }); }
+function fpsRx() { const n = performance.now(), s = fpsStat; if (s.rxLast) { const g = n - s.rxLast; if (g > s.rxMax) s.rxMax = g; } s.rxLast = n; s.rx++; }
+function fpsFrame(t0, t1, t2, pts) {
+	if (!fpsOn) return; const s = fpsStat;
+	if (s.last) { const g = t2 - s.last; if (g > s.maxGap) s.maxGap = g; } s.last = t2;
+	s.frames++; s.build += t1 - t0; s.draw += t2 - t1; s.pts = pts; if (!s.t) s.t = t2;
+	if (t2 - s.t >= 500) {
+		const el = $('fpsBox'), n = s.frames, sec = (t2 - s.t) / 1000; let eff = '';
+		if (state && state.count > 20) { const k = Math.min(state.count - 1, 400), dt = getTime(state.count - 1) - getTime(state.count - 1 - k); if (dt > 0) eff = ` · eff. rate ${(k * 1000 / dt).toFixed(2)} Hz`; }
+		if (el) el.textContent = `${(n / sec).toFixed(0)} fps · build ${(s.build / n).toFixed(1)} ms · draw ${(s.draw / n).toFixed(1)} ms · ${s.pts} pts · frame gap max ${s.maxGap.toFixed(0)} ms · stream ${(s.rx / sec).toFixed(0)} ev/s, gap max ${s.rxMax.toFixed(0)} ms${eff}`;
+		Object.assign(s, { t: t2, frames: 0, build: 0, draw: 0, maxGap: 0, rx: 0, rxMax: 0 });
+	}
+}
+
+// Wizard helpers
+function wizIdWarn() { return /^[A-Za-z0-9._-]+$/.test(String((wiz.profile && wiz.profile.profileId) || '')) ? '' : '<div class="small warning">Not allowed: use only letters, digits, dot, underscore and hyphen (no spaces or other characters). The ID becomes part of the file name.</div>'; }
+function wizNextProfileId(sid) {   // profile-1, profile-2, ... (first number not yet used for this sensor)
+	sid = String(sid == null ? activeSensor.id : sid); const used = new Set();
+	for (const e of calLibrary.values()) if (String(e.sensorId) === sid) { const m = /^calibration_\d+_(.+)\.json$/.exec(e.name); if (m) used.add(m[1]); }
+	let n = 1; while (used.has('profile-' + n)) n++; return 'profile-' + n;
+}
+
+// A click (no drag) on a logged measurement / selection of the main graph opens it in the analysis panel, like clicking its log entry.
+function openEventFromGraph(u, x, y) {
+	const sel = state.selection;
+	const h = hitTestEvents(u, x, y).find(h => { const e = h.entry; return e && (e.type === 'measurement' || e.type === 'selection') && e.entryId && !(sel && sel.t0 === e.t0 && sel.t1 === e.t1); });
+	if (!h) return false; jumpToLogEntry(h.entry.entryId, h.entry.type); redrawOverlays(); return true;
+}
+function wireEventClick(u) {   // registered BEFORE wireMainInteractions: its capture handlers stop the propagation
+	const over = u.over; let down = null;
+	over.addEventListener('pointerdown', e => { down = e.button === 0 ? { x: e.clientX, y: e.clientY, id: e.pointerId, t: performance.now(), shift: e.shiftKey } : null; }, true);
+	over.addEventListener('pointerup', e => {
+		const d = down; down = null; if (!d || d.id !== e.pointerId || d.shift || state.selectMode) return;
+		if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4 || performance.now() - d.t > 600) return;
+		const r = over.getBoundingClientRect(); openEventFromGraph(u, e.clientX - r.left, e.clientY - r.top);
+	}, true);
+}
+
+// Settings Menu: the "Sensor" tab is folded into "Device sensors" (it follows the sensor selected there). Nothing is lost: calibration file,
+// overload limits, use conditions and channel conversions stay available in a section below the hardware form.
+function mergeSensorTab() {
+	const p = $('smPane_sensor'), host = $('smPane_hw'); if (!p || !host || $('ssMerged')) return;
+	const d = document.createElement('details'); d.id = 'ssMerged'; d.open = true; d.style.marginTop = '14px';
+	const s = document.createElement('summary'); s.textContent = 'Session settings of this sensor: calibration file, overload limits, use conditions, channel conversion'; d.appendChild(s);
+	p.hidden = false; p.style.padding = '0'; p.style.overflow = 'visible'; d.appendChild(p); host.appendChild(d);
+	for (const id of ['ssSensor', 'ssName', 'ssNotes']) { const el = $(id), f = el && el.closest && el.closest('.field'); if (f) f.hidden = true; }   // selector and name / notes are in the hardware form
+	const t = $('smTab_sensor'); if (t) t.hidden = true;
+}
+function syncSensorSection() {
+	const d = $('ssMerged'); if (!d) return; const id = hwSel == null ? null : String(hwSel);
+	d.hidden = !(id != null && (sensors.has(id) || auxChannels.has(id)));
+	if (id != null && sensors.has(id) && ssSelectedId !== id) { ssSelectedId = id; sensorSettingsRender(); }
+}
+const _hwRender20 = hwRender; hwRender = function () { _hwRender20(); syncSensorSection(); };
+function v20Init() {
+	$('xSmoothRange').addEventListener('input', e => setXSmooth(e.target.value));
+	$('fpsToggle').addEventListener('change', e => setFpsVisible(e.target.checked));
+	setXSmooth(xSmoothMs);
+}
+// ===== END v0.20 MODULE ================================================================================================
 async function boot(){
   populateSettings();initEvents();setNavPanelVisible(false);syncUIFromState();initSettingsMenu();initWizard();initUiSettings();$('sensorReloadBtn').disabled=true;setSensorListInfo('Looking for the device…');
   // The revision id is computed BEFORE acquisition starts, so no sample or tare event can be stamped with the placeholder revision id.
