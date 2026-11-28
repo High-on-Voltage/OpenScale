@@ -23,237 +23,1405 @@
   attribution at https://github.com/leeoniya/uPlot.
 -->
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
-<title>Mass Telemetry Workbench</title>
-<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<style>
-:root{color-scheme:dark;--bg:#0b1020;--panel:#121a2b;--panel2:#182338;--text:#e8eef8;--muted:#91a0b8;--line:#2a3851;--accent:#62d6c8;--accent2:#f6c85f;--raw:#8bb8ff;--ma:#f5bd55;--band:#e58bff;--zero:#f4f7ff;--danger:#ff7d86;--input:#0d1525}
-:root.light{color-scheme:light;--bg:#f2f5fa;--panel:#fff;--panel2:#edf2f8;--text:#182338;--muted:#60708a;--line:#d5deeb;--accent:#087f75;--accent2:#b47a08;--raw:#2866bd;--ma:#b77708;--band:#a23bbd;--zero:#17243b;--danger:#c43b49;--input:#f8faff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}button,input,select{font:inherit}button{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;padding:8px 12px;cursor:pointer}button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#062522;border-color:transparent;font-weight:700}button:disabled{opacity:.45;cursor:not-allowed}
-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px clamp(12px,2vw,26px);border-bottom:1px solid var(--line);background:var(--panel);position:relative;z-index:5}.brand{display:flex;align-items:center;gap:10px}.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#5685ff);display:grid;place-items:center;color:#071629;font-weight:900}h1{font-size:17px;margin:0;letter-spacing:.2px}.sub{font-size:11px;color:var(--muted)}.header-actions,.toolbar,.inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}.dot.paused{background:var(--danger)}
-main{max-width:1600px;margin:auto;padding:14px clamp(10px,2vw,24px) 32px}.toolbar{justify-content:space-between;margin-bottom:12px}.toolbar-left,.toolbar-right{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}.metric,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.metric{padding:12px 14px;min-width:0}.metric .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.metric .value{font-size:clamp(19px,2.4vw,27px);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.metric .detail{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}.metric .value[title]{cursor:help}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 275px;gap:12px;align-items:start}.panel{padding:13px;min-width:0}.panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.panel h2{font-size:13px;margin:0;font-weight:700}.panel-note{font-size:11px;color:var(--muted)}.chart-wrap{width:100%;min-height:280px;position:relative}#mainChart{width:100%;padding-bottom:4px}#miniChart{width:100%;margin-top:10px;padding-bottom:4px}.uplot{max-width:100%}.u-legend{font-size:11px!important}.u-legend th,.u-legend td{padding:3px 7px!important}#mainChart .u-over,#miniChart .u-over{touch-action:none}.u-legend{padding-top:4px!important;padding-bottom:6px!important}.side{display:flex;flex-direction:column;gap:12px}.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.field{display:flex;flex-direction:column;gap:4px;min-width:0}.field.full{grid-column:1/-1}.field label{font-size:11px;color:var(--muted)}input[type=number],input[type=text],select{width:100%;min-width:0;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}input[type=range]{width:100%;accent-color:var(--accent)}.range-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:10px;align-items:center}.range-row input[type=number]{padding:6px 7px}input[type=checkbox]{accent-color:var(--accent)}.check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin:5px 0}.small{font-size:11px;color:var(--muted)}.button-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.button-row button{flex:1}.readout{font-size:12px;line-height:1.7;color:var(--muted)}.readout strong{color:var(--text);font-variant-numeric:tabular-nums}#selectionSummary{padding:9px;background:var(--panel2);border-radius:9px;margin-top:8px;min-height:46px}.navigator,.log-panel{margin-top:12px}details summary{cursor:pointer;font-weight:700;font-size:13px}.log-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:10px 0}.log-list{max-height:320px;overflow:auto;border-top:1px solid var(--line)}.log-row{display:grid;grid-template-columns:90px 1fr;gap:10px;padding:8px 5px;border-bottom:1px solid var(--line);font-size:11px;cursor:pointer;border-radius:6px}.log-row:hover{background:var(--panel2)}.log-row time{color:var(--muted);font-variant-numeric:tabular-nums}.log-row.event{border-left:3px solid var(--accent2)}.log-row.selection{border-left:3px solid var(--accent)}#selectionHint{font-size:11px;color:var(--muted)}footer{padding:16px 4px;color:var(--muted);font-size:10px;text-align:center}.settings-wrap{position:relative}.settings-menu{position:absolute;right:0;top:44px;width:min(360px,calc(100vw - 24px));max-height:78vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px;box-shadow:0 16px 42px rgba(0,0,0,.28);z-index:20}.settings-menu[hidden]{display:none}.settings-menu h3{margin:0 0 10px;font-size:13px}.settings-menu .field{margin-bottom:10px}.settings-divider{border:0;border-top:1px solid var(--line);margin:12px 0}.status-note{padding:8px;border-radius:8px;background:var(--panel2);font-size:11px;color:var(--muted)}.warning{color:var(--danger)}.success{color:var(--accent)}.event-marker{color:var(--accent2)}.tag{display:inline-block;padding:2px 6px;border-radius:6px;background:var(--panel2);font-size:10px;color:var(--muted)}
-[hidden]{display:none!important}
-.metrics{align-items:start}.mcol{display:flex;flex-direction:column;gap:10px;min-width:0}
-.compact{padding:10px 12px}.compact .field{margin-bottom:0;gap:3px}.compact label{font-size:10px}.compact .control-grid{gap:8px}
-.compact input[type=number],.compact select{padding:4px 6px}.compact .button-row{margin-top:8px}
-.u-legend .u-value{display:inline-block;min-width:10.5ch;text-align:left;font-variant-numeric:tabular-nums;white-space:nowrap}
-.u-legend .u-series:first-child .u-value{min-width:7ch}.u-legend .u-label{white-space:nowrap}
-.log-row.measurement{border-left:3px solid #9b7bd6}.log-row.calibration{border-left:3px solid #6f9bff}.ovl-banner{position:sticky;top:0;z-index:40;display:flex;flex-direction:column;gap:4px;margin:0 0 10px}
-.ovl-item{padding:12px 16px;border-radius:10px;font-size:18px;font-weight:600;cursor:pointer;border:2px solid rgba(0,0,0,.25)}
-.ovl-yellow{background:#f6c85f;color:#2a2100}.ovl-orange{background:#ff9a3c;color:#2a1200}.ovl-red{background:#e5384a;color:#fff}
-.ovl-item.ovl-now{animation:ovlpulse 1s ease-in-out infinite}@keyframes ovlpulse{50%{filter:brightness(1.25)}}
-.log-row.overload{border-left:3px solid #e5384a}
-.log-row.note{border-left:3px solid var(--muted);cursor:default}
-progress{width:100%;height:6px}.bufrow{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}.bufrow select{width:auto}
-@media(max-width:950px){.layout{grid-template-columns:1fr}.side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.side .panel:last-child{grid-column:1/-1}}
-@media(max-width:600px){header{align-items:flex-start;flex-wrap:wrap}.header-actions{justify-content:flex-end}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.side{grid-template-columns:1fr}.side .panel:last-child{grid-column:auto}.metric{padding:10px}.metric .value{font-size:21px}.toolbar{align-items:flex-start}.toolbar-left,.toolbar-right{width:100%}.toolbar-right{justify-content:space-between}}
-/* v9 layout: charts use the full page width; the side panels form a row below them */
-[hidden]{display:none!important}
-.layout{grid-template-columns:minmax(0,1fr)!important}
-.side{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))!important;gap:12px;align-items:start}
-.side .panel:last-child{grid-column:auto!important}
-.span2{grid-column:span 2}.metric-pair{display:grid;grid-template-columns:minmax(0, 60fr) minmax(0, 40fr);gap:10px}
-.span2 .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.control-grid .span2{grid-column:span 2}
-.controls-bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-top:10px}
-.header-actions{flex-wrap:wrap}
-/* v13 header: [title][sensor + test signal] ........ [buttons][status, right-bound] */
-.header-left{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-right:auto}.header-left select{max-width:230px}.status{min-width:10.5em;max-width:17em;justify-content:flex-end;text-align:right;line-height:1.25}
-@media(max-width:600px){.span2{grid-column:1/-1}.span2 .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-/* v10: validity badges, event tooltip, log hover */
-.vbadge{font-size:11px;font-weight:700;white-space:nowrap}.vbadge.ok{color:var(--accent)}.vbadge.suspect{color:var(--accent2)}.vbadge.invalid{color:var(--danger)}.vbadge.na{color:var(--muted)}
-details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-row{margin:5px 0;padding-left:8px;border-left:3px solid var(--line)}.an-row.ok{border-left-color:var(--accent)}.an-row.suspect{border-left-color:var(--accent2)}.an-row.invalid{border-left-color:var(--danger)}
-.event-tip{position:fixed;z-index:50;max-width:360px;pointer-events:none;background:var(--panel);color:var(--text);border:1px solid var(--accent);border-radius:9px;padding:8px 10px;font-size:11px;box-shadow:0 6px 22px rgba(0,0,0,.35)}.event-tip hr{border:0;border-top:1px solid var(--line);margin:6px 0}
-.log-row:hover{background:var(--panel2)}
-/* v11 */
-.vbadge.insufficient{color:var(--raw)}.sensor-pick{font-size:11px;color:var(--muted)}header select{width:auto;max-width:260px}.sim-controls{display:inline-flex}
-.side.nav-hidden{grid-template-columns:minmax(260px,1fr) minmax(340px,2fr)!important}
-#trackBtn[aria-pressed="false"]{opacity:.85}
-/* v12: hovering menus, wizard */
-.modal{position:fixed;inset:0;z-index:60;background:rgba(5,10,20,.55);display:flex;align-items:flex-start;justify-content:center;padding:4vh 12px;overflow:auto}
-.modal[hidden]{display:none!important}
-.modal-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;width:min(560px,100%);box-shadow:0 20px 60px rgba(0,0,0,.4);display:flex;flex-direction:column;max-height:92vh}
-.modal-card.wide{width:min(980px,100%)}
-.modal-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}.modal-head h2{margin:0;font-size:15px}.grow{flex:1}
-.modal-body{padding:12px 14px;overflow:auto}
-.tabs{display:flex;gap:4px;padding:8px 14px 0;flex-wrap:wrap}.modal-body>.tabs{padding:0 0 8px}
-.tabs button{border-radius:9px 9px 0 0}.tabs button[aria-selected="true"]{background:var(--accent);color:#062522;font-weight:700;border-color:transparent}
-.wiz.min{inset:auto 12px 12px auto;background:none;padding:0;overflow:visible;pointer-events:none}.wiz.min .modal-card{pointer-events:auto;width:360px}.wiz.min .modal-body{display:none}
-.tablewrap{overflow:auto;margin:4px 0}.wiz-table{border-collapse:collapse;width:100%;font-size:12px}.wiz-table th,.wiz-table td{border-bottom:1px solid var(--line);padding:3px 5px;text-align:left;font-variant-numeric:tabular-nums}
-.wiz-table input,.wiz-table select{padding:3px 5px;min-width:60px}.wiz-table tr.excl td{opacity:.55}.wiz-table tr.sel td{background:var(--panel2)}
-.wiz-table tr.sub td{font-size:11px;color:var(--muted)}
-.fps-box{position:absolute;right:8px;top:4px;z-index:3;font:11px/1.3 ui-monospace,Consolas,monospace;background:rgba(0,0,0,.6);color:#9fe8d8;padding:2px 7px;border-radius:5px;pointer-events:none}.wiz-table details.an{margin:2px 0}.wizplot{width:100%;max-width:600px;height:auto;display:block;margin:6px 0}.plots{display:flex;flex-wrap:wrap;gap:8px}
-</style>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+	<meta name="color-scheme" content="dark light">
+	<title>Mass Telemetry Workbench</title>
+	<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+	<style>
+		:root {
+			color-scheme: dark;
+			--bg: #0b1020;
+			--panel: #121a2b;
+			--panel2: #182338;
+			--text: #e8eef8;
+			--muted: #91a0b8;
+			--line: #2a3851;
+			--accent: #62d6c8;
+			--accent2: #f6c85f;
+			--raw: #8bb8ff;
+			--ma: #f5bd55;
+			--band: #e58bff;
+			--zero: #f4f7ff;
+			--danger: #ff7d86;
+			--input: #0d1525
+		}
+
+		:root.light {
+			color-scheme: light;
+			--bg: #f2f5fa;
+			--panel: #fff;
+			--panel2: #edf2f8;
+			--text: #182338;
+			--muted: #60708a;
+			--line: #d5deeb;
+			--accent: #087f75;
+			--accent2: #b47a08;
+			--raw: #2866bd;
+			--ma: #b77708;
+			--band: #a23bbd;
+			--zero: #17243b;
+			--danger: #c43b49;
+			--input: #f8faff
+		}
+
+		* {
+			box-sizing: border-box
+		}
+
+		body {
+			margin: 0;
+			background: var(--bg);
+			color: var(--text);
+			font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif
+		}
+
+		button,
+		input,
+		select {
+			font: inherit
+		}
+
+		button {
+			border: 1px solid var(--line);
+			background: var(--panel2);
+			color: var(--text);
+			border-radius: 9px;
+			padding: 8px 12px;
+			cursor: pointer
+		}
+
+		button:hover {
+			border-color: var(--accent)
+		}
+
+		button.primary {
+			background: var(--accent);
+			color: #062522;
+			border-color: transparent;
+			font-weight: 700
+		}
+
+		button:disabled {
+			opacity: .45;
+			cursor: not-allowed
+		}
+
+		header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+			padding: 14px clamp(12px, 2vw, 26px);
+			border-bottom: 1px solid var(--line);
+			background: var(--panel);
+			position: relative;
+			z-index: 5
+		}
+
+		.brand {
+			display: flex;
+			align-items: center;
+			gap: 10px
+		}
+
+		.logo {
+			width: 34px;
+			height: 34px;
+			border-radius: 10px;
+			background: linear-gradient(135deg, var(--accent), #5685ff);
+			display: grid;
+			place-items: center;
+			color: #071629;
+			font-weight: 900
+		}
+
+		h1 {
+			font-size: 17px;
+			margin: 0;
+			letter-spacing: .2px
+		}
+
+		.sub {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		.header-actions,
+		.toolbar,
+		.inline {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: wrap
+		}
+
+		.status {
+			display: inline-flex;
+			align-items: center;
+			gap: 7px;
+			color: var(--muted);
+			font-size: 12px
+		}
+
+		.dot {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			background: var(--accent)
+		}
+
+		.dot.paused {
+			background: var(--danger)
+		}
+
+		main {
+			max-width: 1600px;
+			margin: auto;
+			padding: 14px clamp(10px, 2vw, 24px) 32px
+		}
+
+		.toolbar {
+			justify-content: space-between;
+			margin-bottom: 12px
+		}
+
+		.toolbar-left,
+		.toolbar-right {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+			align-items: center
+		}
+
+		.metrics {
+			display: grid;
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+			gap: 10px;
+			margin-bottom: 12px
+		}
+
+		.metric,
+		.panel {
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 13px
+		}
+
+		.metric {
+			padding: 12px 14px;
+			min-width: 0
+		}
+
+		.metric .label {
+			font-size: 11px;
+			color: var(--muted);
+			text-transform: uppercase;
+			letter-spacing: .08em
+		}
+
+		.metric .value {
+			font-size: clamp(19px, 2.4vw, 27px);
+			font-weight: 700;
+			font-variant-numeric: tabular-nums;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			margin-top: 3px
+		}
+
+		.metric .detail {
+			font-size: 11px;
+			color: var(--muted);
+			font-variant-numeric: tabular-nums
+		}
+
+		.metric .value[title] {
+			cursor: help
+		}
+
+		.layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 275px;
+			gap: 12px;
+			align-items: start
+		}
+
+		.panel {
+			padding: 13px;
+			min-width: 0
+		}
+
+		.panel-head {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 10px;
+			margin-bottom: 8px
+		}
+
+		.panel h2 {
+			font-size: 13px;
+			margin: 0;
+			font-weight: 700
+		}
+
+		.panel-note {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		.chart-wrap {
+			width: 100%;
+			min-height: 280px;
+			position: relative
+		}
+
+		#mainChart {
+			width: 100%;
+			padding-bottom: 4px
+		}
+
+		#miniChart {
+			width: 100%;
+			margin-top: 10px;
+			padding-bottom: 4px
+		}
+
+		.uplot {
+			max-width: 100%
+		}
+
+		.u-legend {
+			font-size: 11px !important
+		}
+
+		.u-legend th,
+		.u-legend td {
+			padding: 3px 7px !important
+		}
+
+		#mainChart .u-over,
+		#miniChart .u-over {
+			touch-action: none
+		}
+
+		.u-legend {
+			padding-top: 4px !important;
+			padding-bottom: 6px !important
+		}
+
+		.side {
+			display: flex;
+			flex-direction: column;
+			gap: 12px
+		}
+
+		.control-grid {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 9px
+		}
+
+		.field {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			min-width: 0
+		}
+
+		.field.full {
+			grid-column: 1/-1
+		}
+
+		.field label {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		input[type=number],
+		input[type=text],
+		select {
+			width: 100%;
+			min-width: 0;
+			background: var(--input);
+			color: var(--text);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			padding: 8px
+		}
+
+		input[type=range] {
+			width: 100%;
+			accent-color: var(--accent)
+		}
+
+		.range-row {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 96px;
+			gap: 10px;
+			align-items: center
+		}
+
+		.range-row input[type=number] {
+			padding: 6px 7px
+		}
+
+		input[type=checkbox] {
+			accent-color: var(--accent)
+		}
+
+		.check {
+			display: flex;
+			align-items: center;
+			gap: 7px;
+			font-size: 12px;
+			color: var(--text);
+			margin: 5px 0
+		}
+
+		.small {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		.button-row {
+			display: flex;
+			gap: 7px;
+			flex-wrap: wrap;
+			margin-top: 9px
+		}
+
+		.button-row button {
+			flex: 1
+		}
+
+		.readout {
+			font-size: 12px;
+			line-height: 1.7;
+			color: var(--muted)
+		}
+
+		.readout strong {
+			color: var(--text);
+			font-variant-numeric: tabular-nums
+		}
+
+		#selectionSummary {
+			padding: 9px;
+			background: var(--panel2);
+			border-radius: 9px;
+			margin-top: 8px;
+			min-height: 46px
+		}
+
+		.navigator,
+		.log-panel {
+			margin-top: 12px
+		}
+
+		details summary {
+			cursor: pointer;
+			font-weight: 700;
+			font-size: 13px
+		}
+
+		.log-actions {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 8px;
+			margin: 10px 0
+		}
+
+		.log-list {
+			max-height: 320px;
+			overflow: auto;
+			border-top: 1px solid var(--line)
+		}
+
+		.log-row {
+			display: grid;
+			grid-template-columns: 90px 1fr;
+			gap: 10px;
+			padding: 8px 5px;
+			border-bottom: 1px solid var(--line);
+			font-size: 11px;
+			cursor: pointer;
+			border-radius: 6px
+		}
+
+		.log-row:hover {
+			background: var(--panel2)
+		}
+
+		.log-row time {
+			color: var(--muted);
+			font-variant-numeric: tabular-nums
+		}
+
+		.log-row.event {
+			border-left: 3px solid var(--accent2)
+		}
+
+		.log-row.selection {
+			border-left: 3px solid var(--accent)
+		}
+
+		#selectionHint {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		footer {
+			padding: 16px 4px;
+			color: var(--muted);
+			font-size: 10px;
+			text-align: center
+		}
+
+		.settings-wrap {
+			position: relative
+		}
+
+		.settings-menu {
+			position: absolute;
+			right: 0;
+			top: 44px;
+			width: min(360px, calc(100vw - 24px));
+			max-height: 78vh;
+			overflow: auto;
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 13px;
+			padding: 14px;
+			box-shadow: 0 16px 42px rgba(0, 0, 0, .28);
+			z-index: 20
+		}
+
+		.settings-menu[hidden] {
+			display: none
+		}
+
+		.settings-menu h3 {
+			margin: 0 0 10px;
+			font-size: 13px
+		}
+
+		.settings-menu .field {
+			margin-bottom: 10px
+		}
+
+		.settings-divider {
+			border: 0;
+			border-top: 1px solid var(--line);
+			margin: 12px 0
+		}
+
+		.status-note {
+			padding: 8px;
+			border-radius: 8px;
+			background: var(--panel2);
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		.warning {
+			color: var(--danger)
+		}
+
+		.success {
+			color: var(--accent)
+		}
+
+		.event-marker {
+			color: var(--accent2)
+		}
+
+		.tag {
+			display: inline-block;
+			padding: 2px 6px;
+			border-radius: 6px;
+			background: var(--panel2);
+			font-size: 10px;
+			color: var(--muted)
+		}
+
+		[hidden] {
+			display: none !important
+		}
+
+		.metrics {
+			align-items: start
+		}
+
+		.mcol {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			min-width: 0
+		}
+
+		.compact {
+			padding: 10px 12px
+		}
+
+		.compact .field {
+			margin-bottom: 0;
+			gap: 3px
+		}
+
+		.compact label {
+			font-size: 10px
+		}
+
+		.compact .control-grid {
+			gap: 8px
+		}
+
+		.compact input[type=number],
+		.compact select {
+			padding: 4px 6px
+		}
+
+		.compact .button-row {
+			margin-top: 8px
+		}
+
+		.u-legend .u-value {
+			display: inline-block;
+			min-width: 10.5ch;
+			text-align: left;
+			font-variant-numeric: tabular-nums;
+			white-space: nowrap
+		}
+
+		.u-legend .u-series:first-child .u-value {
+			min-width: 7ch
+		}
+
+		.u-legend .u-label {
+			white-space: nowrap
+		}
+
+		.log-row.measurement {
+			border-left: 3px solid #9b7bd6
+		}
+
+		.log-row.calibration {
+			border-left: 3px solid #6f9bff
+		}
+
+		.ovl-banner {
+			position: sticky;
+			top: 0;
+			z-index: 40;
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			margin: 0 0 10px
+		}
+
+		.ovl-item {
+			padding: 12px 16px;
+			border-radius: 10px;
+			font-size: 18px;
+			font-weight: 600;
+			cursor: pointer;
+			border: 2px solid rgba(0, 0, 0, .25)
+		}
+
+		.ovl-yellow {
+			background: #f6c85f;
+			color: #2a2100
+		}
+
+		.ovl-orange {
+			background: #ff9a3c;
+			color: #2a1200
+		}
+
+		.ovl-red {
+			background: #e5384a;
+			color: #fff
+		}
+
+		.ovl-item.ovl-now {
+			animation: ovlpulse 1s ease-in-out infinite
+		}
+
+		@keyframes ovlpulse {
+			50% {
+				filter: brightness(1.25)
+			}
+		}
+
+		.log-row.overload {
+			border-left: 3px solid #e5384a
+		}
+
+		.log-row.note {
+			border-left: 3px solid var(--muted);
+			cursor: default
+		}
+
+		progress {
+			width: 100%;
+			height: 6px
+		}
+
+		.bufrow {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-top: 8px;
+			flex-wrap: wrap
+		}
+
+		.bufrow select {
+			width: auto
+		}
+
+		@media(max-width:950px) {
+			.layout {
+				grid-template-columns: 1fr
+			}
+
+			.side {
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr))
+			}
+
+			.side .panel:last-child {
+				grid-column: 1/-1
+			}
+		}
+
+		@media(max-width:600px) {
+			header {
+				align-items: flex-start;
+				flex-wrap: wrap
+			}
+
+			.header-actions {
+				justify-content: flex-end
+			}
+
+			.metrics {
+				grid-template-columns: repeat(2, minmax(0, 1fr))
+			}
+
+			.side {
+				grid-template-columns: 1fr
+			}
+
+			.side .panel:last-child {
+				grid-column: auto
+			}
+
+			.metric {
+				padding: 10px
+			}
+
+			.metric .value {
+				font-size: 21px
+			}
+
+			.toolbar {
+				align-items: flex-start
+			}
+
+			.toolbar-left,
+			.toolbar-right {
+				width: 100%
+			}
+
+			.toolbar-right {
+				justify-content: space-between
+			}
+		}
+
+		/* v9 layout: charts use the full page width; the side panels form a row below them */
+		[hidden] {
+			display: none !important
+		}
+
+		.layout {
+			grid-template-columns: minmax(0, 1fr) !important
+		}
+
+		.side {
+			display: grid !important;
+			grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)) !important;
+			gap: 12px;
+			align-items: start
+		}
+
+		.side .panel:last-child {
+			grid-column: auto !important
+		}
+
+		.span2 {
+			grid-column: span 2
+		}
+
+		.metric-pair {
+			display: grid;
+			grid-template-columns: minmax(0, 60fr) minmax(0, 40fr);
+			gap: 10px
+		}
+
+		.span2 .control-grid {
+			grid-template-columns: repeat(4, minmax(0, 1fr))
+		}
+
+		.control-grid .span2 {
+			grid-column: span 2
+		}
+
+		.controls-bar {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 10px 16px;
+			align-items: center;
+			justify-content: space-between;
+			margin-top: 10px
+		}
+
+		.header-actions {
+			flex-wrap: wrap
+		}
+
+		/* v13 header: [title][sensor + test signal] ........ [buttons][status, right-bound] */
+		.header-left {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: wrap;
+			margin-right: auto
+		}
+
+		.header-left select {
+			max-width: 230px
+		}
+
+		.status {
+			min-width: 10.5em;
+			max-width: 17em;
+			justify-content: flex-end;
+			text-align: right;
+			line-height: 1.25
+		}
+
+		@media(max-width:600px) {
+			.span2 {
+				grid-column: 1/-1
+			}
+
+			.span2 .control-grid {
+				grid-template-columns: repeat(2, minmax(0, 1fr))
+			}
+		}
+
+		/* v10: validity badges, event tooltip, log hover */
+		.vbadge {
+			font-size: 11px;
+			font-weight: 700;
+			white-space: nowrap
+		}
+
+		.vbadge.ok {
+			color: var(--accent)
+		}
+
+		.vbadge.suspect {
+			color: var(--accent2)
+		}
+
+		.vbadge.invalid {
+			color: var(--danger)
+		}
+
+		.vbadge.na {
+			color: var(--muted)
+		}
+
+		details.an {
+			margin-top: 6px;
+			font-size: 11px
+		}
+
+		details.an>summary {
+			cursor: pointer
+		}
+
+		.an-row {
+			margin: 5px 0;
+			padding-left: 8px;
+			border-left: 3px solid var(--line)
+		}
+
+		.an-row.ok {
+			border-left-color: var(--accent)
+		}
+
+		.an-row.suspect {
+			border-left-color: var(--accent2)
+		}
+
+		.an-row.invalid {
+			border-left-color: var(--danger)
+		}
+
+		.event-tip {
+			position: fixed;
+			z-index: 50;
+			max-width: 360px;
+			pointer-events: none;
+			background: var(--panel);
+			color: var(--text);
+			border: 1px solid var(--accent);
+			border-radius: 9px;
+			padding: 8px 10px;
+			font-size: 11px;
+			box-shadow: 0 6px 22px rgba(0, 0, 0, .35)
+		}
+
+		.event-tip hr {
+			border: 0;
+			border-top: 1px solid var(--line);
+			margin: 6px 0
+		}
+
+		.log-row:hover {
+			background: var(--panel2)
+		}
+
+		/* v11 */
+		.vbadge.insufficient {
+			color: var(--raw)
+		}
+
+		.sensor-pick {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		header select {
+			width: auto;
+			max-width: 260px
+		}
+
+		.sim-controls {
+			display: inline-flex
+		}
+
+		.side.nav-hidden {
+			grid-template-columns: minmax(260px, 1fr) minmax(340px, 2fr) !important
+		}
+
+		#trackBtn[aria-pressed="false"] {
+			opacity: .85
+		}
+
+		/* v12: hovering menus, wizard */
+		.modal {
+			position: fixed;
+			inset: 0;
+			z-index: 60;
+			background: rgba(5, 10, 20, .55);
+			display: flex;
+			align-items: flex-start;
+			justify-content: center;
+			padding: 4vh 12px;
+			overflow: auto
+		}
+
+		.modal[hidden] {
+			display: none !important
+		}
+
+		.modal-card {
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 13px;
+			width: min(560px, 100%);
+			box-shadow: 0 20px 60px rgba(0, 0, 0, .4);
+			display: flex;
+			flex-direction: column;
+			max-height: 92vh
+		}
+
+		.modal-card.wide {
+			width: min(980px, 100%)
+		}
+
+		.modal-head {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			padding: 12px 14px;
+			border-bottom: 1px solid var(--line)
+		}
+
+		.modal-head h2 {
+			margin: 0;
+			font-size: 15px
+		}
+
+		.grow {
+			flex: 1
+		}
+
+		.modal-body {
+			padding: 12px 14px;
+			overflow: auto
+		}
+
+		.tabs {
+			display: flex;
+			gap: 4px;
+			padding: 8px 14px 0;
+			flex-wrap: wrap
+		}
+
+		.modal-body>.tabs {
+			padding: 0 0 8px
+		}
+
+		.tabs button {
+			border-radius: 9px 9px 0 0
+		}
+
+		.tabs button[aria-selected="true"] {
+			background: var(--accent);
+			color: #062522;
+			font-weight: 700;
+			border-color: transparent
+		}
+
+		.wiz.min {
+			inset: auto 12px 12px auto;
+			background: none;
+			padding: 0;
+			overflow: visible;
+			pointer-events: none
+		}
+
+		.wiz.min .modal-card {
+			pointer-events: auto;
+			width: 360px
+		}
+
+		.wiz.min .modal-body {
+			display: none
+		}
+
+		.tablewrap {
+			overflow: auto;
+			margin: 4px 0
+		}
+
+		.wiz-table {
+			border-collapse: collapse;
+			width: 100%;
+			font-size: 12px
+		}
+
+		.wiz-table th,
+		.wiz-table td {
+			border-bottom: 1px solid var(--line);
+			padding: 3px 5px;
+			text-align: left;
+			font-variant-numeric: tabular-nums
+		}
+
+		.wiz-table input,
+		.wiz-table select {
+			padding: 3px 5px;
+			min-width: 60px
+		}
+
+		.wiz-table tr.excl td {
+			opacity: .55
+		}
+
+		.wiz-table tr.sel td {
+			background: var(--panel2)
+		}
+
+		.wiz-table tr.sub td {
+			font-size: 11px;
+			color: var(--muted)
+		}
+
+		.fps-box {
+			position: absolute;
+			right: 8px;
+			top: 4px;
+			z-index: 3;
+			font: 11px/1.3 ui-monospace, Consolas, monospace;
+			background: rgba(0, 0, 0, .6);
+			color: #9fe8d8;
+			padding: 2px 7px;
+			border-radius: 5px;
+			pointer-events: none
+		}
+
+		.wiz-table details.an {
+			margin: 2px 0
+		}
+
+		.wizplot {
+			width: 100%;
+			max-width: 600px;
+			height: auto;
+			display: block;
+			margin: 6px 0
+		}
+
+		.plots {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 8px
+		}
+	</style>
 </head>
+
 <body>
-<header>
-  <div class="brand"><div class="logo">MW</div><div><h1>Mass Telemetry Workbench</h1><div class="sub" id="headerSub">80 Hz sensor stream · calibrated mass · local-only session</div></div></div>
-  <div class="header-left">
-    <label class="sensor-pick" for="sensorSelect">Sensor</label><select id="sensorSelect" aria-label="Shown sensor"></select>
-    <span id="simControls" class="sim-controls"><select id="simModeSelect" aria-label="Simulated test signal" title="Only for exercising the validity checks. A real device replaces the simulator."><option value="wander">Wandering (default)</option><option value="quiet">Quiet (white noise)</option><option value="hum">Quiet + 50 Hz hum (aliases to 30 Hz)</option><option value="steps">Quiet + occasional weight steps</option></select></span>
-    <span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
-  </div>
-  <div class="header-actions">
-    <button id="pauseBtn" title="Pause or resume the shown sensor. A paused sensor discards incoming data.">Ⅱ Pause</button>
-    <button id="pauseAllBtn" title="Pause (or resume) every sensor">Ⅱ Pause all</button>
-    <button id="testSamplesBtn">＋ 100k test samples</button>
-    <button id="themeBtn" aria-label="Toggle color theme">☼ Light mode</button>
-    <div class="settings-wrap">
-      <button id="settingsBtn" aria-expanded="false" aria-controls="settingsMenu">⚙ Settings</button>
-      <div id="settingsMenu" class="settings-menu" hidden>
-        <h3>Settings</h3>
-        <div class="button-row" style="margin:0 0 8px"><button id="openSettingsMenuBtn" class="primary">Open Settings Menu…</button></div>
-        <div class="status-note">More application settings (data connection, language, export defaults) will be added here.</div>
-        <hr class="settings-divider">
-        <h3>Sensors</h3>
-        <div id="sensorListInfo" class="small">—</div>
-        <div class="button-row"><button id="sensorReloadBtn">Reload sensor list</button></div>
-        <div class="small" style="margin-top:4px">Reads sensors.json from the device again. Reloading keeps all collected data. The test signal is always available.</div>
-        <hr class="settings-divider">
-        <h3>Device</h3>
-        <div id="deviceInfo" class="small">No device connection (local test signal only).</div>
-        <div class="button-row"><button id="deviceRestartBtn" title="POST /api/restart">Restart device…</button></div>
-        <div class="field" style="margin-top:6px"><label for="deviceResetSelect">Reset a device file to its factory default (DELETE)</label><div class="range-row"><select id="deviceResetSelect"><option>sensors.json</option><option>units.json</option><option>webui-settings.json</option><option>settings.json</option><option>wifi.json</option></select><button id="deviceResetBtn">Reset…</button></div></div>
-        <div id="deviceMessages" class="small" style="margin-top:4px"></div>
-        <hr class="settings-divider">
-        <h3>Layout</h3>
-        <label class="check"><input type="checkbox" id="navPanelToggle"> Show Navigation panel (zoom / older / newer buttons)</label>
-        <hr class="settings-divider">
-        <h3>Calibration</h3>
-        <div id="calibrationInfo" class="small">Loading calibration…</div>
-        <div class="button-row" style="margin-bottom:6px"><button id="calWizardBtn" class="primary">Calibration wizard &amp; fitting editor…</button></div>
-        <div class="button-row"><button id="calImportBtn">Import JSON…</button><button id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button><button id="calUploadBtn" title="Compress the active calibration and send it to the device as calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json (needs the password if one is set)">Send to device</button></div>
-        <input id="calFile" type="file" accept=".json,application/json" hidden>
-        <div id="calMessages" class="small" style="margin-top:6px"></div>
-        <div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier samples keep the calibration they were recorded with. Only the structure is checked, not metrological validity.</div>
-        <hr class="settings-divider">
-        <details id="clearArea"><summary>Clear data…</summary>
-          <div class="small" style="margin:6px 0">Calibrations are never deleted. You are asked to confirm.</div>
-          <div class="button-row"><button id="clearChartsBtn" title="Empty the chart data of the shown sensor">Clear charts</button><button id="clearAllChartsBtn" title="Empty the chart data of every sensor">Clear all charts</button></div>
-          <div class="button-row"><button id="clearAllBtn" title="Chart data, tares, log, measurements and overload events of every sensor">Clear all</button></div>
-        </details>
-      </div>
-    </div>
-  </div>
-</header>
-<main>
-  <div id="overloadBanner" class="ovl-banner" role="alert" hidden></div>
-  <section class="metrics">
-    <div class="mcol span2">
-      <div class="metric-pair">
-        <div class="metric"><div class="label" id="currentValueLabel">Current measured mass</div><div class="value" id="currentValue" title="Hover for raw sensor details">—</div><div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div>
-          <div class="detail" id="pmLines"><span id="pmSigma" title="Spread σ of the single readings in the estimator window (the same number as the spread card). How much single readings scatter; not an uncertainty.">σ —</span> · <span id="pmMean" title="Uncertainty of the window AVERAGE if the readings were independent: σ divided by the effective number of independent samples n_eff (from the autocorrelation, so slow noise counts less than white noise). A longer window narrows it only while the noise is white. Repeatability of the average only: no calibration, no weights.">±avg —</span> · <span id="pmStab" title="Stability: how much the DISPLAYED value itself moved (max − min) during the last window length. Small = settled; large = still moving. This is not a repeatability.">moved —</span></div><div class="detail" id="auxReadout" hidden></div><div class="detail warning" id="rangeStatus" hidden></div></div>
-        <div class="metric"><div class="label" id="spreadLabel">Sensor spread (σ)</div><div class="value" id="currentSpread">—</div><div class="detail" id="spreadDetail">Window —</div></div>
-      </div>
-      <section class="panel compact" aria-label="Display and estimator settings">
-        <div class="control-grid">
-          <div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
-          <div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect"><option value="auto">Automatic</option></select></div>
-          <div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select id="estimatorSelect"><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="trimmed">Trimmed mean</option><option value="hampelLocal">Hampel filter (sliding local median/MAD) + mean</option><option value="hampel">Global MAD filter + mean (old Hampel-style)</option><option value="ema">Exponential moving average (EMA, seeded; old)</option><option value="emaNorm">EMA, seed-normalised weights</option></select></div>
-          <div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label><div class="range-row"><input id="windowRange" type="range" min="0" max="1000" step="1" value="433" title="logarithmic: 2 to 10,000 samples"><input id="windowInput" type="number" min="2" max="10000" step="1" value="80" aria-label="Window sample count"></div><div class="inline small" style="margin-top:4px">= <input id="windowSeconds" type="number" min="0.025" step="any" value="1" style="width:92px" aria-label="Window length in seconds"> s at <span id="windowRateText">80</span> Hz (samples ÷ rate)</div></div>
-          <div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30" value="10"></div>
-          <div class="field" id="hampelField" hidden><label for="hampelHalf">Hampel half-width k (window 2k+1)</label><input id="hampelHalf" type="number" min="2" max="50" step="1" value="5"></div><div class="field" id="hampelSigmaField" hidden><label for="hampelSigma">Hampel threshold (× robust σ)</label><input id="hampelSigma" type="number" min="1" max="10" step="0.5" value="3"></div>
-          <div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
-        </div>
-        <div class="small" style="margin-top:7px">The centre line and the ±1σ band of the main chart use the selected estimator and its matching spread statistic. Unit changes affect presentation only; statistics stay in canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
-      </section>
-    </div>
-    <div class="mcol">
-      <div class="metric"><div class="label">Current tare</div><div class="value" id="tareValue">None</div><div class="detail" id="tareDetail">No tare event recorded</div></div>
-      <section class="panel compact" aria-label="Tare options">
-        <div class="button-row" style="margin-top:0"><button id="tareBtn">Auto-Tare</button></div>
-        <div class="field" style="margin-top:8px"><label for="manualTareInput">Manual tare mass (<span id="tareUnitLabel">g</span>)</label><div class="range-row"><input id="manualTareInput" type="number" step="any" placeholder="Calibrated mass"><button id="manualTareBtn">Set</button></div></div>
-      </section>
-    </div>
-    <div class="mcol">
-      <div class="metric"><div class="label">Measurement</div><div class="value" id="measValue">—</div><div class="detail" id="measDetail">No measurement yet</div><div class="detail" id="measUnc"></div><div class="detail" id="measNote"></div></div>
-      <section class="panel compact" aria-label="Measurement">
-        <div class="field" style="margin-bottom:8px"><label for="measSlider">Length: <strong id="measSliderText">5 s · 400 samples</strong></label><input id="measSlider" type="range" min="0" max="1000" step="1" value="489"></div>
-        <div class="control-grid">
-          <div class="field"><label for="measDuration">Duration (s)</label><input id="measDuration" type="number" min="0.025" step="any" value="5"></div>
-          <div class="field"><label for="measSamples">Samples (<span id="measRateText">80</span> Hz)</label><input id="measSamples" type="number" min="2" max="100000" step="1" value="400"></div>
-        </div>
-        <progress id="measBar" max="1" value="0" hidden></progress>
-        <div class="button-row"><button id="measureBtn" class="primary">Start measurement</button></div>
-        <div class="small" id="measProgress" style="margin-top:6px"></div>
-      </section>
-    </div>
-  </section>
-  <div class="small" id="uncertaintyStatus" style="margin:-3px 0 12px 2px">Measurement uncertainty: not characterized by the embedded demonstration calibration.</div>
+	<header>
+		<div class="brand">
+			<div class="logo">MW</div>
+			<div>
+				<h1>Mass Telemetry Workbench</h1>
+				<div class="sub" id="headerSub">80 Hz sensor stream · calibrated mass · local-only session</div>
+			</div>
+		</div>
+		<div class="header-left">
+			<label class="sensor-pick" for="sensorSelect">Sensor</label><select id="sensorSelect"
+				aria-label="Shown sensor"></select>
+			<span id="simControls" class="sim-controls"><select id="simModeSelect" aria-label="Simulated test signal"
+					title="Only for exercising the validity checks. A real device replaces the simulator.">
+					<option value="wander">Wandering (default)</option>
+					<option value="quiet">Quiet (white noise)</option>
+					<option value="hum">Quiet + 50 Hz hum (aliases to 30 Hz)</option>
+					<option value="steps">Quiet + occasional weight steps</option>
+				</select></span>
+			<span class="status"><span id="statusDot" class="dot"></span><span id="statusText">Streaming</span></span>
+		</div>
+		<div class="header-actions">
+			<button id="pauseBtn" title="Pause or resume the shown sensor. A paused sensor discards incoming data.">Ⅱ
+				Pause</button>
+			<button id="pauseAllBtn" title="Pause (or resume) every sensor">Ⅱ Pause all</button>
+			<button id="testSamplesBtn">＋ 100k test samples</button>
+			<button id="themeBtn" aria-label="Toggle color theme">☼ Light mode</button>
+			<div class="settings-wrap">
+				<button id="settingsBtn" aria-expanded="false" aria-controls="settingsMenu">⚙ Settings</button>
+				<div id="settingsMenu" class="settings-menu" hidden>
+					<h3>Settings</h3>
+					<div class="button-row" style="margin:0 0 8px"><button id="openSettingsMenuBtn" class="primary">Open Settings
+							Menu…</button></div>
+					<div class="status-note">More application settings (data connection, language, export defaults) will be added
+						here.</div>
+					<hr class="settings-divider">
+					<h3>Sensors</h3>
+					<div id="sensorListInfo" class="small">—</div>
+					<div class="button-row"><button id="sensorReloadBtn">Reload sensor list</button></div>
+					<div class="small" style="margin-top:4px">Reads sensors.json from the device again. Reloading keeps all
+						collected data. The test signal is always available.</div>
+					<hr class="settings-divider">
+					<h3>Device</h3>
+					<div id="deviceInfo" class="small">No device connection (local test signal only).</div>
+					<div class="button-row"><button id="deviceRestartBtn" title="POST /api/restart">Restart device…</button></div>
+					<div class="field" style="margin-top:6px"><label for="deviceResetSelect">Reset a device file to its factory
+							default (DELETE)</label>
+						<div class="range-row"><select id="deviceResetSelect">
+								<option>sensors.json</option>
+								<option>units.json</option>
+								<option>webui-settings.json</option>
+								<option>settings.json</option>
+								<option>wifi.json</option>
+							</select><button id="deviceResetBtn">Reset…</button></div>
+					</div>
+					<div id="deviceMessages" class="small" style="margin-top:4px"></div>
+					<hr class="settings-divider">
+					<h3>Layout</h3>
+					<label class="check"><input type="checkbox" id="navPanelToggle"> Show Navigation panel (zoom / older / newer
+						buttons)</label>
+					<hr class="settings-divider">
+					<h3>Calibration</h3>
+					<div id="calibrationInfo" class="small">Loading calibration…</div>
+					<div class="button-row" style="margin-bottom:6px"><button id="calWizardBtn" class="primary">Calibration wizard
+							&amp; fitting editor…</button></div>
+					<div class="button-row"><button id="calImportBtn">Import JSON…</button><button
+							id="calExportBtn">Export</button><button id="calDemoBtn">Demo</button><button id="calUploadBtn"
+							title="Compress the active calibration and send it to the device as calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json (needs the password if one is set)">Send
+							to device</button></div>
+					<input id="calFile" type="file" accept=".json,application/json" hidden>
+					<div id="calMessages" class="small" style="margin-top:6px"></div>
+					<div class="small" style="margin-top:6px">A new calibration starts a new epoch: the tare is reset and earlier
+						samples keep the calibration they were recorded with. Only the structure is checked, not metrological
+						validity.</div>
+					<hr class="settings-divider">
+					<details id="clearArea">
+						<summary>Clear data…</summary>
+						<div class="small" style="margin:6px 0">Calibrations are never deleted. You are asked to confirm.</div>
+						<div class="button-row"><button id="clearChartsBtn" title="Empty the chart data of the shown sensor">Clear
+								charts</button><button id="clearAllChartsBtn" title="Empty the chart data of every sensor">Clear all
+								charts</button></div>
+						<div class="button-row"><button id="clearAllBtn"
+								title="Chart data, tares, log, measurements and overload events of every sensor">Clear all</button>
+						</div>
+					</details>
+				</div>
+			</div>
+		</div>
+	</header>
+	<main>
+		<div id="overloadBanner" class="ovl-banner" role="alert" hidden></div>
+		<section class="metrics">
+			<div class="mcol span2">
+				<div class="metric-pair">
+					<div class="metric">
+						<div class="label" id="currentValueLabel">Current measured mass</div>
+						<div class="value" id="currentValue" title="Hover for raw sensor details">—</div>
+						<div class="detail" id="currentValueDetail">Arithmetic mean · 80 samples</div>
+						<div class="detail" id="pmLines"><span id="pmSigma"
+								title="Spread σ of the single readings in the estimator window (the same number as the spread card). How much single readings scatter; not an uncertainty.">σ
+								—</span> · <span id="pmMean"
+								title="Uncertainty of the window AVERAGE if the readings were independent: σ divided by the effective number of independent samples n_eff (from the autocorrelation, so slow noise counts less than white noise). A longer window narrows it only while the noise is white. Repeatability of the average only: no calibration, no weights.">±avg
+								—</span> · <span id="pmStab"
+								title="Stability: how much the DISPLAYED value itself moved (max − min) during the last window length. Small = settled; large = still moving. This is not a repeatability.">moved
+								—</span></div>
+						<div class="detail" id="auxReadout" hidden></div>
+						<div class="detail warning" id="rangeStatus" hidden></div>
+					</div>
+					<div class="metric">
+						<div class="label" id="spreadLabel">Sensor spread (σ)</div>
+						<div class="value" id="currentSpread">—</div>
+						<div class="detail" id="spreadDetail">Window —</div>
+					</div>
+				</div>
+				<section class="panel compact" aria-label="Display and estimator settings">
+					<div class="control-grid">
+						<div class="field"><label for="unitSelect">Unit</label><select id="unitSelect"></select></div>
+						<div class="field"><label for="precisionSelect">Decimals</label><select id="precisionSelect">
+								<option value="auto">Automatic</option>
+							</select></div>
+						<div class="field span2"><label for="estimatorSelect">Estimator (centre value and matching σ)</label><select
+								id="estimatorSelect">
+								<option value="mean">Arithmetic mean</option>
+								<option value="median">Median</option>
+								<option value="trimmed">Trimmed mean</option>
+								<option value="hampelLocal">Hampel filter (sliding local median/MAD) + mean</option>
+								<option value="hampel">Global MAD filter + mean (old Hampel-style)</option>
+								<option value="ema">Exponential moving average (EMA, seeded; old)</option>
+								<option value="emaNorm">EMA, seed-normalised weights</option>
+							</select></div>
+						<div class="field span2"><label for="windowRange">Window (samples): chart curve, spread, estimator</label>
+							<div class="range-row"><input id="windowRange" type="range" min="0" max="1000" step="1" value="433"
+									title="logarithmic: 2 to 10,000 samples"><input id="windowInput" type="number" min="2" max="10000"
+									step="1" value="80" aria-label="Window sample count"></div>
+							<div class="inline small" style="margin-top:4px">= <input id="windowSeconds" type="number" min="0.025"
+									step="any" value="1" style="width:92px" aria-label="Window length in seconds"> s at <span
+									id="windowRateText">80</span> Hz (samples ÷ rate)</div>
+						</div>
+						<div class="field span2" id="trimField" hidden><label for="trimPercent">Trim per tail: <strong
+									id="trimPercentText">10%</strong></label><input id="trimPercent" type="range" min="1" max="30"
+								value="10"></div>
+						<div class="field" id="hampelField" hidden><label for="hampelHalf">Hampel half-width k (window
+								2k+1)</label><input id="hampelHalf" type="number" min="2" max="50" step="1" value="5"></div>
+						<div class="field" id="hampelSigmaField" hidden><label for="hampelSigma">Hampel threshold (× robust
+								σ)</label><input id="hampelSigma" type="number" min="1" max="10" step="0.5" value="3"></div>
+						<div class="field span2" id="emaField" hidden><label for="emaTau">EMA time constant (s)</label><input
+								id="emaTau" type="number" min="0.025" max="120" step="0.025" value="0.5"></div>
+					</div>
+					<div class="small" style="margin-top:7px">The centre line and the ±1σ band of the main chart use the selected
+						estimator and its matching spread statistic. Unit changes affect presentation only; statistics stay in
+						canonical mg. Robust estimators use at most the newest 4,096 samples of the window.</div>
+				</section>
+			</div>
+			<div class="mcol">
+				<div class="metric">
+					<div class="label">Current tare</div>
+					<div class="value" id="tareValue">None</div>
+					<div class="detail" id="tareDetail">No tare event recorded</div>
+				</div>
+				<section class="panel compact" aria-label="Tare options">
+					<div class="button-row" style="margin-top:0"><button id="tareBtn">Auto-Tare</button></div>
+					<div class="field" style="margin-top:8px"><label for="manualTareInput">Manual tare mass (<span
+								id="tareUnitLabel">g</span>)</label>
+						<div class="range-row"><input id="manualTareInput" type="number" step="any"
+								placeholder="Calibrated mass"><button id="manualTareBtn">Set</button></div>
+					</div>
+				</section>
+			</div>
+			<div class="mcol">
+				<div class="metric">
+					<div class="label">Measurement</div>
+					<div class="value" id="measValue">—</div>
+					<div class="detail" id="measDetail">No measurement yet</div>
+					<div class="detail" id="measUnc"></div>
+					<div class="detail" id="measNote"></div>
+				</div>
+				<section class="panel compact" aria-label="Measurement">
+					<div class="field" style="margin-bottom:8px"><label for="measSlider">Length: <strong id="measSliderText">5 s ·
+								400 samples</strong></label><input id="measSlider" type="range" min="0" max="1000" step="1" value="489">
+					</div>
+					<div class="control-grid">
+						<div class="field"><label for="measDuration">Duration (s)</label><input id="measDuration" type="number"
+								min="0.025" step="any" value="5"></div>
+						<div class="field"><label for="measSamples">Samples (<span id="measRateText">80</span> Hz)</label><input
+								id="measSamples" type="number" min="2" max="100000" step="1" value="400"></div>
+					</div>
+					<progress id="measBar" max="1" value="0" hidden></progress>
+					<div class="button-row"><button id="measureBtn" class="primary">Start measurement</button></div>
+					<div class="small" id="measProgress" style="margin-top:6px"></div>
+				</section>
+			</div>
+		</section>
+		<div class="small" id="uncertaintyStatus" style="margin:-3px 0 12px 2px">Measurement uncertainty: not characterized
+			by the embedded demonstration calibration.</div>
 
-  <div class="layout">
-    <div>
-      <section class="panel">
-        <div class="panel-head"><h2 id="mainChartTitle">Measured mass</h2><span id="viewLabel" class="panel-note">Live viewport</span></div>
-        <div style="position:relative"><div id="fpsBox" class="fps-box" hidden></div><div id="mainChart" class="chart-wrap"></div></div>
-        <div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch to zoom. Tare events are shown as vertical markers. Hover markers, highlighted spans or the thin event lane at the top edge for details; click a logged measurement or selection there to open it in the analysis panel. Lower graph: the full retained history; click or drag it to navigate.</div>
-        <div id="miniChart"></div>
-        <div class="controls-bar">
-          <div class="toolbar-left"><button id="trackBtn" class="primary">Pause Tracking</button><button id="selectModeBtn" aria-pressed="false">Select interval</button><button id="exportBtn">Export CSV</button></div>
-          <div class="bufrow" style="margin:0"><label for="bufferInput" class="small">Buffer limit</label><select id="bufferInput" title="The raw history is never modified. Unlimited grows in 100,000-sample steps."><option value="10000">10,000 samples</option><option value="50000">50,000 samples</option><option value="100000" selected>100,000 samples</option><option value="250000">250,000 samples</option><option value="500000">500,000 samples</option><option value="1000000">1,000,000 samples</option><option value="unlimited">Unlimited (memory-limited)</option></select></div>
-          <div class="toolbar-right"><span class="small" id="sourceNote">Test signal: bounded marching randomness</span><span class="small" id="sampleCount">0 samples</span></div>
-        </div>
-      </section>
-    </div>
+		<div class="layout">
+			<div>
+				<section class="panel">
+					<div class="panel-head">
+						<h2 id="mainChartTitle">Measured mass</h2><span id="viewLabel" class="panel-note">Live viewport</span>
+					</div>
+					<div style="position:relative">
+						<div id="fpsBox" class="fps-box" hidden></div>
+						<div id="mainChart" class="chart-wrap"></div>
+					</div>
+					<div class="panel-note" id="selectionHint">Shift-drag to select a sample interval. Drag to pan; wheel or pinch
+						to zoom. Tare events are shown as vertical markers. Hover markers, highlighted spans or the thin event lane
+						at the top edge for details; click a logged measurement or selection there to open it in the analysis panel.
+						Lower graph: the full retained history; click or drag it to navigate.</div>
+					<div id="miniChart"></div>
+					<div class="controls-bar">
+						<div class="toolbar-left"><button id="trackBtn" class="primary">Pause Tracking</button><button
+								id="selectModeBtn" aria-pressed="false">Select interval</button><button id="exportBtn">Export
+								CSV</button></div>
+						<div class="bufrow" style="margin:0"><label for="bufferInput" class="small">Buffer limit</label><select
+								id="bufferInput" title="The raw history is never modified. Unlimited grows in 100,000-sample steps.">
+								<option value="10000">10,000 samples</option>
+								<option value="50000">50,000 samples</option>
+								<option value="100000" selected>100,000 samples</option>
+								<option value="250000">250,000 samples</option>
+								<option value="500000">500,000 samples</option>
+								<option value="1000000">1,000,000 samples</option>
+								<option value="unlimited">Unlimited (memory-limited)</option>
+							</select></div>
+						<div class="toolbar-right"><span class="small" id="sourceNote">Test signal: bounded marching
+								randomness</span><span class="small" id="sampleCount">0 samples</span></div>
+					</div>
+				</section>
+			</div>
 
-    <aside class="side" id="sidePanels">
-      <section class="panel">
-        <div class="panel-head"><h2>Display options</h2></div>
-        <label class="check"><input type="checkbox" id="rawModeToggle"> Raw diagnostic mode (sensor counts)</label>
-        <label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
-        <label class="check"><input type="checkbox" id="zeroRawFillToggle"> Fill zero to instantaneous mass</label>
-        <label class="check"><input type="checkbox" id="zeroLineToggle"> Always include zero in the Y range (the zero line is drawn whenever it is visible)</label>
-        <div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1" value="5"><div class="small">Slow response at low values · immediate at 100%</div></div>
-        <div class="field full" style="margin:7px 0 6px"><label for="bandModeSelect" title="How the band around the centre line is drawn. After a level step the window holds old and new samples, so a plain centre ± SD band reaches about 21 % above the old level (not a bug).">Spread band</label><select id="bandModeSelect"><option value="symmetric">Symmetric ±σ (default)</option><option value="asymmetric">Asymmetric (mean of samples above / below)</option><option value="stepaware">Step-aware (restarts at a level step)</option></select><div class="small" id="bandModeNote">Not used for the EMA estimators.</div></div>
-        <label class="check"><input type="checkbox" id="subPixelToggle"> Sub-pixel rendering (testing; uPlot pxAlign 0, off = pixel-aligned)</label>
-        <div class="field full" style="margin:7px 0 6px"><label for="xSmoothRange">X-axis smoothing (live view): <strong id="xSmoothText">250 ms</strong></label><input id="xSmoothRange" type="range" min="0" max="1000" step="10" value="250"><div class="small">The right edge runs with the clock and follows the newest sample with this delay, so bursts of samples do not make the graph jump. 0 = off.</div></div>
-        <label class="check"><input type="checkbox" id="fpsToggle"> Show frame counter (debug)</label>
-        <div class="field full" id="auxField" style="margin:7px 0 6px" hidden><label>Auxiliary channels (right-hand axis)</label><div id="auxToggles"></div></div>
-        <div class="field full" style="margin:4px 0 6px"><label for="tempRateWindow">Rate of change of a temperature: window (s)</label><input id="tempRateWindow" type="number" min="5" max="3600" step="1" value="60"><div class="small">K per minute over this window, shown next to the temperature value.</div></div>
-        <label class="check"><input type="checkbox" id="downsampleToggle" checked> Downsample large windows (min/max envelope)</label>
-        <label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
-        <div class="small">Downsampling activates only above roughly two plotted points per horizontal pixel. Disable it to plot every visible sample.</div>
-        <div id="yControls" hidden>
-          <div class="field"><label for="yMinRange">Y minimum: <strong id="yMinText">-10</strong></label><input id="yMinRange" type="range" min="-100" max="100" step=".1" value="-10"></div>
-          <div class="field" style="margin-top:8px"><label for="yMaxRange">Y maximum: <strong id="yMaxText">10</strong></label><input id="yMaxRange" type="range" min="-100" max="100" step=".1" value="10"></div>
-          <div class="button-row"><button id="autoYBtn">Restore auto scale</button></div>
-        </div>
-      </section>
+			<aside class="side" id="sidePanels">
+				<section class="panel">
+					<div class="panel-head">
+						<h2>Display options</h2>
+					</div>
+					<label class="check"><input type="checkbox" id="rawModeToggle"> Raw diagnostic mode (sensor counts)</label>
+					<label class="check"><input type="checkbox" id="zeroFillToggle"> Fill zero to lower spread</label>
+					<label class="check"><input type="checkbox" id="zeroRawFillToggle"> Fill zero to instantaneous mass</label>
+					<label class="check"><input type="checkbox" id="zeroLineToggle"> Always include zero in the Y range (the zero
+						line is drawn whenever it is visible)</label>
+					<div class="field full" style="margin:7px 0 10px"><label for="yResponseRange">Auto Y-axis response: <strong
+								id="yResponseText">5%</strong></label><input id="yResponseRange" type="range" min="1" max="100" step="1"
+							value="5">
+						<div class="small">Slow response at low values · immediate at 100%</div>
+					</div>
+					<div class="field full" style="margin:7px 0 6px"><label for="bandModeSelect"
+							title="How the band around the centre line is drawn. After a level step the window holds old and new samples, so a plain centre ± SD band reaches about 21 % above the old level (not a bug).">Spread
+							band</label><select id="bandModeSelect">
+							<option value="symmetric">Symmetric ±σ (default)</option>
+							<option value="asymmetric">Asymmetric (mean of samples above / below)</option>
+							<option value="stepaware">Step-aware (restarts at a level step)</option>
+						</select>
+						<div class="small" id="bandModeNote">Not used for the EMA estimators.</div>
+					</div>
+					<label class="check"><input type="checkbox" id="subPixelToggle"> Sub-pixel rendering (testing; uPlot pxAlign
+						0, off = pixel-aligned)</label>
+					<div class="field full" style="margin:7px 0 6px"><label for="xSmoothRange">X-axis smoothing (live view):
+							<strong id="xSmoothText">250 ms</strong></label><input id="xSmoothRange" type="range" min="0" max="1000"
+							step="10" value="250">
+						<div class="small">The right edge runs with the clock and follows the newest sample with this delay, so
+							bursts of samples do not make the graph jump. 0 = off.</div>
+					</div>
+					<label class="check"><input type="checkbox" id="fpsToggle"> Show frame counter (debug)</label>
+					<div class="field full" id="auxField" style="margin:7px 0 6px" hidden><label>Auxiliary channels (right-hand
+							axis)</label>
+						<div id="auxToggles"></div>
+					</div>
+					<div class="field full" style="margin:4px 0 6px"><label for="tempRateWindow">Rate of change of a temperature:
+							window (s)</label><input id="tempRateWindow" type="number" min="5" max="3600" step="1" value="60">
+						<div class="small">K per minute over this window, shown next to the temperature value.</div>
+					</div>
+					<label class="check"><input type="checkbox" id="downsampleToggle" checked> Downsample large windows (min/max
+						envelope)</label>
+					<label class="check"><input type="checkbox" id="yControlsToggle"> Manual Y-axis controls</label>
+					<div class="small">Downsampling activates only above roughly two plotted points per horizontal pixel. Disable
+						it to plot every visible sample.</div>
+					<div id="yControls" hidden>
+						<div class="field"><label for="yMinRange">Y minimum: <strong id="yMinText">-10</strong></label><input
+								id="yMinRange" type="range" min="-100" max="100" step=".1" value="-10"></div>
+						<div class="field" style="margin-top:8px"><label for="yMaxRange">Y maximum: <strong
+									id="yMaxText">10</strong></label><input id="yMaxRange" type="range" min="-100" max="100" step=".1"
+								value="10"></div>
+						<div class="button-row"><button id="autoYBtn">Restore auto scale</button></div>
+					</div>
+				</section>
 
-      <section class="panel">
-        <div class="panel-head"><h2>Selection / measurement analysis</h2></div>
-        <div class="readout" id="selectionSummary">No interval selected.<br>Shift-drag on the main chart or use Select interval mode.</div>
-        <div class="button-row"><button id="clearSelectionBtn">Clear selection</button></div>
-      </section>
-      <section class="panel" id="navPanel" hidden>
-        <div class="panel-head"><h2>Navigation</h2></div>
-        <div class="small">Mouse wheel / pinch: zoom X-axis. Drag the main chart to inspect history. Pause Tracking freezes the view; Track Live returns to the newest data.</div>
-        <div class="button-row"><button id="zoomInBtn">＋ Zoom in</button><button id="zoomOutBtn">－ Zoom out</button></div>
-        <div class="button-row"><button id="backBtn">← Older</button><button id="forwardBtn">Newer →</button></div>
-      </section>
-    </aside>
-      <section class="panel log-panel">
-        <details id="logDetails" open>
-          <summary>Measurement & event log <span id="logCount" class="small">(0 entries)</span></summary>
-          <div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or event.</span><button id="clearLogBtn">Clear log</button></div>
-          <div id="logList" class="log-list"><div class="small" style="padding:10px 0">No events yet.</div></div>
-        </details>
-        <details id="deviceLogDetails" style="margin-top:10px" open>
-          <summary>Device log <span id="deviceLogCount" class="small">(0 entries)</span></summary>
-          <div class="small" style="margin:8px 0">General-purpose log of the device (restarts, sensor errors, configuration changes, …) plus notes of this tool about epoch breaks.</div>
-          <div id="deviceLogList" class="log-list"><div class="small" style="padding:10px 0">No device log entries.</div></div>
-        </details>
-      </section>
-  </div>
-  <div id="eventTip" class="event-tip" hidden></div>
-  <footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is served by the device (CDN only as a development fallback).</footer>
-</main>
+				<section class="panel">
+					<div class="panel-head">
+						<h2>Selection / measurement analysis</h2>
+					</div>
+					<div class="readout" id="selectionSummary">No interval selected.<br>Shift-drag on the main chart or use Select
+						interval mode.</div>
+					<div class="button-row"><button id="clearSelectionBtn">Clear selection</button></div>
+				</section>
+				<section class="panel" id="navPanel" hidden>
+					<div class="panel-head">
+						<h2>Navigation</h2>
+					</div>
+					<div class="small">Mouse wheel / pinch: zoom X-axis. Drag the main chart to inspect history. Pause Tracking
+						freezes the view; Track Live returns to the newest data.</div>
+					<div class="button-row"><button id="zoomInBtn">＋ Zoom in</button><button id="zoomOutBtn">－ Zoom out</button>
+					</div>
+					<div class="button-row"><button id="backBtn">← Older</button><button id="forwardBtn">Newer →</button></div>
+				</section>
+			</aside>
+			<section class="panel log-panel">
+				<details id="logDetails" open>
+					<summary>Measurement & event log <span id="logCount" class="small">(0 entries)</span></summary>
+					<div class="log-actions"><span class="small">Select an entry to jump to and highlight its samples or
+							event.</span><button id="clearLogBtn">Clear log</button></div>
+					<div id="logList" class="log-list">
+						<div class="small" style="padding:10px 0">No events yet.</div>
+					</div>
+				</details>
+				<details id="deviceLogDetails" style="margin-top:10px" open>
+					<summary>Device log <span id="deviceLogCount" class="small">(0 entries)</span></summary>
+					<div class="small" style="margin:8px 0">General-purpose log of the device (restarts, sensor errors,
+						configuration changes, …) plus notes of this tool about epoch breaks.</div>
+					<div id="deviceLogList" class="log-list">
+						<div class="small" style="padding:10px 0">No device log entries.</div>
+					</div>
+				</details>
+			</section>
+		</div>
+		<div id="eventTip" class="event-tip" hidden></div>
+		<footer>Sensor data and calibration processing run locally in this browser. The embedded calibration data is
+			illustrative and must be replaced with traceable calibration measurements for real weighing use. uPlot is served
+			by the device (CDN only as a development fallback).</footer>
+	</main>
 
-<!-- Unit factors convert the canonical milligram value into the selected display unit. -->
-<script type="application/json" id="unitConfig">
+	<!-- Unit factors convert the canonical milligram value into the selected display unit. -->
+	<script type="application/json" id="unitConfig">
 {
   "schemaVersion": 1,
   "baseUnit": "mg",
@@ -272,7 +1440,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
 }
 </script>
 
-<!--
+	<!--
   Demonstration calibration schema.
   Important concepts reserved here:
   - referenceWeights are individual physical reference objects with human-readable IDs/names.
@@ -297,7 +1465,7 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
   - Calibration creation, replicate grouping UI, outlier analysis and validation are future
     features. This embedded file contains a small illustrative dataset for software testing.
 -->
-<script type="application/json" id="calibrationConfig">
+	<script type="application/json" id="calibrationConfig">
 {
   "schemaVersion": 1,
   "profileId": "scale-profile-demo-0001",
@@ -340,100 +1508,189 @@ details.an{margin-top:6px;font-size:11px}details.an>summary{cursor:pointer}.an-r
 }
 </script>
 
-<div id="settingsModal" class="modal" hidden>
-  <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="smTitle">
-    <div class="modal-head"><h2 id="smTitle">Settings Menu</h2><button id="smClose" aria-label="Close settings menu">✕</button></div>
-    <div class="tabs" role="tablist"><button role="tab" id="smTab_ui" aria-selected="true">Interface</button><button role="tab" id="smTab_sensor" aria-selected="false" hidden>Sensor</button><button role="tab" id="smTab_hw" aria-selected="false">Device sensors</button></div>
-    <div class="modal-body" id="smPane_ui">
-      <div id="uiSettingsInfo" class="readout">—</div>
-      <div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser (<code>webui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the server default, or the built-in values if there is none.</div>
-      <div class="button-row"><button id="uiResetBtn">Reset UI settings</button><button id="uiExportBtn">Export webui-settings.json</button></div>
-      <div class="button-row"><button id="uiSaveServerBtn">Save current as server default</button><button id="uiResetServerBtn">Reset server default</button></div>
-      <hr class="settings-divider"><div id="authInfo" class="readout">—</div>
-      <div class="button-row"><button id="authForgetBtn">Forget password</button></div>
-      <div class="small" style="margin:6px 0">A password is only asked for when something is changed on the server (settings, calibration). Reading and the live stream never need it. It is kept in this tab; it is never written into a file or a link. The password is sent as HTTP Basic: on plain HTTP it is readable on the network, so use it on a trusted home network or over HTTPS only.</div>
-      <hr class="settings-divider"><h3 style="margin:0 0 6px">Local mode (this browser only)</h3>
-	<div class="small">Open this page from your own computer and use a device on the network: type its address, e.g. <code>http://192.168.0.115</code>. Every request (stream, API, files) then gets this prefix. Stored only in this browser. The device must allow cross-origin requests (CORS).</div>
-	<div class="range-row" style="margin-top:6px"><input type="text" id="localBaseInput" placeholder="http://192.168.0.115"><button id="localBaseApply">Apply &amp; reload</button></div>
-	<div class="button-row"><button id="localBaseClear">Switch off &amp; reload</button></div>
-	<div id="localBaseInfo" class="small" style="margin-top:4px"></div>
-	<div id="uiMessages" class="small" style="margin-top:8px"></div>
-    </div>
-    <div class="modal-body" id="smPane_hw" hidden>
-      <div class="small">Hardware definitions of the sensors on the device (<code>sensors.json</code>): add, change or remove sensors, set pins, rate, raw format, warnings and auxiliary channels. The document is checked here, then sent as a whole; the device decides what needs a sensor reconfiguration or a restart.</div>
-      <div class="field" style="margin-top:8px"><label for="hwSelect">Sensor definition</label><select id="hwSelect"></select></div>
-      <div class="button-row"><button id="hwAddHx">＋ HX711 load cell</button><button id="hwAddTemp">＋ Temperature channel</button><button id="hwDelete">Remove</button><button id="hwReload">Discard changes</button></div>
-      <div id="hwForm"></div>
-      <details style="margin-top:10px"><summary>Entry as JSON (every key, also unknown ones)</summary>
-        <textarea id="hwJson" rows="12" spellcheck="false" style="width:100%;font-family:monospace;font-size:12px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px"></textarea>
-        <div class="button-row"><button id="hwJsonApply">Use this JSON for the entry</button></div></details>
-      <div class="control-grid" style="margin-top:10px"><div class="field"><label for="hwBuffer">Ring-buffer resize (?buffer=)</label><select id="hwBuffer"><option value="preserve">preserve (keep the newest samples)</option><option value="clear">clear (history is lost)</option></select></div></div>
-      <div class="field" style="margin-top:10px"><label>Sample history of the selected sensor</label><div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the device</button></div><div class="small" id="ssHistoryInfo">—</div></div>
-      <div class="button-row"><button id="hwApply" class="primary">Validate &amp; send sensors.json</button><button id="ssDownloadBtn">Download sensors.json</button><button id="ssLoadBtn">Load sensors.json…</button><input id="ssFile" type="file" accept=".json,application/json" hidden></div>
-      <div id="hwMessages" class="small" style="margin-top:8px;white-space:pre-wrap"></div>
-    </div>
-    <div class="modal-body" id="smPane_sensor" hidden>
-      <div class="field"><label for="ssSensor">Sensor</label><select id="ssSensor"></select></div>
-      <div id="ssNone" class="small" style="margin-top:8px">No sensor yet. Connect to a device (sensors.json) or use the test signal.</div>
-      <div id="ssForm">
-        <div class="small" id="ssDeviceInfo" style="margin-top:6px"></div>
-        <div class="control-grid" style="margin-top:8px">
-          <div class="field span2"><label for="ssName">Display name</label><input type="text" id="ssName"></div>
-          <div class="field"><label for="ssRate">Sampling rate (Hz, effective, read-only)</label><input type="number" id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
-          <div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
-        </div>
-        <div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this sensor</label><select id="ssCalFile"></select><button id="ssCalDeleteBtn" title="DELETE /data/calibration/&lt;file&gt; on the device (password and CSRF as for every write)">Delete this file on the device…</button><span class="small">Files are named calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary; “Validate &amp; send sensors.json” (tab Device sensors) makes the choice the sensor’s default on the device. Import files under Settings → Calibration.</span></div>
-        <h3 style="margin:12px 0 4px">Overload warning</h3>
-        <div class="small">Limits are weights (stored as <code>loadLimits</code> in sensors.json), compared with the average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning off. Without a minimum, −maximum is used. They are independent of the firmware warnings on raw values.</div>
-        <div class="control-grid" style="margin-top:6px">
-          <div class="field"><label for="ssMaxLoad">Maximum load</label><input type="number" id="ssMaxLoad" step="any" min="0" placeholder="off"></div>
-          <div class="field"><label for="ssLoadUnit">Unit</label><select id="ssLoadUnit"></select></div>
-          <div class="field"><label for="ssMinLoad">Minimum load (optional, e.g. −200)</label><input type="number" id="ssMinLoad" step="any" placeholder="= −maximum"></div>
-          <div class="field"><label for="ssAvgS">Average over (s)</label><input type="number" id="ssAvgS" step="any" min="0.001"></div>
-          <div class="field"><label for="ssYellow">Yellow above excess (%)</label><input type="number" id="ssYellow" step="any" min="0"></div>
-          <div class="field"><label for="ssOrange">Orange above excess (%)</label><input type="number" id="ssOrange" step="any" min="0"></div>
-          <div class="field"><label for="ssRed">Red above excess (%)</label><input type="number" id="ssRed" step="any" min="0"></div>
-          <div class="field"><label for="ssBreak">Breaks shorter than (s) stay one event</label><input type="number" id="ssBreak" step="any" min="0"></div>
-          <div class="field"><label for="ssHold">Keep the warning visible for (s)</label><input type="number" id="ssHold" step="any" min="1"></div>
-        </div>
-        <h3 style="margin:12px 0 4px">Use conditions</h3>
-        <div class="small" id="ssUseNote">—</div><div class="small">These assumptions live in this browser session only (not in any file).</div>
-        <div class="control-grid" style="margin-top:6px">
-          <div class="field"><label for="ssReadDelay">How long after placing a load you usually read the value (s)</label><input type="number" id="ssReadDelay" step="any" min="0"></div>
-          <div class="field"><label for="ssSessionS">How long after the last tare you usually weigh (s)</label><input type="number" id="ssSessionS" step="any" min="0"></div>
-          <div class="field"><label for="ssTempDelta">Usual temperature difference to the calibration (K, only used without a temperature sensor)</label><input type="number" id="ssTempDelta" step="any" min="0"></div>
-          <div class="field"><label for="ssPrimaryTemp">Temperature channel used for the uncertainty</label><select id="ssPrimaryTemp"></select></div>
-        </div>
-        <div id="ssAuxBox" hidden><h3 style="margin:12px 0 4px">Auxiliary channels</h3>
-          <div class="small">The conversion of a channel (raw × rawScale, then the formula; for example an ice-point offset in a polynomial). There is only one conversion per channel: it is stored in sensors.json when you apply and send.</div>
-          <div class="control-grid" style="margin-top:6px"><div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div><div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g. {"type":"polynomial","rawScale":0.001,"unit":"°C","coefficients":[-12.3,1]})</label><input type="text" id="ssAuxConv"></div></div>
-          <div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Back to the stored conversion</button></div><div class="small" id="ssAuxInfo"></div></div>
-        
-        
-      </div>
-      <div id="ssMessages" class="small" style="margin-top:8px"></div>
-      <div class="small" style="margin-top:6px">The device owns the hardware settings (GPIOs, rate, raw format, firmware warnings); this tool only changes name, notes, calibration file, temperature channel, load limits and conversions and sends the rest back untouched. The use conditions are not saved anywhere.</div>
-    </div>
-  </div>
-</div>
-<div id="authModal" class="modal" hidden style="z-index:80">
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-    <div class="modal-head"><h2 id="authTitle">Password</h2></div>
-    <div class="modal-body">
-      <div id="authMsg" class="small" style="margin-bottom:8px"></div>
-      <div class="control-grid"><div class="field span2"><label for="authUser">User name</label><input type="text" id="authUser" autocomplete="username"></div><div class="field span2"><label for="authPass">Password</label><input type="password" id="authPass" autocomplete="current-password"></div></div>
-      <label class="check"><input type="checkbox" id="authRemember"> Remember on this device (stored unencrypted in this browser)</label>
-      <div class="small">Sent as HTTP Basic. Over plain HTTP the password is readable on the network: trusted home network or HTTPS only.</div>
-      <div class="button-row"><button id="authOk" class="primary">Continue</button><button id="authCancel">Cancel</button></div>
-    </div>
-  </div>
-</div>
-<div id="wizModal" class="modal wiz" hidden>
-  <div class="modal-card wide" role="dialog" aria-labelledby="wizTitle">
-    <div class="modal-head"><h2 id="wizTitle">Calibration wizard &amp; fitting editor</h2><select id="wizMode" aria-label="Wizard mode" title="Simple: guided steps with plain wording. Advanced: all options. The same data and file format." style="width:auto"><option value="simple">Simple</option><option value="advanced">Advanced</option></select><span id="wizRecBadge" class="vbadge suspect"></span><span class="grow"></span><button id="wizMin">Minimise</button><button id="wizClose" aria-label="Close wizard">✕</button></div>
-    <div class="modal-body" id="wizBody"></div>
-  </div>
-</div>
-<script src="default.js"></script>
+	<div id="settingsModal" class="modal" hidden>
+		<div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="smTitle">
+			<div class="modal-head">
+				<h2 id="smTitle">Settings Menu</h2><button id="smClose" aria-label="Close settings menu">✕</button>
+			</div>
+			<div class="tabs" role="tablist"><button role="tab" id="smTab_ui" aria-selected="true">Interface</button><button
+					role="tab" id="smTab_sensor" aria-selected="false" hidden>Sensor</button><button role="tab" id="smTab_hw"
+					aria-selected="false">Device sensors</button></div>
+			<div class="modal-body" id="smPane_ui">
+				<div id="uiSettingsInfo" class="readout">—</div>
+				<div class="small" style="margin:6px 0">Changes to the interface are stored automatically in this browser
+					(<code>webui-settings.json</code> content, local storage). “Reset” forgets the browser’s copy and applies the
+					server default, or the built-in values if there is none.</div>
+				<div class="button-row"><button id="uiResetBtn">Reset UI settings</button><button id="uiExportBtn">Export
+						webui-settings.json</button></div>
+				<div class="button-row"><button id="uiSaveServerBtn">Save current as server default</button><button
+						id="uiResetServerBtn">Reset server default</button></div>
+				<hr class="settings-divider">
+				<div id="authInfo" class="readout">—</div>
+				<div class="button-row"><button id="authForgetBtn">Forget password</button></div>
+				<div class="small" style="margin:6px 0">A password is only asked for when something is changed on the server
+					(settings, calibration). Reading and the live stream never need it. It is kept in this tab; it is never
+					written into a file or a link. The password is sent as HTTP Basic: on plain HTTP it is readable on the
+					network, so use it on a trusted home network or over HTTPS only.</div>
+				<hr class="settings-divider">
+				<h3 style="margin:0 0 6px">Local mode (this browser only)</h3>
+				<div class="small">Open this page from your own computer and use a device on the network: type its address, e.g.
+					<code>http://192.168.0.115</code>. Every request (stream, API, files) then gets this prefix. Stored only in
+					this browser. The device must allow cross-origin requests (CORS).</div>
+				<div class="range-row" style="margin-top:6px"><input type="text" id="localBaseInput"
+						placeholder="http://192.168.0.115"><button id="localBaseApply">Apply &amp; reload</button></div>
+				<div class="button-row"><button id="localBaseClear">Switch off &amp; reload</button></div>
+				<div id="localBaseInfo" class="small" style="margin-top:4px"></div>
+				<div id="uiMessages" class="small" style="margin-top:8px"></div>
+			</div>
+			<div class="modal-body" id="smPane_hw" hidden>
+				<div class="small">Hardware definitions of the sensors on the device (<code>sensors.json</code>): add, change or
+					remove sensors, set pins, rate, raw format, warnings and auxiliary channels. The document is checked here,
+					then sent as a whole; the device decides what needs a sensor reconfiguration or a restart.</div>
+				<div class="field" style="margin-top:8px"><label for="hwSelect">Sensor definition</label><select
+						id="hwSelect"></select></div>
+				<div class="button-row"><button id="hwAddHx">＋ HX711 load cell</button><button id="hwAddTemp">＋ Temperature
+						channel</button><button id="hwDelete">Remove</button><button id="hwReload">Discard changes</button></div>
+				<div id="hwForm"></div>
+				<details style="margin-top:10px">
+					<summary>Entry as JSON (every key, also unknown ones)</summary>
+					<textarea id="hwJson" rows="12" spellcheck="false"
+						style="width:100%;font-family:monospace;font-size:12px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px"></textarea>
+					<div class="button-row"><button id="hwJsonApply">Use this JSON for the entry</button></div>
+				</details>
+				<div class="control-grid" style="margin-top:10px">
+					<div class="field"><label for="hwBuffer">Ring-buffer resize (?buffer=)</label><select id="hwBuffer">
+							<option value="preserve">preserve (keep the newest samples)</option>
+							<option value="clear">clear (history is lost)</option>
+						</select></div>
+				</div>
+				<div class="field" style="margin-top:10px"><label>Sample history of the selected sensor</label>
+					<div class="button-row" style="margin-top:0"><button id="ssHistoryBtn">Load older history from the
+							device</button></div>
+					<div class="small" id="ssHistoryInfo">—</div>
+				</div>
+				<div class="button-row"><button id="hwApply" class="primary">Validate &amp; send sensors.json</button><button
+						id="ssDownloadBtn">Download sensors.json</button><button id="ssLoadBtn">Load sensors.json…</button><input
+						id="ssFile" type="file" accept=".json,application/json" hidden></div>
+				<div id="hwMessages" class="small" style="margin-top:8px;white-space:pre-wrap"></div>
+			</div>
+			<div class="modal-body" id="smPane_sensor" hidden>
+				<div class="field"><label for="ssSensor">Sensor</label><select id="ssSensor"></select></div>
+				<div id="ssNone" class="small" style="margin-top:8px">No sensor yet. Connect to a device (sensors.json) or use
+					the test signal.</div>
+				<div id="ssForm">
+					<div class="small" id="ssDeviceInfo" style="margin-top:6px"></div>
+					<div class="control-grid" style="margin-top:8px">
+						<div class="field span2"><label for="ssName">Display name</label><input type="text" id="ssName"></div>
+						<div class="field"><label for="ssRate">Sampling rate (Hz, effective, read-only)</label><input type="number"
+								id="ssRate" min="0.1" step="any"><span class="small" id="ssRateNote"></span></div>
+						<div class="field span2"><label for="ssNotes">Notes</label><input type="text" id="ssNotes"></div>
+					</div>
+					<div class="field span2" style="margin-top:8px"><label for="ssCalFile">Active calibration file for this
+							sensor</label><select id="ssCalFile"></select><button id="ssCalDeleteBtn"
+							title="DELETE /data/calibration/&lt;file&gt; on the device (password and CSRF as for every write)">Delete
+							this file on the device…</button><span class="small">Files are named
+							calibration_&lt;sensorId&gt;_&lt;profileId&gt;.json and belong to one sensor. Switching here is temporary;
+							“Validate &amp; send sensors.json” (tab Device sensors) makes the choice the sensor’s default on the
+							device. Import files under Settings → Calibration.</span></div>
+					<h3 style="margin:12px 0 4px">Overload warning</h3>
+					<div class="small">Limits are weights (stored as <code>loadLimits</code> in sensors.json), compared with the
+						average of the newest samples (gross load, tare is ignored). Leave “Maximum” empty to switch the warning
+						off. Without a minimum, −maximum is used. They are independent of the firmware warnings on raw values.</div>
+					<div class="control-grid" style="margin-top:6px">
+						<div class="field"><label for="ssMaxLoad">Maximum load</label><input type="number" id="ssMaxLoad" step="any"
+								min="0" placeholder="off"></div>
+						<div class="field"><label for="ssLoadUnit">Unit</label><select id="ssLoadUnit"></select></div>
+						<div class="field"><label for="ssMinLoad">Minimum load (optional, e.g. −200)</label><input type="number"
+								id="ssMinLoad" step="any" placeholder="= −maximum"></div>
+						<div class="field"><label for="ssAvgS">Average over (s)</label><input type="number" id="ssAvgS" step="any"
+								min="0.001"></div>
+						<div class="field"><label for="ssYellow">Yellow above excess (%)</label><input type="number" id="ssYellow"
+								step="any" min="0"></div>
+						<div class="field"><label for="ssOrange">Orange above excess (%)</label><input type="number" id="ssOrange"
+								step="any" min="0"></div>
+						<div class="field"><label for="ssRed">Red above excess (%)</label><input type="number" id="ssRed" step="any"
+								min="0"></div>
+						<div class="field"><label for="ssBreak">Breaks shorter than (s) stay one event</label><input type="number"
+								id="ssBreak" step="any" min="0"></div>
+						<div class="field"><label for="ssHold">Keep the warning visible for (s)</label><input type="number"
+								id="ssHold" step="any" min="1"></div>
+					</div>
+					<h3 style="margin:12px 0 4px">Use conditions</h3>
+					<div class="small" id="ssUseNote">—</div>
+					<div class="small">These assumptions live in this browser session only (not in any file).</div>
+					<div class="control-grid" style="margin-top:6px">
+						<div class="field"><label for="ssReadDelay">How long after placing a load you usually read the value
+								(s)</label><input type="number" id="ssReadDelay" step="any" min="0"></div>
+						<div class="field"><label for="ssSessionS">How long after the last tare you usually weigh (s)</label><input
+								type="number" id="ssSessionS" step="any" min="0"></div>
+						<div class="field"><label for="ssTempDelta">Usual temperature difference to the calibration (K, only used
+								without a temperature sensor)</label><input type="number" id="ssTempDelta" step="any" min="0"></div>
+						<div class="field"><label for="ssPrimaryTemp">Temperature channel used for the uncertainty</label><select
+								id="ssPrimaryTemp"></select></div>
+					</div>
+					<div id="ssAuxBox" hidden>
+						<h3 style="margin:12px 0 4px">Auxiliary channels</h3>
+						<div class="small">The conversion of a channel (raw × rawScale, then the formula; for example an ice-point
+							offset in a polynomial). There is only one conversion per channel: it is stored in sensors.json when you
+							apply and send.</div>
+						<div class="control-grid" style="margin-top:6px">
+							<div class="field"><label for="ssAuxSelect">Channel</label><select id="ssAuxSelect"></select></div>
+							<div class="field span2"><label for="ssAuxConv">Conversion (JSON, e.g.
+									{"type":"polynomial","rawScale":0.001,"unit":"°C","coefficients":[-12.3,1]})</label><input type="text"
+									id="ssAuxConv"></div>
+						</div>
+						<div class="button-row"><button id="ssAuxApply">Apply conversion</button><button id="ssAuxReset">Back to the
+								stored conversion</button></div>
+						<div class="small" id="ssAuxInfo"></div>
+					</div>
+
+
+				</div>
+				<div id="ssMessages" class="small" style="margin-top:8px"></div>
+				<div class="small" style="margin-top:6px">The device owns the hardware settings (GPIOs, rate, raw format,
+					firmware warnings); this tool only changes name, notes, calibration file, temperature channel, load limits and
+					conversions and sends the rest back untouched. The use conditions are not saved anywhere.</div>
+			</div>
+		</div>
+	</div>
+	<div id="authModal" class="modal" hidden style="z-index:80">
+		<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+			<div class="modal-head">
+				<h2 id="authTitle">Password</h2>
+			</div>
+			<div class="modal-body">
+				<div id="authMsg" class="small" style="margin-bottom:8px"></div>
+				<div class="control-grid">
+					<div class="field span2"><label for="authUser">User name</label><input type="text" id="authUser"
+							autocomplete="username"></div>
+					<div class="field span2"><label for="authPass">Password</label><input type="password" id="authPass"
+							autocomplete="current-password"></div>
+				</div>
+				<label class="check"><input type="checkbox" id="authRemember"> Remember on this device (stored unencrypted in
+					this browser)</label>
+				<div class="small">Sent as HTTP Basic. Over plain HTTP the password is readable on the network: trusted home
+					network or HTTPS only.</div>
+				<div class="button-row"><button id="authOk" class="primary">Continue</button><button
+						id="authCancel">Cancel</button></div>
+			</div>
+		</div>
+	</div>
+	<div id="wizModal" class="modal wiz" hidden>
+		<div class="modal-card wide" role="dialog" aria-labelledby="wizTitle">
+			<div class="modal-head">
+				<h2 id="wizTitle">Calibration wizard &amp; fitting editor</h2><select id="wizMode" aria-label="Wizard mode"
+					title="Simple: guided steps with plain wording. Advanced: all options. The same data and file format."
+					style="width:auto">
+					<option value="simple">Simple</option>
+					<option value="advanced">Advanced</option>
+				</select><span id="wizRecBadge" class="vbadge suspect"></span><span class="grow"></span><button
+					id="wizMin">Minimise</button><button id="wizClose" aria-label="Close wizard">✕</button>
+			</div>
+			<div class="modal-body" id="wizBody"></div>
+		</div>
+	</div>
+	<script src="default.js"></script>
 </body>
+
 </html>
